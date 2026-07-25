@@ -1,0 +1,8 @@
+# See https://pre-commit.com/#creating-new-hooks
+- id: quack
+  name: quack
+  description: AI-assisted pre-commit quality hook.
+  entry: quack check
+  language: python
+  pass_filenames: false
+  stages: [pre-commit]
