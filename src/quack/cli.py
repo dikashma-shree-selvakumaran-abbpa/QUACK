@@ -18,12 +18,15 @@ from pathlib import Path
 import click
 import yaml
 
-from . import __version__, gitio, render, testmap
+from . import __version__, gitio, render, testmap, tier2
+from .llmio import LLMUnavailable
 from .tier1 import Finding, Tier1Config
 from .tier1 import run as tier1_run
 from .tier1 import should_block
 
 QUACK_REPO_URL = "https://github.com/your-org/quack"
+
+DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -33,7 +36,12 @@ def main() -> None:
 
 
 @main.command()
-def check() -> None:
+@click.option(
+	"--model",
+	default=None,
+	help="Model id for Tier 2 (overrides AIGUARD_MODEL env var).",
+)
+def check(model: str | None) -> None:
 	"""Run the pre-commit quality checks on staged changes."""
 	delta = gitio.staged_delta()
 	if not delta.files:
@@ -57,9 +65,63 @@ def check() -> None:
 	plan = testmap.build_plan(delta)
 	_render_test_guidance(plan)
 
-	# Tier 2 (AI analysis) slot â€” future milestone M4.
+	# Tier 2 (AI analysis). Fully fail-open: it never changes the exit code,
+	# which stays governed only by Tier 1's should_block() above.
+	if not delta.triviality()[0]:
+		_run_tier2(delta, findings, plan, model)
 
 	sys.exit(0)
+
+
+def _resolve_model(cli_model: str | None) -> str:
+	"""--model option > AIGUARD_MODEL env var > default."""
+	return cli_model or os.environ.get("AIGUARD_MODEL") or DEFAULT_MODEL
+
+
+def _run_tier2(
+	delta,
+	findings: list[Finding],
+	plan: testmap.TestPlan,
+	cli_model: str | None,
+) -> None:
+	"""Render the AI section. Never raises; never affects the exit code."""
+	model = _resolve_model(cli_model)
+	try:
+		result = tier2.review(delta, findings, plan, model=model)
+	except LLMUnavailable as exc:
+		render.metadata(f"AI: skipped ({exc.reason})")
+		return
+	except Exception:  # noqa: BLE001 - Tier 2 must never crash the hook.
+		render.metadata("AI: skipped (analysis unavailable)")
+		return
+
+	if result is None:
+		if not os.environ.get("GITHUB_TOKEN"):
+			reason = "no GITHUB_TOKEN"
+		else:
+			reason = "analysis unavailable"
+		render.metadata(f"AI: skipped ({reason})")
+		return
+
+	_render_review(result)
+
+
+def _render_review(result: tier2.ReviewResult) -> None:
+	"""Render a successful Tier 2 verdict (advisory only)."""
+	verdict = f"AI risk: {result.risk} - {result.one_liner}"
+	if result.risk == "low":
+		render.clean(verdict)
+	elif result.risk == "medium":
+		render.warning(verdict)
+	else:
+		render.blocking(verdict)
+
+	for reason in result.reasons:
+		render.warning(f"  {reason}")
+	for test in result.tests_to_run:
+		render.command(f"  run: {test}")
+	for source in result.missing_tests:
+		render.warning(f"  {source}: no test covers this change")
 
 
 def _render_findings(findings: list[Finding]) -> None:
