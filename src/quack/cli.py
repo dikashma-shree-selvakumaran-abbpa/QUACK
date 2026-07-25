@@ -1,4 +1,4 @@
-"""quack command-line interface.
+﻿"""quack command-line interface.
 
 Subcommands:
 	check   the hook entry (Tier 1 + Tier 2 orchestration)
@@ -18,7 +18,10 @@ from pathlib import Path
 import click
 import yaml
 
-from . import __version__, gitio, render
+from . import __version__, gitio, render, testmap
+from .tier1 import Finding, Tier1Config
+from .tier1 import run as tier1_run
+from .tier1 import should_block
 
 QUACK_REPO_URL = "https://github.com/your-org/quack"
 
@@ -42,7 +45,47 @@ def check() -> None:
 		f"quack: {len(delta.files)} file(s) staged, "
 		f"+{delta.total_added}/-{delta.total_removed} lines"
 	)
+
+	# Tier 1: deterministic checks (offline, always run).
+	findings = tier1_run(delta, Tier1Config())
+	_render_findings(findings)
+	if should_block(findings, block_on=("secrets", "merge_markers")):
+		render.blocking("BLOCKED â€” fix and re-stage")
+		sys.exit(1)
+
+	# Test guidance (only worth computing on an unblocked commit).
+	plan = testmap.build_plan(delta)
+	_render_test_guidance(plan)
+
+	# Tier 2 (AI analysis) slot â€” future milestone M4.
+
 	sys.exit(0)
+
+
+def _render_findings(findings: list[Finding]) -> None:
+	"""Render each Tier 1 finding: 'severity  check  path:line  message'."""
+	for f in findings:
+		line = f"{f.severity}  {f.check}  {f.path}:{f.line}  {f.message}"
+		if f.severity == "error":
+			render.blocking(line)
+		else:
+			render.warning(line)
+
+
+def _render_test_guidance(plan: testmap.TestPlan) -> None:
+	"""Print the Test guidance section: runner commands and untested sources."""
+	if not plan.runner_commands and not plan.untested_sources:
+		return
+
+	render.info("Test guidance:")
+
+	for cmd in plan.runner_commands:
+		render.command(f"  {cmd}")
+	if plan.dotnet_hint:
+		render.metadata("  (first run: build once with dotnet build)")
+
+	for source in plan.untested_sources:
+		render.warning(f"  {source}: NO TESTS FOUND")
 
 
 @main.command()
@@ -108,3 +151,4 @@ def _upsert_precommit_stanza(config_path: Path) -> None:
 
 if __name__ == "__main__":
 	main()
+
