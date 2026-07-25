@@ -32,13 +32,16 @@ def main() -> None:
 @main.command()
 def check() -> None:
 	"""Run the pre-commit quality checks on staged changes."""
-	staged = gitio.staged_files()
-	if not staged:
+	delta = gitio.staged_delta()
+	if not delta.files:
 		render.clean("nothing staged")
 		sys.exit(0)
 
 	# Tier 1 / Tier 2 orchestration will live here. Skeleton for now.
-	render.metadata(f"quack: {len(staged)} file(s) staged")
+	render.metadata(
+		f"quack: {len(delta.files)} file(s) staged, "
+		f"+{delta.total_added}/-{delta.total_removed} lines"
+	)
 	sys.exit(0)
 
 
