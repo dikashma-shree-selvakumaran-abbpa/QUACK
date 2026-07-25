@@ -48,28 +48,46 @@ def check(model: str | None) -> None:
 		render.clean("nothing staged")
 		sys.exit(0)
 
-	# Tier 1 / Tier 2 orchestration will live here. Skeleton for now.
-	render.metadata(
-		f"quack: {len(delta.files)} file(s) staged, "
-		f"+{delta.total_added}/-{delta.total_removed} lines"
-	)
-
 	# Tier 1: deterministic checks (offline, always run).
 	findings = tier1_run(delta, Tier1Config())
-	_render_findings(findings)
-	if should_block(findings, block_on=("secrets", "merge_markers")):
-		render.blocking("BLOCKED â€” fix and re-stage")
+	blocked = should_block(findings, block_on=("secrets", "merge_markers"))
+
+	if blocked:
+		# Only Tier 1 governs the exit code. Show findings + BLOCKED banner.
+		render.report(
+			files=len(delta.files),
+			added=delta.total_added,
+			removed=delta.total_removed,
+			findings=findings,
+			plan=None,
+			ai=None,
+			blocked=True,
+		)
 		sys.exit(1)
 
 	# Test guidance (only worth computing on an unblocked commit).
 	plan = testmap.build_plan(delta)
-	_render_test_guidance(plan)
 
 	# Tier 2 (AI analysis). Fully fail-open: it never changes the exit code,
 	# which stays governed only by Tier 1's should_block() above.
-	if not delta.triviality()[0]:
-		_run_tier2(delta, findings, plan, model)
+	resolved_model = _resolve_model(model)
+	trivial, trivial_reason = delta.triviality()
+	if trivial:
+		ai = ("skipped", trivial_reason)
+	else:
+		ai = _run_tier2(delta, findings, plan, resolved_model)
 
+	# TODO: thread the real hook duration through to render.report.
+	render.report(
+		files=len(delta.files),
+		added=delta.total_added,
+		removed=delta.total_removed,
+		findings=findings,
+		plan=plan,
+		ai=ai,
+		model=resolved_model,
+		blocked=False,
+	)
 	sys.exit(0)
 
 
@@ -82,72 +100,26 @@ def _run_tier2(
 	delta,
 	findings: list[Finding],
 	plan: testmap.TestPlan,
-	cli_model: str | None,
-) -> None:
-	"""Render the AI section. Never raises; never affects the exit code."""
-	model = _resolve_model(cli_model)
+	model: str,
+):
+	"""Return the AI section data. Never raises; never affects the exit code.
+
+	Returns a ``ReviewResult`` on success, or ``("skipped", reason)`` when the
+	analysis is unavailable (fail-open).
+	"""
 	try:
 		result = tier2.review(delta, findings, plan, model=model)
 	except LLMUnavailable as exc:
-		render.metadata(f"AI: skipped ({exc.reason})")
-		return
+		return ("skipped", exc.reason)
 	except Exception:  # noqa: BLE001 - Tier 2 must never crash the hook.
-		render.metadata("AI: skipped (analysis unavailable)")
-		return
+		return ("skipped", "analysis unavailable")
 
 	if result is None:
 		if not os.environ.get("GITHUB_TOKEN"):
-			reason = "no GITHUB_TOKEN"
-		else:
-			reason = "analysis unavailable"
-		render.metadata(f"AI: skipped ({reason})")
-		return
+			return ("skipped", "no GITHUB_TOKEN")
+		return ("skipped", "analysis unavailable")
 
-	_render_review(result)
-
-
-def _render_review(result: tier2.ReviewResult) -> None:
-	"""Render a successful Tier 2 verdict (advisory only)."""
-	verdict = f"AI risk: {result.risk} - {result.one_liner}"
-	if result.risk == "low":
-		render.clean(verdict)
-	elif result.risk == "medium":
-		render.warning(verdict)
-	else:
-		render.blocking(verdict)
-
-	for reason in result.reasons:
-		render.warning(f"  {reason}")
-	for test in result.tests_to_run:
-		render.command(f"  run: {test}")
-	for source in result.missing_tests:
-		render.warning(f"  {source}: no test covers this change")
-
-
-def _render_findings(findings: list[Finding]) -> None:
-	"""Render each Tier 1 finding: 'severity  check  path:line  message'."""
-	for f in findings:
-		line = f"{f.severity}  {f.check}  {f.path}:{f.line}  {f.message}"
-		if f.severity == "error":
-			render.blocking(line)
-		else:
-			render.warning(line)
-
-
-def _render_test_guidance(plan: testmap.TestPlan) -> None:
-	"""Print the Test guidance section: runner commands and untested sources."""
-	if not plan.runner_commands and not plan.untested_sources:
-		return
-
-	render.info("Test guidance:")
-
-	for cmd in plan.runner_commands:
-		render.command(f"  {cmd}")
-	if plan.dotnet_hint:
-		render.metadata("  (first run: build once with dotnet build)")
-
-	for source in plan.untested_sources:
-		render.warning(f"  {source}: NO TESTS FOUND")
+	return result
 
 
 @main.command()
