@@ -18,7 +18,7 @@ from pathlib import Path
 import click
 import yaml
 
-from . import __version__, gitio, render, testmap, tier2
+from . import __version__, agent as agent_mod, gitio, render, testmap, tier2
 from .llmio import LLMUnavailable
 from .tier1 import Finding, Tier1Config
 from .tier1 import run as tier1_run
@@ -27,6 +27,10 @@ from .tier1 import should_block
 QUACK_REPO_URL = "https://github.com/your-org/quack"
 
 DEFAULT_MODEL = "openai/gpt-4o-mini"
+
+# Agent uses a stronger model because multi-step tool-using investigation needs
+# more reasoning capability than check's one-shot review.
+DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -96,6 +100,11 @@ def _resolve_model(cli_model: str | None) -> str:
 	return cli_model or os.environ.get("AIGUARD_MODEL") or DEFAULT_MODEL
 
 
+def _resolve_agent_model(cli_model: str | None) -> str:
+	"""--model option > AIGUARD_MODEL env var > agent default."""
+	return cli_model or os.environ.get("AIGUARD_MODEL") or DEFAULT_AGENT_MODEL
+
+
 def _run_tier2(
 	delta,
 	findings: list[Finding],
@@ -123,9 +132,30 @@ def _run_tier2(
 
 
 @main.command()
-def agent() -> None:
-	"""Run the agentic pre-push analysis loop (stub)."""
-	render.metadata("quack agent: not implemented yet")
+@click.option(
+	"--model",
+	default=None,
+	help="Model id for the agent (overrides AIGUARD_MODEL env var).",
+)
+def agent(model: str | None) -> None:
+	"""Run the agentic pre-push analysis loop."""
+	if not os.environ.get("GITHUB_TOKEN"):
+		render.metadata("quack agent: needs GITHUB_TOKEN, none found")
+		sys.exit(0)
+
+	root = gitio.repo_root()
+	if not root:
+		render.metadata("quack agent: not a git repository")
+		sys.exit(0)
+
+	delta = gitio.staged_delta()
+	if not delta.files:
+		render.clean("nothing staged")
+		sys.exit(0)
+
+	resolved_model = _resolve_agent_model(model)
+	result = agent_mod.run(delta.raw_diff, Path(root), resolved_model)
+	render.agent_report(result)
 	sys.exit(0)
 
 

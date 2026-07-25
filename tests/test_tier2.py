@@ -116,3 +116,47 @@ def test_schema_violation_returns_none(
 	result = tier2.review(_delta(), [], _plan(), model="m")
 
 	assert result is None
+
+
+def test_json_fence_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+	fenced = "```json\n" + _valid_json() + "\n```"
+
+	def fake_complete(messages, model, timeout_s=6.0):
+		return fenced
+
+	monkeypatch.setattr(tier2.llmio, "complete", fake_complete)
+
+	result = tier2.review(_delta(), [], _plan(), model="m")
+
+	assert result is not None
+	assert result.risk == "high"
+
+
+def test_bare_fence_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+	fenced = "```\n" + _valid_json() + "\n```"
+
+	def fake_complete(messages, model, timeout_s=6.0):
+		return fenced
+
+	monkeypatch.setattr(tier2.llmio, "complete", fake_complete)
+
+	result = tier2.review(_delta(), [], _plan(), model="m")
+
+	assert result is not None
+	assert result.risk == "high"
+
+
+def test_leading_prose_parses_via_extraction(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	content = "Here's my analysis: " + _valid_json() + " Hope that helps."
+
+	def fake_complete(messages, model, timeout_s=6.0):
+		return content
+
+	monkeypatch.setattr(tier2.llmio, "complete", fake_complete)
+
+	result = tier2.review(_delta(), [], _plan(), model="m")
+
+	assert result is not None
+	assert result.risk == "high"

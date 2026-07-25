@@ -26,6 +26,11 @@ def _run_git(args: list[str]) -> str:
 	return result.stdout
 
 
+def repo_root() -> str:
+	"""Absolute path to the repository top level, or "" if unavailable."""
+	return _run_git(["rev-parse", "--show-toplevel"]).strip()
+
+
 def staged_name_status() -> str:
 	"""Raw `git diff --cached --name-status -M` output."""
 	return _run_git(["diff", "--cached", "--name-status", "-M"])

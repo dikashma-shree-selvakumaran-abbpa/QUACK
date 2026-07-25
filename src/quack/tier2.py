@@ -12,10 +12,9 @@ treat that as "skip the AI section, do not crash".
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
-from . import llmio, testmap, tier1
+from . import jsonparse, llmio, testmap, tier1
 from .delta import StagedDelta
 from .llmio import LLMUnavailable
 from .tier1 import Finding
@@ -138,11 +137,7 @@ def _parse_and_validate(raw: str) -> ReviewResult | None:
 	Returns a :class:`ReviewResult` on success, ``None`` on any parse or
 	schema failure. Never raises.
 	"""
-	try:
-		data = json.loads(raw)
-	except (ValueError, TypeError):
-		return None
-
+	data = jsonparse.loads(raw)
 	if not isinstance(data, dict):
 		return None
 

@@ -33,6 +33,7 @@ from rich.box import ROUNDED
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
@@ -250,3 +251,53 @@ def _ai_group(ai, model: str) -> RenderableType | None:
 	for source in getattr(ai, "missing_tests", []) or []:
 		lines.append(Text(f"{source}: no test covers this change", style=_WARN))
 	return Group(*lines)
+
+
+# ---------------------------------------------------------------------------
+# The quack agent verdict.
+# ---------------------------------------------------------------------------
+
+
+def agent_report(result) -> None:
+	"""Render a ``quack agent`` verdict.
+
+	``result`` is duck-typed (``.summary``, ``.tests_run``, ``.failures`` with
+	``test``/``diagnosis``, ``.proposed_patch``, ``.proposed_new_tests``). A
+	proposed patch is shown as a diff-highlighted panel titled
+	``PROPOSED -- not applied``; the agent never writes files itself.
+	"""
+	console = _console()
+
+	console.print(Text(getattr(result, "summary", ""), style=_CLEAN))
+
+	tests_run = list(getattr(result, "tests_run", []) or [])
+	if tests_run:
+		console.print(Text("tests run:", style=_META))
+		for test in tests_run:
+			console.print(Text(f"  {test}", style=_CMD))
+
+	for failure in list(getattr(result, "failures", []) or []):
+		test = failure.get("test", "?")
+		diagnosis = failure.get("diagnosis", "")
+		console.print(Text(f"FAIL {test}", style=_BLOCK))
+		if diagnosis:
+			console.print(Text(f"  {diagnosis}"))
+
+	patch = getattr(result, "proposed_patch", None)
+	if patch:
+		syntax = Syntax(patch, "diff", theme="ansi_dark", word_wrap=True)
+		console.print(
+			Panel(
+				syntax,
+				box=ROUNDED,
+				title="PROPOSED -- not applied",
+				title_align="left",
+				padding=(0, 1),
+			)
+		)
+		console.print(Text("apply with: git apply <<'EOF' ... EOF", style=_META))
+
+	new_tests = getattr(result, "proposed_new_tests", None)
+	if new_tests:
+		console.print(Text("proposed new test(s):", style=_WARN))
+		console.print(Text(new_tests))
