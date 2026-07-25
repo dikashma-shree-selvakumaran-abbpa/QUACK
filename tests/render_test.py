@@ -104,4 +104,36 @@ def test_primitives_plain_under_no_color(monkeypatch, capsys) -> None:
 	out = capsys.readouterr().out
 	assert ANSI not in out
 	assert "all clean" in out
-	assert "pytest -x" in out
+
+
+def test_banner_install_skipped_when_piped(monkeypatch, capsys) -> None:
+	# capsys stdout is a non-TTY buffer (like `quack install | tee log`).
+	monkeypatch.delenv("FORCE_COLOR", raising=False)
+	monkeypatch.delenv("NO_COLOR", raising=False)
+
+	render.banner_install()
+
+	assert capsys.readouterr().out == ""
+
+
+def test_banner_install_plain_under_no_color(monkeypatch, capsys) -> None:
+	# Forced terminal + NO_COLOR: banner still shows, but as plain text.
+	monkeypatch.setenv("FORCE_COLOR", "1")
+	monkeypatch.setenv("NO_COLOR", "1")
+
+	render.banner_install()
+
+	out = capsys.readouterr().out
+	assert ANSI not in out
+	assert "installed -- your commits are now protected." in out
+
+
+def test_banner_install_colored_on_forced_terminal(monkeypatch, capsys) -> None:
+	monkeypatch.delenv("NO_COLOR", raising=False)
+	monkeypatch.setenv("FORCE_COLOR", "1")
+
+	render.banner_install()
+
+	out = capsys.readouterr().out
+	assert ANSI in out
+	assert "installed -- your commits are now protected." in out

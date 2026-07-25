@@ -132,6 +132,10 @@ def agent() -> None:
 @main.command()
 def model() -> None:
 	"""Inspect model configuration and connectivity (stub)."""
+	# TODO: when this stops being a stub, show render.banner_install() (or
+	# a dedicated banner) here too -- PAT/model setup is the moment a dev's
+	# commits become AI-powered, arguably a stronger celebration point than
+	# install itself.
 	render.metadata("quack model: not implemented yet")
 	sys.exit(0)
 
@@ -147,6 +151,7 @@ def install() -> None:
 		try:
 			subprocess.run(["pre-commit", "install"], check=True)
 			render.clean("quack: pre-commit hook installed")
+			render.banner_install()
 		except subprocess.CalledProcessError as exc:
 			render.warning(f"quack: `pre-commit install` failed ({exc.returncode})")
 	else:

@@ -61,22 +61,27 @@ _RISK_STYLES: dict[str, str] = {
 }
 
 
-def _console(stderr: bool = False) -> Console:
+def _console(stderr: bool = False, *, drop_terminal_on_no_color: bool = True) -> Console:
 	"""Build a Console honoring the current stdout, NO_COLOR and TTY state.
 
 	NO_COLOR is honored explicitly (not just delegated to rich) so it wins even
 	when a terminal is forced -- a piped or NO_COLOR run emits no ANSI codes
 	(rich's ``no_color`` only strips colors, so we also drop terminal mode to
 	suppress bold/dim attribute escapes).
+
+	``drop_terminal_on_no_color`` is disabled by the install banner, which uses
+	only color (no bold/dim) and must still detect a real TTY under NO_COLOR so
+	it can render as plain text instead of being skipped.
 	"""
 	no_color = bool(os.environ.get("NO_COLOR"))
+	force_terminal = False if (no_color and drop_terminal_on_no_color) else None
 	return Console(
 		stderr=stderr,
 		highlight=False,
 		soft_wrap=True,
 		emoji=False,
 		no_color=no_color,
-		force_terminal=False if no_color else None,
+		force_terminal=force_terminal,
 	)
 
 
@@ -113,6 +118,33 @@ def metadata(message: str) -> None:
 def info(message: str) -> None:
 	"""Print a plain informational line."""
 	_console().print(message)
+
+
+# ---------------------------------------------------------------------------
+# Install celebration banner (install command only).
+# ---------------------------------------------------------------------------
+
+_DUCK_WORDMARK = "\n".join(
+	[
+		r"    __       ___  _   _   _    ___ _  __",
+		r"  <(o )___  / _ \| | | | /_\  / __| |/ /",
+		r"   ( ._> /  | (_) | |_| |/ _ \| (__| ' <",
+		r"    `---'    \__\_\\___/_/ \_\\___|_|\_\\",
+	]
+)
+
+
+def banner_install() -> None:
+	"""Show the install celebration banner (yellow duck + QUACK wordmark).
+
+	Only the install command calls this. It is skipped entirely when stdout is
+	not a TTY (piped/redirected) and honors NO_COLOR (plain text, no ANSI).
+	"""
+	console = _console(drop_terminal_on_no_color=False)
+	if not console.is_terminal:
+		return
+	console.print(_DUCK_WORDMARK, style=_WARN)
+	console.print("installed -- your commits are now protected.")
 
 
 # ---------------------------------------------------------------------------
