@@ -137,7 +137,13 @@ def _run_tier2(
 	default=None,
 	help="Model id for the agent (overrides AIGUARD_MODEL env var).",
 )
-def agent(model: str | None) -> None:
+@click.option(
+	"--fly",
+	is_flag=True,
+	default=False,
+	help="Skip ahead: reveal the ready-to-apply patch instead of coaching.",
+)
+def agent(model: str | None, fly: bool) -> None:
 	"""Run the agentic pre-push analysis loop."""
 	if not os.environ.get("GITHUB_TOKEN"):
 		render.metadata("quack agent: needs GITHUB_TOKEN, none found")
@@ -155,7 +161,7 @@ def agent(model: str | None) -> None:
 
 	resolved_model = _resolve_agent_model(model)
 	result = agent_mod.run(delta.raw_diff, Path(root), resolved_model)
-	render.agent_report(result)
+	render.agent_report(result, fly=fly)
 	sys.exit(0)
 
 

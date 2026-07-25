@@ -258,13 +258,17 @@ def _ai_group(ai, model: str) -> RenderableType | None:
 # ---------------------------------------------------------------------------
 
 
-def agent_report(result) -> None:
+def agent_report(result, fly: bool = False) -> None:
 	"""Render a ``quack agent`` verdict.
 
 	``result`` is duck-typed (``.summary``, ``.tests_run``, ``.failures`` with
-	``test``/``diagnosis``, ``.proposed_patch``, ``.proposed_new_tests``). A
-	proposed patch is shown as a diff-highlighted panel titled
-	``PROPOSED -- not applied``; the agent never writes files itself.
+	``test``/``diagnosis``, ``.proposed_patch``, ``.proposed_new_tests``).
+
+	The Duck Way: coaching over crutches -- understanding is the default
+	(waddle), the patch is opt-in via ``--fly``. By default the summary and
+	failure diagnoses are shown, but the ready-to-paste patch is withheld
+	behind a dim hint. With ``fly=True`` the full ``PROPOSED -- not applied``
+	diff panel and ``git apply`` hint are revealed after the diagnosis.
 	"""
 	console = _console()
 
@@ -285,17 +289,26 @@ def agent_report(result) -> None:
 
 	patch = getattr(result, "proposed_patch", None)
 	if patch:
-		syntax = Syntax(patch, "diff", theme="ansi_dark", word_wrap=True)
-		console.print(
-			Panel(
-				syntax,
-				box=ROUNDED,
-				title="PROPOSED -- not applied",
-				title_align="left",
-				padding=(0, 1),
+		if fly:
+			syntax = Syntax(patch, "diff", theme="ansi_dark", word_wrap=True)
+			console.print(
+				Panel(
+					syntax,
+					box=ROUNDED,
+					title="PROPOSED -- not applied",
+					title_align="left",
+					padding=(0, 1),
+				)
 			)
-		)
-		console.print(Text("apply with: git apply <<'EOF' ... EOF", style=_META))
+			console.print(Text("apply with: git apply <<'EOF' ... EOF", style=_META))
+		else:
+			console.print(
+				Text(
+					"A proposed fix is available. Try fixing it yourself from the "
+					"diagnosis above, or run `quack agent --fly` to see the patch.",
+					style=_META,
+				)
+			)
 
 	new_tests = getattr(result, "proposed_new_tests", None)
 	if new_tests:

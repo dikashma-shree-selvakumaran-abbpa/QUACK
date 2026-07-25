@@ -105,3 +105,70 @@ def test_primitives_plain_under_no_color(monkeypatch, capsys) -> None:
 	assert ANSI not in out
 	assert "all clean" in out
 	assert "pytest -x" in out
+
+
+def _agent_result_with_patch() -> SimpleNamespace:
+	return SimpleNamespace(
+		summary="1 test failing",
+		tests_run=["pytest tests/test_transform.py"],
+		failures=[
+			{
+				"test": "tests/test_transform.py::test_scale",
+				"diagnosis": "off-by-one in the boundary check",
+			}
+		],
+		proposed_patch="--- a/src/transform.py\n+++ b/src/transform.py\n@@\n-    if x > n:\n+    if x >= n:",
+		proposed_new_tests=None,
+	)
+
+
+def test_agent_report_default_coaches_and_hides_patch(monkeypatch, capsys) -> None:
+	monkeypatch.delenv("NO_COLOR", raising=False)
+	monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+	render.agent_report(_agent_result_with_patch())
+
+	out = capsys.readouterr().out
+	# Understanding is always shown.
+	assert "off-by-one in the boundary check" in out
+	# Coaching hint appears, patch content does not.
+	assert "run `quack agent --fly`" in out
+	assert "if x >= n" not in out
+	assert "PROPOSED -- not applied" not in out
+	assert "git apply" not in out
+
+
+def test_agent_report_fly_reveals_patch(monkeypatch, capsys) -> None:
+	monkeypatch.delenv("NO_COLOR", raising=False)
+	monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+	render.agent_report(_agent_result_with_patch(), fly=True)
+
+	out = capsys.readouterr().out
+	# Understanding still shown in fly mode.
+	assert "off-by-one in the boundary check" in out
+	# Patch and apply hint are revealed; coaching line is not.
+	assert "if x >= n" in out
+	assert "PROPOSED -- not applied" in out
+	assert "git apply" in out
+	assert "run `quack agent --fly`" not in out
+
+
+def test_agent_report_no_patch_shows_no_patch_line(monkeypatch, capsys) -> None:
+	monkeypatch.delenv("NO_COLOR", raising=False)
+	monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+	result = SimpleNamespace(
+		summary="all green",
+		tests_run=["pytest tests/test_transform.py"],
+		failures=[{"test": "tests/test_transform.py::test_scale", "diagnosis": "flaky ordering"}],
+		proposed_patch=None,
+		proposed_new_tests=None,
+	)
+
+	for fly in (False, True):
+		render.agent_report(result, fly=fly)
+		out = capsys.readouterr().out
+		assert "flaky ordering" in out
+		assert "run `quack agent --fly`" not in out
+		assert "PROPOSED -- not applied" not in out
