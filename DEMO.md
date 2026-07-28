@@ -95,13 +95,17 @@ lives in git itself, not the editor.
 First the celebration banner:
 
 ```
-╭──────────────────── QUACK ────────────────────╮
-│    _      _      ___  _   _   _    ___ _  __    │
-│   ( `-.  ( `-.  / _ \| | | | / \  / __| |/ /    │
-│    `-. \  `-. \| |_| | |_| |/ _ \| |  | ' <     │
-│   __.-'/__.-'/  \__\_\\___//_/ \_\\__||_|\_\    │
-│  (__.-'(__.-'    Q  U  A  C  K   -   installed  │
-╰──────── your commits just got a quality gate ──╯
+╭───────────────────── QUACK ─────────────────────╮
+│              _                                   │
+│        >(.)__                                    │
+│         (___/    quack!                          │
+│                                                  │
+│     ___  _   _   _    ___ _  __                   │
+│    / _ \| | | | / \  / __| |/ /                   │
+│   | |_| | |_| |/ _ \| |  | ' <                    │
+│    \__\_\\___//_/ \_\\__||_|\_\                   │
+│          Q  U  A  C  K   -   installed           │
+╰──────── your commits just got a quality gate ────╯
 ```
 
 Then the status lines:
