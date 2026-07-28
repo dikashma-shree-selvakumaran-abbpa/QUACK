@@ -172,3 +172,23 @@ def test_redact_noop_without_secret_findings() -> None:
 	delta = _delta("src/ui.js", _hunk("console.log('here')"))
 	findings = tier1.run(delta)
 	assert tier1.redact(delta, findings) is delta
+
+
+def test_allowlisted_locations_reports_marked_lines() -> None:
+	delta = _delta(
+		"src/config.py",
+		_hunk(
+			"clean = 1",
+			"secret = 'x'  # quack: allow",
+			"other = 'y'  # pragma: allowlist secret",
+		),
+	)
+	assert tier1.allowlisted_locations(delta) == {
+		("src/config.py", 2),
+		("src/config.py", 3),
+	}
+
+
+def test_allowlisted_locations_empty_without_markers() -> None:
+	delta = _delta("src/config.py", _hunk("clean = 1", "still_clean = 2"))
+	assert tier1.allowlisted_locations(delta) == set()

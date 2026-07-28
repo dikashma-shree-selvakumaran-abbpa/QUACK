@@ -29,6 +29,7 @@ from . import (
 )
 from .llmio import LLMUnavailable
 from .tier1 import Finding, Tier1Config
+from .tier1 import allowlisted_locations
 from .tier1 import run as tier1_run
 from .tier1 import should_block
 
@@ -66,7 +67,13 @@ def check(model: str | None) -> None:
 	# Optional power mode: layer gitleaks' rules on top when it is installed.
 	# Fully fail-open -- returns [] when gitleaks is unavailable or errors.
 	if not os.environ.get("QUACK_DISABLE_GITLEAKS"):
-		findings = gitleaks.merge(findings, gitleaks.scan_staged(os.getcwd()))
+		external = gitleaks.scan_staged(os.getcwd())
+		# Honour the same inline allowlist quack's built-ins use, so one
+		# `# quack: allow` marker suppresses gitleaks on that line too.
+		external = gitleaks.filter_allowlisted(
+			external, allowlisted_locations(delta)
+		)
+		findings = gitleaks.merge(findings, external)
 
 	blocked = should_block(findings, block_on=("secrets", "merge_markers"))
 

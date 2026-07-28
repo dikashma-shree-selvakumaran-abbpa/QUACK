@@ -120,7 +120,8 @@ API_KEY = "AKIA...example..."  # quack: allow
 API_KEY = "AKIA...example..."  # pragma: allowlist secret
 ```
 
-That line is skipped for all Tier 1 checks.
+That line is skipped for **all** scanners -- quack's built-in Tier 1 checks
+*and* the gitleaks power mode below. One marker, one line, both silenced.
 
 ## gitleaks power mode (auto-installed)
 

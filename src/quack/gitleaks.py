@@ -176,6 +176,20 @@ def _parse_report(raw: str) -> list[Finding]:
 	return findings
 
 
+def filter_allowlisted(
+	findings: list[Finding], allowlisted: set[tuple[str, int]]
+) -> list[Finding]:
+	"""Drop gitleaks findings on lines carrying an inline allow marker.
+
+	Uses the same ``(path, line)`` allowlist that quack's built-in checks
+	honour (see :func:`quack.tier1.allowlisted_locations`), so a single
+	``# quack: allow`` comment suppresses both scanners on that line.
+	"""
+	if not allowlisted:
+		return findings
+	return [f for f in findings if (f.path, f.line) not in allowlisted]
+
+
 def merge(
 	builtin: list[Finding], external: list[Finding]
 ) -> list[Finding]:

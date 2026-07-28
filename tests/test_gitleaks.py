@@ -54,6 +54,22 @@ def test_merge_with_empty_external_is_identity() -> None:
 	assert gitleaks.merge(builtin, []) == builtin
 
 
+def test_filter_allowlisted_drops_matching_lines() -> None:
+	external = [
+		Finding("secrets", "error", "a.py", 3, "gitleaks: stripe-access-token"),
+		Finding("secrets", "error", "b.py", 7, "gitleaks: gcp-api-key"),
+	]
+	# a.py:3 is allowlisted; b.py:7 is not.
+	kept = gitleaks.filter_allowlisted(external, {("a.py", 3)})
+	assert len(kept) == 1
+	assert kept[0].path == "b.py"
+
+
+def test_filter_allowlisted_empty_set_is_identity() -> None:
+	external = [Finding("secrets", "error", "a.py", 3, "gitleaks: x")]
+	assert gitleaks.filter_allowlisted(external, set()) == external
+
+
 def test_ensure_installed_noop_when_present(monkeypatch) -> None:
 	monkeypatch.setattr(gitleaks, "available", lambda: True)
 	installed, message = gitleaks.ensure_installed()

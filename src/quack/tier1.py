@@ -122,6 +122,38 @@ def run(delta: StagedDelta, config: Tier1Config | None = None) -> list[Finding]:
 	return findings
 
 
+def allowlisted_locations(delta: StagedDelta) -> set[tuple[str, int]]:
+	"""Return the ``(path, line)`` of every added line carrying an allow marker.
+
+	This is the single source of truth for the inline allowlist. Both quack's
+	built-in checks and the optional gitleaks layer consult it, so one
+	``# quack: allow`` (or ``pragma: allowlist secret``) comment suppresses a
+	finding on that line regardless of which scanner produced it.
+	"""
+	locations: set[tuple[str, int]] = set()
+	for file in delta.files:
+		if file.binary:
+			continue
+		for hunk in file.hunks:
+			lines = hunk.split("\n")
+			header = _HUNK_HEADER.match(lines[0]) if lines else None
+			if header is None:
+				continue
+			current = int(header.group(1))
+			for line in lines[1:]:
+				if line.startswith("+++") or line.startswith("---"):
+					continue
+				if line.startswith("+"):
+					if _ALLOW_MARKER.search(line[1:]):
+						locations.add((file.path, current))
+					current += 1
+				elif line.startswith("-") or line.startswith("\\"):
+					continue
+				else:
+					current += 1
+	return locations
+
+
 def should_block(
 	findings: list[Finding], block_on: tuple[str, ...] | list[str]
 ) -> bool:
