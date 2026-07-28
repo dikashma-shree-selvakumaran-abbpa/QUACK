@@ -85,7 +85,7 @@ Pinned to a published remote (what `quack install` writes):
 
 ```yaml
 repos:
-  - repo: https://github.com/your-org/quack   # replace with your remote
+  - repo: https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK
 	rev: v0.1.0                                # a real git tag
 	hooks:
 	  - id: quack
