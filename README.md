@@ -17,11 +17,46 @@ commit time and decides whether they are safe -- fast, offline, and fail-safe.
 
 ## Install
 
-```bash
+quack is pure Python and runs anywhere Python 3.11+ does. Pick your platform.
+
+### Windows (PowerShell)
+
+```powershell
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1     # Windows (PowerShell)
-# source .venv/bin/activate      # macOS/Linux
+.\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
+```
+
+### macOS / Linux (bash/zsh)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+## Platform support
+
+quack is cross-platform: no shell-outs with `shell=True`, no hardcoded paths,
+and every subprocess call uses portable argument lists.
+
+| Feature | Windows | macOS | Linux |
+|---------|---------|-------|-------|
+| Tier 1 checks (secrets, merge markers, debug code) | ? | ? | ? |
+| pre-commit hook | ? | ? | ? |
+| Tier 2 AI review | ? | ? | ? |
+| quack agent | ? | ? | ? |
+| gitleaks **auto**-install | via `winget` | via `brew` | via `brew` if present |
+
+On Linux without Homebrew, `quack install` can't auto-install gitleaks, so
+install it once by hand — quack still runs fully on its built-in patterns
+regardless (fail-open):
+
+```bash
+# Debian/Ubuntu example (see gitleaks releases for other distros)
+curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz \
+  | sudo tar -xz -C /usr/local/bin gitleaks
+gitleaks version
 ```
 
 Confirm:

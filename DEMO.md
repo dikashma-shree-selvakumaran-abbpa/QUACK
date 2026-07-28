@@ -37,7 +37,10 @@ quack --help                     # confirm it's on PATH
 ```
 
 gitleaks is **auto-installed** by `quack install` (via winget on Windows,
-brew on macOS/Linux). No manual step needed.
+brew on macOS/Linux). On Linux without Homebrew, install gitleaks once by hand
+(see the README "Platform support" section) — quack still runs on its built-in
+patterns regardless. The `pipx`/`quack` commands above are identical on Windows,
+macOS, and Linux.
 
 ---
 
