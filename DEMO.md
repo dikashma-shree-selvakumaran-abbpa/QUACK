@@ -22,9 +22,9 @@ commit lands.
 - **quack agent — agentic pre-push loop.** Investigates, runs tests, and coaches
   (patch is opt-in via `--fly`).
 
-> Honest note on the install banner: **there is no ASCII-art banner today.**
-> `quack install` prints clean status lines (see §3). If you want a wordmark
-> banner for the demo, that's a quick add — see §9.
+> `quack install` opens with a **celebration ASCII banner** (duck + `QUACK`
+> wordmark), then clean status lines (see §3). It's TTY/NO_COLOR-aware, so CI
+> logs stay plain.
 
 ---
 
@@ -92,6 +92,20 @@ lives in git itself, not the editor.
 
 ## 3. What `quack install` prints (live, verified)
 
+First the celebration banner:
+
+```
+╭──────────────────── QUACK ────────────────────╮
+│    _      _      ___  _   _   _    ___ _  __    │
+│   ( `-.  ( `-.  / _ \| | | | / \  / __| |/ /    │
+│    `-. \  `-. \| |_| | |_| |/ _ \| |  | ' <     │
+│   __.-'/__.-'/  \__\_\\___//_/ \_\\__||_|\_\    │
+│  (__.-'(__.-'    Q  U  A  C  K   -   installed  │
+╰──────── your commits just got a quality gate ──╯
+```
+
+Then the status lines:
+
 ```
 quack: updated .pre-commit-config.yaml
 pre-commit installed at .git\hooks\pre-commit
@@ -99,8 +113,8 @@ quack: pre-commit hook installed
 quack: gitleaks already installed
 ```
 
-If gitleaks isn't present, the last line becomes a best-effort install attempt.
-This is all plain status text — **not** an ASCII banner.
+The banner is TTY/NO_COLOR-aware (rich drops ANSI when piped or `NO_COLOR` is
+set). If gitleaks isn't present, the last line becomes a best-effort install.
 
 ---
 
@@ -222,27 +236,114 @@ the commit proceeds.
 
 ---
 
-## 8. quack agent (pre-push, optional advanced demo)
+## 8. quack agent — the agentic pre-push brain (full catalog)
 
-```powershell
-$env:GITHUB_TOKEN = "<your token>"
-quack agent            # investigates staged/pushed changes, runs tests, coaches
-quack agent --fly      # also proposes a concrete patch
+`quack check` is the fast, deterministic commit gate. `quack agent` is the
+**investigative pre-push loop**: instead of pattern-matching, it *reasons about
+your diff, reads the relevant code, runs the right tests, and diagnoses root
+causes* — then either coaches you or hands you a ready patch.
+
+### 8.1 What it actually does (the loop)
+
+```
+diff → hypothesis → read code → run smallest test set → diagnose → JSON verdict
 ```
 
-Requires a `GITHUB_TOKEN` and a git repo. Without a token it prints a clear
-"needs GITHUB_TOKEN" message and exits cleanly.
+It is a **plain, inspectable tool-calling loop** (no agent framework). The model
+gets exactly three **read-only** tools and must investigate, not guess:
+
+| Tool | What it does | Guardrail |
+|------|--------------|-----------|
+| `read_file(path)` | Returns first 300 lines of a repo file | Path must resolve **inside** the repo — `..`/absolute paths are rejected |
+| `list_dir(path)` | Lists entry names of a repo directory | Same path containment |
+| `run_tests(project_or_paths)` | Runs pytest files **or** a C# `.csproj [--filter ...]` | Only the two whitelisted shapes; C# `--filter` is validated against a strict charset — no shell metacharacters |
+
+### 8.2 Hard safety invariants (great to show a security-minded audience)
+
+- **Path containment** — the agent can never read outside the repo root. Escapes
+  return an error string; a tool never raises.
+- **Command whitelist** — the *only* thing it can execute is tests, in exactly
+  two shapes (`quack.runio`). No arbitrary commands, ever.
+- **Budgets** — at most **8 iterations**, at most **2 `run_tests` calls**, and a
+  **180-second** wall-clock cap. When the budget runs out, a final answer is
+  *forced* from the evidence already gathered.
+- **Never crashes** — malformed final JSON is retried once, then degrades to a
+  clear message. An honest "unverified" beats a confident guess.
+- **Ground-truth reconciliation** — the model's verdict is cross-checked against
+  the *actual* test exit codes, so it can't claim "tests pass" if they failed.
+
+### 8.3 Two modes: coach (default) vs. fly
+
+```powershell
+$env:GITHUB_TOKEN = "<your github models token>"
+
+quack agent          # THE DUCK WAY: diagnosis + understanding, patch withheld
+quack agent --fly    # SKIP AHEAD: also reveals the ready-to-apply patch
+```
+
+- **Default (coaching)** — shows the summary, which tests ran, and a root-cause
+  diagnosis of any failure, but *withholds the patch* so you learn the fix.
+- **`--fly`** — reveals a minimal unified-diff patch fixing the root cause, plus
+  a proposed missing test when a changed behavior has none.
+
+### 8.4 The verdict schema (what it always returns)
+
+```json
+{
+  "summary": "one-line risk assessment",
+  "tests_run": ["tests/test_payments.py"],
+  "failures": [{"test": "test_refund", "diagnosis": "root cause + which diff line"}],
+  "proposed_patch": "unified diff (shown only with --fly)",
+  "proposed_new_tests": "test source for uncovered behavior"
+}
+```
+
+### 8.5 Real-life agent scenarios to demo
+
+| Scenario | What the agent does | What you see |
+|----------|--------------------|--------------|
+| **You changed a function with existing tests** | Reads the function + its test, runs that test file | "verified: tests/test_x.py passes" — safe to push |
+| **You introduced a regression** | Runs the test, it fails, agent traces it to the exact changed line | root-cause diagnosis; `--fly` gives the fix patch |
+| **You added new behavior with NO test** | Notices the coverage gap | proposes a concrete new test in `proposed_new_tests` |
+| **C# project change** | Runs `dotnet test <csproj> --filter <TestName>` | scoped test run, no full-suite wait |
+| **Ambiguous / big diff** | Investigates within budget, then stops | honest "verified X, unknown Y, check Z manually" |
+| **No `GITHUB_TOKEN`** | Skips cleanly | "quack agent: needs GITHUB_TOKEN, none found", exit 0 |
+| **Not a git repo / nothing staged** | Exits gracefully | clear metadata line, exit 0 |
+
+### 8.6 Agent edge cases (for the catalog)
+
+| Edge case | Behavior | Why |
+|-----------|----------|-----|
+| Model asks to read `../../etc/passwd` | Tool returns an error string, loop continues | Path containment invariant |
+| Model tries to "run" a non-test command | Not possible — only `run_tests` exists | Command whitelist |
+| Model loops without concluding | Forced final answer after 8 iters / 180s | Budget cap |
+| Model claims "all pass" but a test failed | Verdict reconciled against real exit codes | Ground-truth cross-check |
+| Model returns junk instead of JSON | Retried once, then clean degrade | Tier 2 retry pattern |
+| Test runner itself errors | Returns `(exit_code, output)`, never raises | `runio` is failure-tolerant |
+
+### 8.7 Where check vs. agent fit
+
+| | `quack check` | `quack agent` |
+|--|--------------|----------------|
+| **When** | every commit (pre-commit) | before push (manual / pre-push) |
+| **Speed** | milliseconds, offline | seconds, needs a token |
+| **Blocking?** | Yes (Tier 1) | No — advisory |
+| **Method** | deterministic patterns | reasoning + running tests |
+| **Best at** | secrets, merge markers, debug code | regressions, missing tests, root causes |
 
 ---
 
-## 9. Suggested demo script (5 minutes)
+## 9. Suggested demo script (7 minutes)
 
-1. `quack install --local` in a sample repo — show the status lines.
+1. `quack install --local` in a sample repo — show the **celebration banner** +
+   status lines.
 2. Stage `demo_secrets.py` → `quack check` → **BLOCKED** panel + `🐤 QUACK!!!!`.
 3. Add `# quack: allow` to one line → `quack check` → that finding disappears.
 4. Fix the rest → `quack check` → green "commit allowed".
-5. Try `git commit` normally → hook fires automatically (same result, no manual
-   `quack check`).
+5. Try `git commit` normally → hook fires automatically (no manual `quack check`).
+6. Introduce a regression in a tested function → `quack agent` → watch it read
+   the code, run the test, and diagnose the root cause (coaching mode).
+7. `quack agent --fly` → reveal the ready-to-apply patch + proposed test.
 6. (Optional) bury a secret on line 42 of a big file → show precise line report.
 
 ---

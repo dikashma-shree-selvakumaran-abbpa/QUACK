@@ -117,6 +117,40 @@ def info(message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Install celebration banner.
+# ---------------------------------------------------------------------------
+
+# A small duck + QUACK wordmark. Kept ASCII-only so it renders in every
+# terminal/codepage; color is applied by rich (and stripped under NO_COLOR).
+_BANNER_ART = r"""
+   _      _      ___  _   _   _    ___ _  __
+  ( `-.  ( `-.  / _ \| | | | / \  / __| |/ /
+   `-. \  `-. \| |_| | |_| |/ _ \| |  | ' <
+  __.-'/__.-'/  \__\_\\___//_/ \_\\__||_|\_\
+ (__.-'(__.-'    Q  U  A  C  K   -   installed
+""".strip("\n")
+
+
+def install_banner() -> None:
+	"""Print the one-time install celebration banner.
+
+	TTY/NO_COLOR-aware: rich drops all ANSI codes when piped or when NO_COLOR
+	is set, so CI logs stay clean. Purely cosmetic; never affects exit codes.
+	"""
+	console = _console()
+	console.print(
+		Panel(
+			Text(_BANNER_ART, style=f"bold {_CLEAN}", justify="left"),
+			box=ROUNDED,
+			border_style=_CMD,
+			title="[bold]QUACK[/bold]",
+			subtitle="your commits just got a quality gate",
+			padding=(0, 2),
+		)
+	)
+
+
+# ---------------------------------------------------------------------------
 # The quack check verdict panel.
 # ---------------------------------------------------------------------------
 

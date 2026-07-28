@@ -200,3 +200,19 @@ def test_quack_alarm_absent_when_not_blocked(capsys) -> None:
 		blocked=False,
 	)
 	assert "QUACK!!!!" not in capsys.readouterr().out
+
+
+def test_install_banner_prints_wordmark(capsys) -> None:
+	render.install_banner()
+	out = capsys.readouterr().out
+	assert "QUACK" in out
+	assert "quality gate" in out
+
+
+def test_install_banner_no_ansi_under_no_color(monkeypatch, capsys) -> None:
+	monkeypatch.setenv("FORCE_COLOR", "1")
+	monkeypatch.setenv("NO_COLOR", "1")
+	render.install_banner()
+	out = capsys.readouterr().out
+	assert ANSI not in out
+	assert "QUACK" in out

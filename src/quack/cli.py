@@ -204,6 +204,7 @@ def model() -> None:
 )
 def install(use_local: bool) -> None:
 	"""Add the quack stanza to .pre-commit-config.yaml and install the hook."""
+	render.install_banner()
 	config_path = Path(".pre-commit-config.yaml")
 	if use_local:
 		_upsert_local_stanza(config_path)
