@@ -18,7 +18,15 @@ from pathlib import Path
 import click
 import yaml
 
-from . import __version__, agent as agent_mod, gitio, render, testmap, tier2
+from . import (
+	__version__,
+	agent as agent_mod,
+	gitio,
+	gitleaks,
+	render,
+	testmap,
+	tier2,
+)
 from .llmio import LLMUnavailable
 from .tier1 import Finding, Tier1Config
 from .tier1 import run as tier1_run
@@ -54,6 +62,12 @@ def check(model: str | None) -> None:
 
 	# Tier 1: deterministic checks (offline, always run).
 	findings = tier1_run(delta, Tier1Config())
+
+	# Optional power mode: layer gitleaks' rules on top when it is installed.
+	# Fully fail-open -- returns [] when gitleaks is unavailable or errors.
+	if not os.environ.get("QUACK_DISABLE_GITLEAKS"):
+		findings = gitleaks.merge(findings, gitleaks.scan_staged(os.getcwd()))
+
 	blocked = should_block(findings, block_on=("secrets", "merge_markers"))
 
 	if blocked:
@@ -173,10 +187,21 @@ def model() -> None:
 
 
 @main.command()
-def install() -> None:
+@click.option(
+	"--local",
+	"use_local",
+	is_flag=True,
+	default=False,
+	help="Wire quack via a `repo: local` stanza using the installed `quack` "
+	"command (works without a published quack repo).",
+)
+def install(use_local: bool) -> None:
 	"""Add the quack stanza to .pre-commit-config.yaml and install the hook."""
 	config_path = Path(".pre-commit-config.yaml")
-	_upsert_precommit_stanza(config_path)
+	if use_local:
+		_upsert_local_stanza(config_path)
+	else:
+		_upsert_precommit_stanza(config_path)
 	render.clean(f"quack: updated {config_path}")
 
 	if shutil.which("pre-commit"):
@@ -188,7 +213,54 @@ def install() -> None:
 	else:
 		render.warning("quack: `pre-commit` not found; skipping hook install")
 		render.metadata("  install it with: pipx install pre-commit")
+
+	# One-time power-mode bootstrap: get gitleaks on this machine so every
+	# later commit benefits automatically. Best-effort and never fatal.
+	installed, message = gitleaks.ensure_installed()
+	if installed:
+		render.clean(f"quack: {message}")
+	else:
+		render.warning(f"quack: gitleaks power mode unavailable - {message}")
 	sys.exit(0)
+
+
+def _upsert_local_stanza(config_path: Path) -> None:
+	"""Insert or update a `repo: local` quack stanza.
+
+	Uses the `quack` command already on PATH (``language: system``), so no
+	published quack repository or git tag is required -- ideal for trying quack
+	in any project on this machine.
+	"""
+	if config_path.exists():
+		data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+	else:
+		data = {}
+
+	repos = data.setdefault("repos", [])
+	hook = {
+		"id": "quack",
+		"name": "quack",
+		"entry": "quack check",
+		"language": "system",
+		"pass_filenames": False,
+		"stages": ["pre-commit"],
+	}
+
+	for repo in repos:
+		if isinstance(repo, dict) and repo.get("repo") == "local":
+			hooks = repo.setdefault("hooks", [])
+			if not any(
+				isinstance(h, dict) and h.get("id") == "quack" for h in hooks
+			):
+				hooks.append(hook)
+			break
+	else:
+		repos.append({"repo": "local", "hooks": [hook]})
+
+	config_path.write_text(
+		yaml.safe_dump(data, sort_keys=False, default_flow_style=False),
+		encoding="utf-8",
+	)
 
 
 def _upsert_precommit_stanza(config_path: Path) -> None:

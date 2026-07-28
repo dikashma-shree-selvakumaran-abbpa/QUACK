@@ -40,6 +40,32 @@ def test_secrets_aws_akia_key() -> None:
 	assert any(f.check == "secrets" for f in findings)
 
 
+def test_secrets_azure_devops_pat() -> None:
+	# A bare 52-char base32 Azure DevOps PAT (no keyword nearby).
+	pat = "a" * 52
+	delta = _delta("src/ado.py", _hunk(f"pat = {pat}"))
+	findings = tier1.run(delta)
+	assert [f.check for f in findings] == ["secrets"]
+	assert findings[0].message == "Azure DevOps PAT"
+
+
+def test_inline_allowlist_suppresses_findings() -> None:
+	# A real secret on a line carrying the allowlist marker is skipped.
+	delta = _delta(
+		"src/aws.py",
+		_hunk('KEY = "AKIA1234567890ABCDEF"  # quack: allow'),
+	)
+	assert tier1.run(delta) == []
+
+
+def test_inline_allowlist_pragma_convention() -> None:
+	delta = _delta(
+		"src/aws.py",
+		_hunk('KEY = "AKIA1234567890ABCDEF"  # pragma: allowlist secret'),
+	)
+	assert tier1.run(delta) == []
+
+
 def test_merge_markers() -> None:
 	delta = _delta(
 		"src/app.py",

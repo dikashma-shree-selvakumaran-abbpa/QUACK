@@ -172,3 +172,31 @@ def test_agent_report_no_patch_shows_no_patch_line(monkeypatch, capsys) -> None:
 		assert "flaky ordering" in out
 		assert "run `quack agent --fly`" not in out
 		assert "PROPOSED -- not applied" not in out
+
+
+def test_quack_alarm_lists_blocking_lines(capsys) -> None:
+	render.report(
+		files=1,
+		added=4,
+		removed=0,
+		findings=[_finding("error")],
+		plan=None,
+		ai=None,
+		blocked=True,
+	)
+	out = capsys.readouterr().out
+	assert "QUACK!!!!" in out
+	assert "#12" in out
+
+
+def test_quack_alarm_absent_when_not_blocked(capsys) -> None:
+	render.report(
+		files=1,
+		added=4,
+		removed=0,
+		findings=[_finding("warn")],
+		plan=None,
+		ai=None,
+		blocked=False,
+	)
+	assert "QUACK!!!!" not in capsys.readouterr().out

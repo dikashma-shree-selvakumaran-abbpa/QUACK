@@ -69,6 +69,12 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 		"GitHub token",
 		re.compile(r"(?:gh[posur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
 	),
+	(
+		# Azure DevOps PATs are 52-char base32 (lowercase a-z + digits 2-7).
+		# Word boundaries keep false positives low against source identifiers.
+		"Azure DevOps PAT",
+		re.compile(r"\b[a-z2-7]{52}\b"),
+	),
 	("Slack token", re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}")),
 	(
 		"hardcoded credential",
@@ -81,6 +87,15 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 _MERGE_MARKER = re.compile(r"^(?:<{7}|={7}|>{7})")
 
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+# Inline allowlist: a line carrying one of these markers is skipped entirely,
+# giving developers a clean escape hatch for a known false positive instead
+# of resorting to `git commit --no-verify`. Compatible with the common
+# detect-secrets `pragma: allowlist secret` convention.
+_ALLOW_MARKER = re.compile(
+	r"quack:\s*allow|pragma:\s*allowlist secret",
+	re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +190,10 @@ def _scan_hunk(path: str, hunk: str) -> list[Finding]:
 
 def _scan_added_line(path: str, line: int, content: str) -> list[Finding]:
 	findings: list[Finding] = []
+
+	# An explicit inline allowlist marker suppresses every check on this line.
+	if _ALLOW_MARKER.search(content):
+		return findings
 
 	secret = _match_secret(content)
 	if secret is not None:

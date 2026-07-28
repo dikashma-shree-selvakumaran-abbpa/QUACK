@@ -151,6 +151,7 @@ def report(
 	sections: list[RenderableType] = []
 	for section in (
 		_findings_table(findings),
+		_quack_alarm(findings, blocked),
 		_guidance_group(plan),
 		_ai_group(ai, model),
 	):
@@ -167,8 +168,8 @@ def report(
 
 	title = f"quack - {files} file(s) - +{added}/-{removed} - {duration}s"
 	if blocked:
-		# The duck emoji is permitted ONLY on the blocked banner.
-		subtitle = Text("\U0001f986 BLOCKED - fix and re-stage", style="bold red")
+		# The chick emoji is permitted ONLY on the blocked banner.
+		subtitle = Text("\U0001f424 BLOCKED - fix and re-stage", style="bold red")
 	else:
 		subtitle = Text("advisory: commit allowed", style=_META)
 
@@ -203,6 +204,21 @@ def _findings_table(findings) -> RenderableType | None:
 			Text(finding.message),
 		)
 	return table
+
+
+def _quack_alarm(findings, blocked: bool) -> RenderableType | None:
+	"""A loud, quacky call-out of the exact lines that blocked the commit."""
+	if not blocked:
+		return None
+	lines = [
+		str(f.line)
+		for f in (findings or [])
+		if getattr(f, "severity", "") == "error" and getattr(f, "line", 0)
+	]
+	if not lines:
+		return None
+	where = ", ".join(f"#{n}" for n in lines)
+	return Text(f"\U0001f424 QUACK!!!! check line {where}", style="bold yellow")
 
 
 def _guidance_group(plan) -> RenderableType | None:
