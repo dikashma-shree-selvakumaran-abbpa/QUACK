@@ -33,7 +33,7 @@ from .tier1 import allowlisted_locations
 from .tier1 import run as tier1_run
 from .tier1 import should_block
 
-QUACK_REPO_URL = "https://github.com/your-org/quack"
+QUACK_REPO_URL = "https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK"
 
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 
@@ -52,7 +52,7 @@ def main() -> None:
 @click.option(
 	"--model",
 	default=None,
-	help="Model id for Tier 2 (overrides AIGUARD_MODEL env var).",
+	help="Model id for Tier 2 (overrides QUACK_MODEL env var).",
 )
 def check(model: str | None) -> None:
 	"""Run the pre-commit quality checks on staged changes."""
@@ -117,13 +117,13 @@ def check(model: str | None) -> None:
 
 
 def _resolve_model(cli_model: str | None) -> str:
-	"""--model option > AIGUARD_MODEL env var > default."""
-	return cli_model or os.environ.get("AIGUARD_MODEL") or DEFAULT_MODEL
+	"""--model option > QUACK_MODEL env var > default."""
+	return cli_model or os.environ.get("QUACK_MODEL") or DEFAULT_MODEL
 
 
 def _resolve_agent_model(cli_model: str | None) -> str:
-	"""--model option > AIGUARD_MODEL env var > agent default."""
-	return cli_model or os.environ.get("AIGUARD_MODEL") or DEFAULT_AGENT_MODEL
+	"""--model option > QUACK_MODEL env var > agent default."""
+	return cli_model or os.environ.get("QUACK_MODEL") or DEFAULT_AGENT_MODEL
 
 
 def _run_tier2(
@@ -156,7 +156,7 @@ def _run_tier2(
 @click.option(
 	"--model",
 	default=None,
-	help="Model id for the agent (overrides AIGUARD_MODEL env var).",
+	help="Model id for the agent (overrides QUACK_MODEL env var).",
 )
 @click.option(
 	"--fly",

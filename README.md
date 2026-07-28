@@ -153,7 +153,7 @@ export GITHUB_TOKEN=your_token    # bash
 ```
 
 Without a token, Tier 2 skips (fail-open). Override the model with `--model` or
-the `AIGUARD_MODEL` env var.
+the `QUACK_MODEL` env var.
 
 ## Development
 
