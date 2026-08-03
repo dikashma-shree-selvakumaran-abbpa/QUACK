@@ -1,22 +1,34 @@
-"""Thin HTTP adapter for the GitHub Models chat/completions endpoint.
+"""Provider seam for the LLM transport.
 
-This module contains NO business logic. It only knows how to POST a list of
-messages and return the raw text content of the first choice. Every failure
-mode is normalised to a single :class:`LLMUnavailable` exception so that
-callers can implement fail-open behaviour without catching a zoo of httpx
-errors.
+This module is a thin dispatcher: it selects an LLM transport *provider*
+and delegates the two public functions to it. The transport itself lives
+in :mod:`quack.providers` so it can be swapped without touching any caller.
 
-The token is read from the ``GITHUB_TOKEN`` environment variable at call time.
-It is never stored on an object and never logged.
+The two public functions keep their exact contract::
+
+	complete(messages, model, timeout_s=6.0) -> str
+	chat(messages, model, tools=None) -> dict
+
+Provider selection order:
+
+1. ``QUACK_PROVIDER`` environment variable (``"github_models"`` |
+   ``"copilot_sdk"``)
+2. default ``"github_models"``
+
+Architectural invariant: every failure mode - a missing token, a transport
+error, an unknown provider name, or any arbitrary exception raised inside a
+provider - is normalised to a single :class:`LLMUnavailable`. No
+provider-specific exception may escape this module, so callers implement
+fail-open by catching exactly one exception type.
 """
 
 from __future__ import annotations
 
+import importlib
 import os
 
-import httpx
-
-DEFAULT_BASE_URL = "https://models.github.ai/inference"
+DEFAULT_PROVIDER = "github_models"
+KNOWN_PROVIDERS = ("github_models", "copilot_sdk")
 
 
 class LLMUnavailable(Exception):
@@ -32,107 +44,59 @@ class LLMUnavailable(Exception):
 		self.reason = reason
 
 
+def _select_provider():
+	"""Return the selected provider module.
+
+	Honours ``QUACK_PROVIDER`` and falls back to :data:`DEFAULT_PROVIDER`.
+	An unknown name or an import failure is normalised to
+	:class:`LLMUnavailable` rather than crashing the caller.
+	"""
+	name = os.environ.get("QUACK_PROVIDER") or DEFAULT_PROVIDER
+	if name not in KNOWN_PROVIDERS:
+		raise LLMUnavailable(f"unknown provider: {name}")
+	try:
+		return importlib.import_module(f".providers.{name}", __package__)
+	except LLMUnavailable:
+		raise
+	except Exception as exc:
+		raise LLMUnavailable(f"provider unavailable: {type(exc).__name__}")
+
+
 def complete(
 	messages: list[dict],
 	model: str,
 	timeout_s: float = 6.0,
-	base_url: str = DEFAULT_BASE_URL,
 ) -> str:
-	"""POST ``messages`` to the chat/completions endpoint and return the text.
+	"""Return the text of the first choice via the selected provider.
 
-	Returns the raw text content of the first choice's message. Raises
-	:class:`LLMUnavailable` when no token is set, on any httpx exception, on a
-	non-2xx response, or on timeout. The total request time is bounded by
-	``timeout_s``.
+	Raises :class:`LLMUnavailable` on every failure mode. Any exception the
+	provider raises that is not already :class:`LLMUnavailable` is normalised
+	so callers only ever see this one type.
 	"""
-	token = os.environ.get("GITHUB_TOKEN")
-	if not token:
-		raise LLMUnavailable("no GITHUB_TOKEN")
-
-	url = f"{base_url.rstrip('/')}/chat/completions"
-	headers = {
-		"Authorization": f"Bearer {token}",
-		"Content-Type": "application/json",
-	}
-	body = {
-		"model": model,
-		"messages": messages,
-		"response_format": {"type": "json_object"},
-		"max_tokens": 800,
-		"temperature": 0.1,
-	}
-
+	provider = _select_provider()
 	try:
-		with httpx.Client(timeout=timeout_s) as client:
-			response = client.post(url, headers=headers, json=body)
-	except httpx.TimeoutException:
-		raise LLMUnavailable("request timed out")
-	except httpx.HTTPError as exc:
-		raise LLMUnavailable(f"request failed: {type(exc).__name__}")
-
-	if not (200 <= response.status_code < 300):
-		raise LLMUnavailable(f"HTTP {response.status_code}")
-
-	try:
-		payload = response.json()
-		return payload["choices"][0]["message"]["content"]
-	except (ValueError, KeyError, IndexError, TypeError):
-		raise LLMUnavailable("malformed response envelope")
+		return provider.complete(messages, model, timeout_s=timeout_s)
+	except LLMUnavailable:
+		raise
+	except Exception as exc:
+		raise LLMUnavailable(f"provider error: {type(exc).__name__}")
 
 
 def chat(
 	messages: list[dict],
 	model: str,
 	tools: list[dict] | None = None,
-	timeout_s: float = 180.0,
-	base_url: str = DEFAULT_BASE_URL,
 ) -> dict:
-	"""POST ``messages`` and return the first choice's full message object.
+	"""Return the first choice's full message via the selected provider.
 
-	Unlike :func:`complete`, this returns the whole assistant message dict so
-	callers can inspect ``tool_calls`` for OpenAI tool-calling loops. When
-	``tools`` is provided they are advertised with ``tool_choice="auto"``; when
-	it is ``None`` a JSON object response format is requested so the model
-	emits a final structured answer.
-
-	Raises :class:`LLMUnavailable` on missing token, any httpx error, a non-2xx
-	response, or a malformed envelope. The total request time is bounded by
-	``timeout_s``.
+	Raises :class:`LLMUnavailable` on every failure mode. Any exception the
+	provider raises that is not already :class:`LLMUnavailable` is normalised
+	so callers only ever see this one type.
 	"""
-	token = os.environ.get("GITHUB_TOKEN")
-	if not token:
-		raise LLMUnavailable("no GITHUB_TOKEN")
-
-	url = f"{base_url.rstrip('/')}/chat/completions"
-	headers = {
-		"Authorization": f"Bearer {token}",
-		"Content-Type": "application/json",
-	}
-	body: dict = {
-		"model": model,
-		"messages": messages,
-		"max_tokens": 1200,
-		"temperature": 0.1,
-	}
-	if tools:
-		body["tools"] = tools
-		body["tool_choice"] = "auto"
-	else:
-		body["response_format"] = {"type": "json_object"}
-
+	provider = _select_provider()
 	try:
-		with httpx.Client(timeout=timeout_s) as client:
-			response = client.post(url, headers=headers, json=body)
-	except httpx.TimeoutException:
-		raise LLMUnavailable("request timed out")
-	except httpx.HTTPError as exc:
-		raise LLMUnavailable(f"request failed: {type(exc).__name__}")
-
-	if not (200 <= response.status_code < 300):
-		raise LLMUnavailable(f"HTTP {response.status_code}")
-
-	try:
-		payload = response.json()
-		return payload["choices"][0]["message"]
-	except (ValueError, KeyError, IndexError, TypeError):
-		raise LLMUnavailable("malformed response envelope")
+		return provider.chat(messages, model, tools=tools)
+	except LLMUnavailable:
+		raise
+	except Exception as exc:
+		raise LLMUnavailable(f"provider error: {type(exc).__name__}")
