@@ -382,4 +382,62 @@ def test_nonzero_exit_overrides_model_all_passed(
 	assert "overriding model's self-report" in result.summary
 
 
+# ---------------------------------------------------------------------------
+# Security (Rule #4): the agent path must redact secrets before the diff
+# ever reaches the model, exactly like Tier 2 does.
+# ---------------------------------------------------------------------------
+
+
+def test_agent_redacts_secret_before_sending_to_model(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+	from quack.delta import StagedDelta, StagedFile
+
+	secret = "AKIA" + "A" * 16
+	hunk = f'@@ -0,0 +1,1 @@\n+AWS_KEY = "{secret}"'
+	delta = StagedDelta(
+		files=[
+			StagedFile(
+				path="src/config.py",
+				status="M",
+				added=1,
+				removed=0,
+				hunks=[hunk],
+			)
+		],
+		raw_diff=hunk,
+	)
+
+	captured: dict = {}
+
+	def fake_chat(messages, model, tools=None, timeout_s=180.0):
+		# Record the messages the very first time the model is contacted.
+		captured.setdefault("messages", messages)
+		return {
+			"role": "assistant",
+			"content": json.dumps(
+				{
+					"summary": "ok",
+					"tests_run": [],
+					"failures": [],
+					"proposed_patch": None,
+					"proposed_new_tests": None,
+				}
+			),
+		}
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(agent.llmio, "chat", fake_chat)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	serialized = json.dumps(captured["messages"])
+	assert secret not in serialized
+	assert "[REDACTED]" in serialized
+
+
 

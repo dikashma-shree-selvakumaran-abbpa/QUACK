@@ -23,6 +23,7 @@ from . import (
 	agent as agent_mod,
 	gitio,
 	gitleaks,
+	instructions,
 	render,
 	testmap,
 	tier2,
@@ -30,6 +31,7 @@ from . import (
 from .llmio import LLMUnavailable
 from .tier1 import Finding, Tier1Config
 from .tier1 import allowlisted_locations
+from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
 from .tier1 import should_block
 
@@ -138,7 +140,14 @@ def _run_tier2(
 	analysis is unavailable (fail-open).
 	"""
 	try:
-		result = tier2.review(delta, findings, plan, model=model)
+		project_instructions = instructions.load(Path(gitio.repo_root()))
+		result = tier2.review(
+			delta,
+			findings,
+			plan,
+			model=model,
+			project_instructions=project_instructions,
+		)
 	except LLMUnavailable as exc:
 		return ("skipped", exc.reason)
 	except Exception:  # noqa: BLE001 - Tier 2 must never crash the hook.
@@ -180,8 +189,14 @@ def agent(model: str | None, fly: bool) -> None:
 		render.clean("nothing staged")
 		sys.exit(0)
 
+	# Run Tier 1 and redact any detected secrets before the diff ever leaves
+	# the machine. The agent path must honour the same guarantee as Tier 2:
+	# a staged secret is never transmitted verbatim to the model.
+	findings = tier1_run(delta, Tier1Config())
+	redacted = tier1_redact(delta, findings)
+
 	resolved_model = _resolve_agent_model(model)
-	result = agent_mod.run(delta.raw_diff, Path(root), resolved_model)
+	result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
 	render.agent_report(result, fly=fly)
 	sys.exit(0)
 
