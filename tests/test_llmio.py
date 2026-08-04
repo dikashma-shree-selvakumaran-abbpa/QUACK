@@ -98,12 +98,13 @@ def test_provider_llmunavailable_passes_through_unchanged(monkeypatch):
 	assert excinfo.value.reason == "specific reason"
 
 
-def test_copilot_sdk_stub_is_unavailable(monkeypatch):
+def test_copilot_sdk_chat_is_unavailable(monkeypatch):
 	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
-	# Ensure the real stub module is loaded, not a leftover fake.
+	# Ensure the real provider module is loaded, not a leftover fake.
 	sys.modules.pop("quack.providers.copilot_sdk", None)
+	# Tool calling is unsupported on copilot_sdk; it must fail-open.
 	with pytest.raises(LLMUnavailable) as excinfo:
-		llmio.complete([], "m")
-	assert excinfo.value.reason == "copilot sdk provider not implemented"
-	with pytest.raises(LLMUnavailable):
 		llmio.chat([], "m")
+	assert excinfo.value.reason == (
+		"tool calling not supported on copilot_sdk provider"
+	)
