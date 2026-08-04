@@ -316,6 +316,20 @@ def _ai_group(ai, model: str) -> RenderableType | None:
 # ---------------------------------------------------------------------------
 
 
+def review(result, model: str = "") -> None:
+	"""Render a standalone Tier 2 AI review verdict (pre-push path).
+
+	Used by ``quack agent`` to show the fast single-shot Tier 2 verdict before
+	the slower agent loop runs. ``result`` is duck-typed like the ``ai``
+	argument to :func:`report`. Renders nothing when there is no verdict to
+	show, so the caller can invoke it unconditionally.
+	"""
+	group = _ai_group(result, model)
+	if group is None:
+		return
+	_console().print(group)
+
+
 def agent_report(result, fly: bool = False) -> None:
 	"""Render a ``quack agent`` verdict.
 

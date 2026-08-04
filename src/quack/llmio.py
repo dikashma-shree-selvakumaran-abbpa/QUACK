@@ -30,6 +30,10 @@ import os
 DEFAULT_PROVIDER = "github_models"
 KNOWN_PROVIDERS = ("github_models", "copilot_sdk")
 
+# Used only when no provider can be selected (unknown name, import failure).
+# A provider that loads always supplies its own ``DEFAULT_TIMEOUT_S``.
+_FALLBACK_TIMEOUT_S = 6.0
+
 
 class LLMUnavailable(Exception):
 	"""Raised when the model could not be reached or returned an error.
@@ -60,6 +64,73 @@ def _select_provider():
 		raise
 	except Exception as exc:
 		raise LLMUnavailable(f"provider unavailable: {type(exc).__name__}")
+
+
+def availability_error() -> str | None:
+	"""Return a readable reason the selected provider cannot run, or None.
+
+	The credential/runtime requirement is a *provider* concern, so this
+	simply selects the provider and asks it via ``check_availability()``.
+	Any failure - including an unknown provider name or an import failure
+	surfaced as :class:`LLMUnavailable` - is normalised to a readable string
+	rather than raised, so callers can fail-open on a plain value.
+	"""
+	try:
+		provider = _select_provider()
+	except LLMUnavailable as exc:
+		return exc.reason
+	except Exception as exc:
+		return f"provider unavailable: {type(exc).__name__}"
+
+	check = getattr(provider, "check_availability", None)
+	if check is None:
+		return None
+	try:
+		return check()
+	except LLMUnavailable as exc:
+		return exc.reason
+	except Exception as exc:
+		return f"provider unavailable: {type(exc).__name__}"
+
+
+def default_timeout() -> float:
+	"""Return the selected provider's realistic minimum timeout in seconds.
+
+	The minimum viable timeout is a property of the *transport* (an HTTP call
+	is fast; an SDK that spins up a local runtime is slow), so this asks the
+	provider via its ``DEFAULT_TIMEOUT_S`` constant. Any failure to select a
+	provider falls back to :data:`_FALLBACK_TIMEOUT_S` rather than raising, so
+	callers get a usable number unconditionally.
+	"""
+	try:
+		provider = _select_provider()
+	except Exception:
+		return _FALLBACK_TIMEOUT_S
+	return float(getattr(provider, "DEFAULT_TIMEOUT_S", _FALLBACK_TIMEOUT_S))
+
+
+def default_model(kind: str = "completion") -> str | None:
+	"""Return the selected provider's default model id for ``kind``, or None.
+
+	Model ids are transport-specific (GitHub Models uses ``owner/name``; the
+	Copilot SDK uses its own naming), so the default model belongs to the
+	*provider*. The default is further split by USE: ``kind="completion"`` for
+	Tier 2's single-shot review (tolerates a cheap model) and ``kind="agent"``
+	for the multi-step tool-using investigation (needs a stronger model or it
+	loops and fails). Any failure to select a provider - or an unknown kind -
+	returns None rather than raising, so callers can layer their own fallback.
+	"""
+	attr = {
+		"completion": "DEFAULT_COMPLETION_MODEL",
+		"agent": "DEFAULT_AGENT_MODEL",
+	}.get(kind)
+	if attr is None:
+		return None
+	try:
+		provider = _select_provider()
+	except Exception:
+		return None
+	return getattr(provider, attr, None)
 
 
 def complete(

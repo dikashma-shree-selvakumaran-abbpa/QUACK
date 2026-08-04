@@ -108,3 +108,79 @@ def test_copilot_sdk_chat_is_unavailable(monkeypatch):
 	assert excinfo.value.reason == (
 		"tool calling not supported on copilot_sdk provider"
 	)
+
+
+def test_availability_error_delegates_to_provider(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
+	_stub_provider("copilot_sdk").check_availability = lambda: "no login"
+	assert llmio.availability_error() == "no login"
+
+
+def test_availability_error_none_when_provider_available(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
+	_stub_provider("copilot_sdk").check_availability = lambda: None
+	assert llmio.availability_error() is None
+
+
+def test_availability_error_normalizes_unknown_provider(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "does_not_exist")
+	reason = llmio.availability_error()
+	assert reason is not None
+	assert "unknown provider" in reason
+
+
+def test_availability_error_none_when_provider_lacks_check(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
+	# A provider without check_availability is treated as available.
+	_stub_provider("copilot_sdk")
+	assert llmio.availability_error() is None
+
+
+def test_default_timeout_reflects_selected_provider(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
+	stub = _stub_provider("copilot_sdk")
+	stub.DEFAULT_TIMEOUT_S = 60.0
+	assert llmio.default_timeout() == 60.0
+
+	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
+	stub2 = _stub_provider("github_models")
+	stub2.DEFAULT_TIMEOUT_S = 6.0
+	assert llmio.default_timeout() == 6.0
+
+
+def test_default_timeout_falls_back_on_unknown_provider(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "does_not_exist")
+	assert llmio.default_timeout() == 6.0
+
+
+def test_default_model_reflects_selected_provider_and_kind(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
+	stub = _stub_provider("copilot_sdk")
+	stub.DEFAULT_COMPLETION_MODEL = "claude-haiku-4.5"
+	stub.DEFAULT_AGENT_MODEL = "claude-sonnet-4.5"
+	assert llmio.default_model() == "claude-haiku-4.5"
+	assert llmio.default_model(kind="completion") == "claude-haiku-4.5"
+	assert llmio.default_model(kind="agent") == "claude-sonnet-4.5"
+
+	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
+	stub2 = _stub_provider("github_models")
+	stub2.DEFAULT_COMPLETION_MODEL = "openai/gpt-4o-mini"
+	stub2.DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
+	assert llmio.default_model(kind="completion") == "openai/gpt-4o-mini"
+	assert llmio.default_model(kind="agent") == "openai/gpt-4.1"
+
+
+def test_default_model_none_on_unknown_kind(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
+	stub = _stub_provider("github_models")
+	stub.DEFAULT_COMPLETION_MODEL = "openai/gpt-4o-mini"
+	stub.DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
+	assert llmio.default_model(kind="nonsense") is None
+
+
+def test_default_model_none_on_unknown_provider(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "does_not_exist")
+	assert llmio.default_model(kind="completion") is None
+	assert llmio.default_model(kind="agent") is None
+
+

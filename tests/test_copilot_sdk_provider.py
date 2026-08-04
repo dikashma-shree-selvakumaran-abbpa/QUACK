@@ -103,3 +103,35 @@ def test_chat_raises_llm_unavailable():
 		copilot_sdk.chat(
 			[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
 		)
+
+
+def test_check_availability_ignores_github_token(monkeypatch):
+	# copilot_sdk authenticates via the Copilot CLI's stored OAuth login,
+	# never via GITHUB_TOKEN, so availability must not depend on it.
+	monkeypatch.setattr(copilot_sdk, "CopilotClient", object())
+	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+	assert copilot_sdk.check_availability() is None
+	monkeypatch.setenv("GITHUB_TOKEN", "irrelevant")
+	assert copilot_sdk.check_availability() is None
+
+
+def test_check_availability_reports_missing_sdk(monkeypatch):
+	monkeypatch.setattr(copilot_sdk, "CopilotClient", None)
+	reason = copilot_sdk.check_availability()
+	assert reason is not None
+	assert "not installed" in reason
+
+
+def test_declares_slow_default_timeout():
+	# The SDK starts a local runtime (~9s) before inference, so the transport
+	# declares a much larger timeout than the fast HTTP provider.
+	assert copilot_sdk.DEFAULT_TIMEOUT_S == 60.0
+
+
+def test_declares_copilot_default_models():
+	# The Copilot SDK uses its own model naming, NOT GitHub Models' ids.
+	# Split by use: cheaper haiku for single-shot review, stronger sonnet for
+	# the agent's multi-step tool-using investigation.
+	assert copilot_sdk.DEFAULT_COMPLETION_MODEL == "claude-haiku-4.5"
+	assert copilot_sdk.DEFAULT_AGENT_MODEL == "claude-sonnet-4.5"
+

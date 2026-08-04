@@ -23,8 +23,11 @@ from . import (
 	agent as agent_mod,
 	gitio,
 	gitleaks,
+	instructions,
+	llmio,
 	render,
 	testmap,
+	tier2,
 )
 from .tier1 import Tier1Config
 from .tier1 import allowlisted_locations
@@ -34,8 +37,10 @@ from .tier1 import should_block
 
 QUACK_REPO_URL = "https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK"
 
-# Agent uses a stronger model
-# more reasoning capability than check's one-shot review.
+# Last-resort agent model, used ONLY when no provider resolves (e.g. an
+# unknown QUACK_PROVIDER) so llmio.default_model("agent") returns None. In the
+# normal path each provider supplies its own split defaults. Kept because that
+# genuine no-provider case still needs a non-None model to hand the agent.
 DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
 
 
@@ -107,8 +112,35 @@ def check() -> None:
 
 
 def _resolve_agent_model(cli_model: str | None) -> str:
-	"""--model option > QUACK_MODEL env var > agent default."""
-	return cli_model or os.environ.get("QUACK_MODEL") or DEFAULT_AGENT_MODEL
+	"""--model option > QUACK_MODEL env var > provider AGENT default.
+
+	The default model is transport-specific AND use-specific, so it comes from
+	the selected provider's *agent* default (via llmio). The agent runs a
+	multi-step tool-using investigation that needs a stronger model than Tier
+	2's single-shot review. An explicit --model or QUACK_MODEL always wins.
+	DEFAULT_AGENT_MODEL is only a last resort if no provider resolves.
+	"""
+	return (
+		cli_model
+		or os.environ.get("QUACK_MODEL")
+		or llmio.default_model(kind="agent")
+		or DEFAULT_AGENT_MODEL
+	)
+
+
+def _resolve_completion_model(cli_model: str | None) -> str | None:
+	"""--model option > QUACK_MODEL env var > provider COMPLETION default.
+
+	Used for Tier 2 at pre-push: a single-shot review tolerates a cheaper
+	model than the agent's investigation, so it uses the provider's
+	*completion* default. Same override order; returns None only if no
+	provider resolves and nothing was specified (Tier 2 is fail-open).
+	"""
+	return (
+		cli_model
+		or os.environ.get("QUACK_MODEL")
+		or llmio.default_model(kind="completion")
+	)
 
 
 @main.command()
@@ -125,8 +157,13 @@ def _resolve_agent_model(cli_model: str | None) -> str:
 )
 def agent(model: str | None, fly: bool) -> None:
 	"""Run the agentic pre-push analysis loop."""
-	if not os.environ.get("GITHUB_TOKEN"):
-		render.metadata("quack agent: needs GITHUB_TOKEN, none found")
+	# Whether the agent can authenticate is a PROVIDER concern, not a CLI
+	# one: github_models needs GITHUB_TOKEN, but copilot_sdk authenticates
+	# via the Copilot CLI's stored OAuth login and never reads it. Ask the
+	# selected provider (via llmio) rather than hardcoding a token check.
+	reason = llmio.availability_error()
+	if reason:
+		render.metadata(f"quack agent: {reason}")
 		sys.exit(0)
 
 	root = gitio.repo_root()
@@ -146,6 +183,60 @@ def agent(model: str | None, fly: bool) -> None:
 	redacted = tier1_redact(delta, findings)
 
 	resolved_model = _resolve_agent_model(model)
+	# Tier 2's single-shot review tolerates a cheaper model than the agent's
+	# multi-step investigation, so it uses the provider's COMPLETION default
+	# (an explicit --model/QUACK_MODEL still overrides both surfaces).
+	tier2_model = _resolve_completion_model(model)
+
+	# Tier 2 AI review on the pre-push path. The copilot_sdk provider supports
+	# complete() but not chat()/tool-calling, so Tier 2 (a single completion)
+	# runs on the approved transport even where the agent's tool loop cannot;
+	# Tier 2 therefore provides useful AI review regardless of provider
+	# capability. Run it FIRST: it is the fast single call, so the developer
+	# gets a verdict quickly even if the slow agent loop later degrades.
+	#
+	# Reuse the findings already computed for redaction -- do NOT recompute
+	# Tier 1. Fully fail-open and the whole point of this guard: ANY failure
+	# (LLMUnavailable, timeout, or validation returning None) must leave the
+	# agent path completely unaffected.
+	#
+	# Timeout is a TRANSPORT property, not a tier one: tier2.review()'s own
+	# 6.0s default is tuned for the fast commit-time HTTP call, but the
+	# copilot_sdk provider needs ~9s just to start its runtime. Pass the
+	# provider-appropriate timeout so pre-push review does not always time out.
+	tier2_timeout = llmio.default_timeout()
+	tier2_failure: str | None = None
+	try:
+		plan = testmap.build_plan(delta)
+		project_instructions = instructions.load(Path(root))
+		review, reason = tier2.review_with_reason(
+			delta,
+			findings,
+			plan,
+			model=tier2_model,
+			project_instructions=project_instructions,
+			timeout_s=tier2_timeout,
+		)
+		if review is None:
+			# tier2 surfaces the actual normalised reason (e.g. the model was
+			# unavailable). Only fall back to a provider-level cause, and never
+			# invent "timeout": a wrong reason is worse than a generic one.
+			tier2_failure = (
+				reason or llmio.availability_error() or "unavailable"
+			)
+	except Exception as exc:
+		# Provider exceptions are already normalised to LLMUnavailable inside
+		# llmio, but guard here too so no SDK stack trace ever reaches the
+		# terminal. Report the real exception, not a misleading "timeout".
+		review = None
+		tier2_failure = f"{type(exc).__name__}"
+	if review is not None:
+		render.review(review, model=tier2_model)
+	elif tier2_failure is not None:
+		# At pre-push, AI review is the point: silence would hide that it was
+		# even attempted, so surface a single dim line stating why.
+		render.metadata(f"AI review unavailable ({tier2_failure})")
+
 	result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
 	render.agent_report(result, fly=fly)
 	sys.exit(0)

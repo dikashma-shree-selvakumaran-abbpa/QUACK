@@ -159,6 +159,37 @@ def review(
 	Calls the model, parses and validates JSON. On invalid output it retries
 	once with an error-correction message. On a second failure, or on
 	:class:`LLMUnavailable`, returns ``None``.
+
+	This is the stable public contract. Callers that also need to know *why*
+	a review failed (e.g. to render a reason at pre-push) should use
+	:func:`review_with_reason`; this wrapper simply drops the reason.
+	"""
+	result, _reason = review_with_reason(
+		delta,
+		findings,
+		test_plan,
+		model=model,
+		project_instructions=project_instructions,
+		timeout_s=timeout_s,
+	)
+	return result
+
+
+def review_with_reason(
+	delta: StagedDelta,
+	findings: list[Finding],
+	test_plan: testmap.TestPlan,
+	model: str,
+	project_instructions: str | None = None,
+	timeout_s: float = 6.0,
+) -> tuple[ReviewResult | None, str | None]:
+	"""Like :func:`review` but also returns a human-readable failure reason.
+
+	Returns ``(result, None)`` on success. On failure returns
+	``(None, reason)`` where ``reason`` is the normalised
+	:class:`LLMUnavailable` message (e.g. the underlying model-unavailable
+	error) or an explanation that the model returned unusable output. Still
+	fail-open: never raises for a transport failure.
 	"""
 	rubric_risk, rubric_reasons = _deterministic_risk(delta, test_plan)
 	messages = build_messages(
@@ -170,12 +201,12 @@ def review(
 
 	try:
 		raw = llmio.complete(messages, model=model, timeout_s=timeout_s)
-	except LLMUnavailable:
-		return None
+	except LLMUnavailable as exc:
+		return None, exc.reason
 
 	result = _parse_and_validate(raw)
 	if result is not None:
-		return _anchor_result(result, rubric_risk, rubric_reasons)
+		return _anchor_result(result, rubric_risk, rubric_reasons), None
 
 	retry_messages = messages + [
 		{"role": "assistant", "content": raw},
@@ -185,13 +216,13 @@ def review(
 		raw_retry = llmio.complete(
 			retry_messages, model=model, timeout_s=timeout_s
 		)
-	except LLMUnavailable:
-		return None
+	except LLMUnavailable as exc:
+		return None, exc.reason
 
 	result_retry = _parse_and_validate(raw_retry)
 	if result_retry is None:
-		return None
-	return _anchor_result(result_retry, rubric_risk, rubric_reasons)
+		return None, "model returned unusable output"
+	return _anchor_result(result_retry, rubric_risk, rubric_reasons), None
 
 
 def _parse_and_validate(raw: str) -> ReviewResult | None:

@@ -28,6 +28,33 @@ try:  # pragma: no cover - exercised via monkeypatch in tests
 except ImportError:  # pragma: no cover - SDK is an optional runtime dep
 	CopilotClient = None
 
+# Realistic minimum timeout for this transport. The Copilot SDK must start a
+# local runtime (~9s) before inference, so a short bound guarantees a timeout
+# before the model is ever reached. This is a property of the TRANSPORT.
+DEFAULT_TIMEOUT_S = 60.0
+
+# Default model identifiers for this transport, split by USE. The Copilot SDK
+# uses its own model naming (not GitHub Models' "owner/name"), so the defaults
+# belong to the PROVIDER. They differ by capability requirement: Tier 2's
+# single-shot review tolerates a cheaper model (haiku), but the agent's
+# multi-step tool-using investigation needs a stronger one (sonnet) or it
+# loops and fails.
+DEFAULT_COMPLETION_MODEL = "claude-haiku-4.5"
+DEFAULT_AGENT_MODEL = "claude-sonnet-4.5"
+
+
+def check_availability() -> str | None:
+	"""Return a readable reason this provider cannot run, or None if it can.
+
+	Auth comes from the Copilot CLI's stored OAuth login, NOT from
+	``GITHUB_TOKEN`` (an env token would shadow that login), so this
+	provider is available regardless of ``GITHUB_TOKEN``. The only thing it
+	genuinely needs is the SDK itself.
+	"""
+	if CopilotClient is None:
+		return "copilot sdk not installed"
+	return None
+
 
 def _flatten(messages: list[dict]) -> str:
 	"""Flatten OpenAI-style messages into a single delimited prompt string.

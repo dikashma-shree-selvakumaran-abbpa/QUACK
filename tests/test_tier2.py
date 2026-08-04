@@ -103,6 +103,46 @@ def test_llm_unavailable_returns_none(
 	assert result is None
 
 
+def test_review_with_reason_surfaces_real_model_error(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	# A model-unavailable failure must surface its actual reason, not be
+	# masked as a timeout.
+	def fake_complete(messages, model, timeout_s=6.0):
+		raise LLMUnavailable('Model "openai/gpt-4.1" is not available.')
+
+	monkeypatch.setattr(tier2.llmio, "complete", fake_complete)
+
+	result, reason = tier2.review_with_reason(_delta(), [], _plan(), model="m")
+
+	assert result is None
+	assert reason == 'Model "openai/gpt-4.1" is not available.'
+
+
+def test_review_with_reason_returns_none_reason_on_success(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	import json
+
+	def fake_complete(messages, model, timeout_s=6.0):
+		return json.dumps(
+			{
+				"risk": "low",
+				"reasons": [],
+				"tests_to_run": [],
+				"missing_tests": [],
+				"one_liner": "Looks safe",
+			}
+		)
+
+	monkeypatch.setattr(tier2.llmio, "complete", fake_complete)
+
+	result, reason = tier2.review_with_reason(_delta(), [], _plan(), model="m")
+
+	assert result is not None
+	assert reason is None
+
+
 def test_schema_violation_returns_none(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:

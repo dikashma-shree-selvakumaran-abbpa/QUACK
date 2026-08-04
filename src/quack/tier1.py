@@ -97,6 +97,21 @@ _ALLOW_MARKER = re.compile(
 	re.IGNORECASE,
 )
 
+_SECURITY_SMELLS: list[tuple[str, re.Pattern[str]]] = [
+	("TLS verification disabled (verify=False)", re.compile(r"\bverify\s*=\s*False\b")),
+	(
+		"subprocess shell=True introduced",
+		re.compile(r"\bshell\s*=\s*True\b"),
+	),
+]
+
+_PERFORMANCE_SMELLS: list[tuple[str, re.Pattern[str]]] = [
+	(
+		"sleep call introduced (potential latency/perf impact)",
+		re.compile(r"\b(?:time\.sleep|Thread\.Sleep)\s*\("),
+	),
+]
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -243,6 +258,16 @@ def _scan_added_line(path: str, line: int, content: str) -> list[Finding]:
 	if debug is not None:
 		findings.append(Finding("debug_code", "warn", path, line, debug))
 
+	security_smell = _match_security_smell(content)
+	if security_smell is not None:
+		findings.append(Finding("security_smell", "warn", path, line, security_smell))
+
+	performance_smell = _match_performance_smell(content)
+	if performance_smell is not None:
+		findings.append(
+			Finding("performance_smell", "warn", path, line, performance_smell)
+		)
+
 	return findings
 
 
@@ -273,6 +298,20 @@ def _match_debug(path: str, content: str) -> str | None:
 		and not _is_test_or_cli(path)
 	):
 		return "Console.WriteLine left in"
+	return None
+
+
+def _match_security_smell(content: str) -> str | None:
+	for message, pattern in _SECURITY_SMELLS:
+		if pattern.search(content):
+			return message
+	return None
+
+
+def _match_performance_smell(content: str) -> str | None:
+	for message, pattern in _PERFORMANCE_SMELLS:
+		if pattern.search(content):
+			return message
 	return None
 
 

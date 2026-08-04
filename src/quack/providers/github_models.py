@@ -20,6 +20,33 @@ from ..llmio import LLMUnavailable
 
 DEFAULT_BASE_URL = "https://models.github.ai/inference"
 
+# Realistic minimum timeout for this transport. A GitHub Models HTTP call is
+# fast, so a short bound is appropriate. This is a property of the TRANSPORT,
+# not of any caller/tier.
+DEFAULT_TIMEOUT_S = 6.0
+
+# Default model identifiers for this transport, split by USE. Model ids are
+# transport-specific (GitHub Models uses "owner/name"), so the defaults belong
+# to the PROVIDER. They differ by capability requirement: Tier 2's single-shot
+# review tolerates a cheap model, but the agent's multi-step tool-using
+# investigation loops and fails on a weak model (gpt-4o-mini), so it needs a
+# stronger one.
+DEFAULT_COMPLETION_MODEL = "openai/gpt-4o-mini"
+DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
+
+
+def check_availability() -> str | None:
+	"""Return a readable reason this provider cannot run, or None if it can.
+
+	This provider authenticates with a GitHub token read from the
+	``GITHUB_TOKEN`` environment variable, so it is unavailable when that
+	variable is unset. The credential requirement lives here, next to the
+	code that actually reads it, not in the CLI.
+	"""
+	if not os.environ.get("GITHUB_TOKEN"):
+		return "no GITHUB_TOKEN"
+	return None
+
 
 def complete(
 	messages: list[dict],

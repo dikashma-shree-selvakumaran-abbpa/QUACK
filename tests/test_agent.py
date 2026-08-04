@@ -440,4 +440,418 @@ def test_agent_redacts_secret_before_sending_to_model(monkeypatch) -> None:
 	assert "[REDACTED]" in serialized
 
 
+# ---------------------------------------------------------------------------
+# Tier 2 pre-push wiring: the agent path runs Tier 2 as a fast, fail-open
+# single completion BEFORE the slow agent loop, reusing the Tier 1 findings
+# it already computed for redaction.
+# ---------------------------------------------------------------------------
+
+
+def _plain_delta():
+	from quack.delta import StagedDelta, StagedFile
+
+	hunk = "@@ -0,0 +1,1 @@\n+x = 1"
+	return StagedDelta(
+		files=[
+			StagedFile(
+				path="src/thing.py",
+				status="M",
+				added=1,
+				removed=0,
+				hunks=[hunk],
+			)
+		],
+		raw_diff=hunk,
+	)
+
+
+def _stub_agent_loop(monkeypatch):
+	"""Make the agent loop a no-op success so tests focus on the Tier 2 pre-pass."""
+	from quack import agent as agent_mod
+
+	def fake_run(diff, root, model):
+		return agent_mod.AgentResult(summary="ok")
+
+	monkeypatch.setattr("quack.cli.agent_mod.run", fake_run)
+
+
+def test_agent_renders_tier2_verdict_when_review_returns_result(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli, tier2
+
+	verdict = tier2.ReviewResult(
+		risk="high",
+		reasons=["src/thing.py: touches money path"],
+		one_liner="Risky change to payment logic",
+	)
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (verdict, None)
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "Risky change to payment logic" in result.output
+	assert "HIGH" in result.output
+
+
+def test_agent_renders_nothing_and_still_runs_when_review_returns_none(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	ran = {"agent": False}
+
+	def fake_run(diff, root, model):
+		from quack import agent as agent_mod
+
+		ran["agent"] = True
+		return agent_mod.AgentResult(summary="ok")
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "model unavailable")
+	)
+	monkeypatch.setattr("quack.cli.agent_mod.run", fake_run)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert ran["agent"] is True
+	# No verdict header rendered for a None review, but the failure is made
+	# visible at pre-push rather than being silent, using the real reason.
+	assert "risk:" not in result.output
+	assert "AI review unavailable (model unavailable)" in result.output
+
+
+def test_agent_survives_tier2_exception_without_changing_exit_code(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	ran = {"agent": False}
+
+	def boom(*a, **k):
+		raise RuntimeError("tier2 exploded")
+
+	def fake_run(diff, root, model):
+		from quack import agent as agent_mod
+
+		ran["agent"] = True
+		return agent_mod.AgentResult(summary="ok")
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli.tier2, "review_with_reason", boom)
+	monkeypatch.setattr("quack.cli.agent_mod.run", fake_run)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert ran["agent"] is True
+
+
+def test_agent_loads_instructions_with_repo_root(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	seen = {}
+
+	def fake_load(repo_root, max_chars=4000):
+		seen["repo_root"] = repo_root
+		return None
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: "/tmp/myrepo")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli.instructions, "load", fake_load)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert seen["repo_root"] == Path("/tmp/myrepo")
+
+
+def test_agent_computes_tier1_findings_once(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = {"tier1": 0}
+	captured = {}
+
+	real_run = cli.tier1_run
+
+	def counting_run(delta, config):
+		calls["tier1"] += 1
+		return real_run(delta, config)
+
+	def capture_review(delta, findings, plan, **kwargs):
+		captured["findings"] = findings
+		return None, "x"
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli, "tier1_run", counting_run)
+	monkeypatch.setattr(cli.tier2, "review_with_reason", capture_review)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	# Tier 1 is computed exactly once and the same findings feed Tier 2.
+	assert calls["tier1"] == 1
+	assert "findings" in captured
+
+
+def test_agent_passes_provider_timeout_to_tier2(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	seen = {}
+
+	def capture_review(delta, findings, plan, **kwargs):
+		seen["timeout_s"] = kwargs.get("timeout_s")
+		return None, "x"
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	# The slow-transport timeout must be forwarded, not tier2's 6.0 default.
+	monkeypatch.setattr(cli.llmio, "default_timeout", lambda: 60.0)
+	monkeypatch.setattr(cli.tier2, "review_with_reason", capture_review)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert seen["timeout_s"] == 60.0
+
+
+def test_agent_renders_provider_reason_when_tier2_unavailable(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	# The agent's own startup guard passes (call 1 -> None), but Tier 2 then
+	# fails and consults availability_error again (call 2 -> reason), which is
+	# what should surface as the dim line.
+	calls = {"n": 0}
+
+	def availability():
+		calls["n"] += 1
+		return None if calls["n"] == 1 else "no GITHUB_TOKEN"
+
+	monkeypatch.setattr(cli.llmio, "availability_error", availability)
+	# review returns no specific reason, so the CLI falls back to the
+	# provider-level availability reason.
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, None)
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "AI review unavailable (no GITHUB_TOKEN)" in result.output
+
+
+def test_agent_renders_dim_reason_when_tier2_raises(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	ran = {"agent": False}
+
+	def boom(*a, **k):
+		raise RuntimeError("tier2 exploded")
+
+	def fake_run(diff, root, model):
+		from quack import agent as agent_mod
+
+		ran["agent"] = True
+		return agent_mod.AgentResult(summary="ok")
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli.tier2, "review_with_reason", boom)
+	monkeypatch.setattr("quack.cli.agent_mod.run", fake_run)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert ran["agent"] is True
+	assert "AI review unavailable" in result.output
+
+
+
+# ---------------------------------------------------------------------------
+# Provider-aware availability: the agent must ask the selected provider
+# whether it can run, not hardcode a GITHUB_TOKEN check. Under copilot_sdk
+# (which authenticates via the Copilot CLI login) it must run even with no
+# GITHUB_TOKEN; when the provider is unavailable it fails open with the
+# provider's readable reason.
+# ---------------------------------------------------------------------------
+
+
+def test_agent_runs_under_copilot_sdk_without_github_token(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	ran = {"agent": False}
+
+	def fake_run(diff, root, model):
+		from quack import agent as agent_mod
+
+		ran["agent"] = True
+		return agent_mod.AgentResult(summary="ok")
+
+	# copilot_sdk provider reports available regardless of GITHUB_TOKEN.
+	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+	monkeypatch.setattr(cli.llmio, "availability_error", lambda: None)
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	monkeypatch.setattr("quack.cli.agent_mod.run", fake_run)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert ran["agent"] is True
+
+
+def test_agent_fails_open_with_provider_reason(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	ran = {"agent": False}
+
+	def fake_run(diff, root, model):
+		ran["agent"] = True
+		raise AssertionError("agent must not run when provider is unavailable")
+
+	monkeypatch.setattr(cli.llmio, "availability_error", lambda: "no GITHUB_TOKEN")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr("quack.cli.agent_mod.run", fake_run)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert ran["agent"] is False
+	assert "quack agent: no GITHUB_TOKEN" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Model resolution: the default model is transport-specific AND use-specific,
+# so it comes from the selected provider split by kind. The agent loop uses the
+# provider's AGENT default; Tier 2's single-shot review uses the COMPLETION
+# default. --model and QUACK_MODEL still win over both.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_agent_model_uses_provider_agent_default(monkeypatch) -> None:
+	from quack import cli
+
+	monkeypatch.delenv("QUACK_MODEL", raising=False)
+	monkeypatch.setattr(
+		cli.llmio,
+		"default_model",
+		lambda kind="completion": {
+			"agent": "claude-sonnet-4.5",
+			"completion": "claude-haiku-4.5",
+		}[kind],
+	)
+	assert cli._resolve_agent_model(None) == "claude-sonnet-4.5"
+
+
+def test_resolve_completion_model_uses_provider_completion_default(
+	monkeypatch,
+) -> None:
+	from quack import cli
+
+	monkeypatch.delenv("QUACK_MODEL", raising=False)
+	monkeypatch.setattr(
+		cli.llmio,
+		"default_model",
+		lambda kind="completion": {
+			"agent": "claude-sonnet-4.5",
+			"completion": "claude-haiku-4.5",
+		}[kind],
+	)
+	assert cli._resolve_completion_model(None) == "claude-haiku-4.5"
+
+
+def test_resolve_agent_model_cli_option_wins(monkeypatch) -> None:
+	from quack import cli
+
+	monkeypatch.setenv("QUACK_MODEL", "from-env")
+	monkeypatch.setattr(
+		cli.llmio, "default_model", lambda kind="completion": "provider-default"
+	)
+	assert cli._resolve_agent_model("explicit/model") == "explicit/model"
+
+
+def test_resolve_completion_model_cli_option_wins(monkeypatch) -> None:
+	from quack import cli
+
+	monkeypatch.setenv("QUACK_MODEL", "from-env")
+	monkeypatch.setattr(
+		cli.llmio, "default_model", lambda kind="completion": "provider-default"
+	)
+	assert cli._resolve_completion_model("explicit/model") == "explicit/model"
+
+
+def test_resolve_agent_model_env_beats_provider_default(monkeypatch) -> None:
+	from quack import cli
+
+	monkeypatch.setenv("QUACK_MODEL", "openai/gpt-4o-mini")
+	monkeypatch.setattr(
+		cli.llmio, "default_model", lambda kind="completion": "provider-default"
+	)
+	assert cli._resolve_agent_model(None) == "openai/gpt-4o-mini"
+
+
+def test_resolve_completion_model_env_beats_provider_default(monkeypatch) -> None:
+	from quack import cli
+
+	monkeypatch.setenv("QUACK_MODEL", "openai/gpt-4o-mini")
+	monkeypatch.setattr(
+		cli.llmio, "default_model", lambda kind="completion": "provider-default"
+	)
+	assert cli._resolve_completion_model(None) == "openai/gpt-4o-mini"
+
+
+def test_resolve_agent_model_falls_back_when_no_provider_default(monkeypatch) -> None:
+	from quack import cli
+
+	monkeypatch.delenv("QUACK_MODEL", raising=False)
+	monkeypatch.setattr(cli.llmio, "default_model", lambda kind="completion": None)
+	assert cli._resolve_agent_model(None) == cli.DEFAULT_AGENT_MODEL
+
+
+
 
