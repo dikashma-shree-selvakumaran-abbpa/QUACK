@@ -34,17 +34,18 @@ def _stub_provider(name, complete_fn=None, chat_fn=None):
 	return module
 
 
-def test_defaults_to_github_models_when_unset(monkeypatch):
+def test_defaults_to_copilot_sdk_when_unset(monkeypatch):
+	# copilot_sdk is the approved (default) transport; github_models is opt-in.
 	monkeypatch.delenv("QUACK_PROVIDER", raising=False)
 	captured = {}
 
 	def fake_complete(messages, model, timeout_s=6.0):
-		captured["provider"] = "github_models"
+		captured["provider"] = "copilot_sdk"
 		return "ok"
 
-	_stub_provider("github_models", complete_fn=fake_complete)
+	_stub_provider("copilot_sdk", complete_fn=fake_complete)
 	assert llmio.complete([], "m") == "ok"
-	assert captured["provider"] == "github_models"
+	assert captured["provider"] == "copilot_sdk"
 
 
 def test_honors_quack_provider_env(monkeypatch):

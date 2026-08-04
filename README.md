@@ -185,15 +185,34 @@ export QUACK_DISABLE_GITLEAKS=1   # bash
 ## AI features (the pre-push agent)
 
 `quack check` makes no network calls and needs no token. AI runs only at
-pre-push via `quack agent`, which reads `GITHUB_TOKEN`:
+pre-push via `quack agent`.
+
+### LLM provider
+
+`QUACK_PROVIDER` selects the LLM transport and defaults to **`copilot_sdk`**.
+The Copilot SDK is the approved transport at ABB; GitHub Models via a personal
+access token is not, so the compliant path is the default rather than something
+you opt into.
+
+**The `agent` command currently requires `QUACK_PROVIDER=github_models`.** The
+Copilot SDK does not yet implement tool calling, which the agent's multi-step
+loop needs, so until SDK tool calling is implemented the agent must run under
+`github_models`:
+
+```bash
+$env:QUACK_PROVIDER="github_models"   # PowerShell
+export QUACK_PROVIDER=github_models    # bash
+```
+
+The `github_models` provider reads `GITHUB_TOKEN`:
 
 ```bash
 $env:GITHUB_TOKEN=your_token      # PowerShell
 export GITHUB_TOKEN=your_token    # bash
 ```
 
-Without a token, `quack agent` skips cleanly (fail-open). Override the model
-with `--model` or the `QUACK_MODEL` env var.
+Without an available provider, `quack agent` skips cleanly (fail-open). Override
+the model with `--model` or the `QUACK_MODEL` env var.
 
 ## Development
 

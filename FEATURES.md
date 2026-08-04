@@ -42,8 +42,18 @@ makes no network calls and sends no code anywhere; all AI runs at pre-push via
 - `agent` default: `openai/gpt-4.1` (multi-step tool use needs more reasoning).
 - `check` uses **no model** — it makes no AI calls.
 
-**Relevant env vars:** `GITHUB_TOKEN` (AI features — `agent` only), `QUACK_MODEL` (model
+**Relevant env vars:** `QUACK_PROVIDER` (LLM transport — see below), `GITHUB_TOKEN`
+(required by the `github_models` provider), `QUACK_MODEL` (model
 override), `QUACK_DISABLE_GITLEAKS` (skip gitleaks), `NO_COLOR` (plain output).
+
+**LLM provider:** `QUACK_PROVIDER` selects the transport, defaulting to
+**`copilot_sdk`**. The Copilot SDK is the approved transport at ABB; GitHub
+Models via a PAT is not, so the compliant path is the default rather than an
+opt-in. `github_models` remains available via `QUACK_PROVIDER=github_models`
+because it is currently the **only** provider that supports tool calling.
+**The `agent` command therefore requires `QUACK_PROVIDER=github_models` today**
+— the Copilot SDK does not yet implement tool calling, so the agent loop cannot
+run under the default provider until SDK tool calling is implemented.
 
 ---
 

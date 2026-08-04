@@ -13,7 +13,7 @@ Provider selection order:
 
 1. ``QUACK_PROVIDER`` environment variable (``"github_models"`` |
    ``"copilot_sdk"``)
-2. default ``"github_models"``
+2. default ``"copilot_sdk"``
 
 Architectural invariant: every failure mode - a missing token, a transport
 error, an unknown provider name, or any arbitrary exception raised inside a
@@ -27,7 +27,12 @@ from __future__ import annotations
 import importlib
 import os
 
-DEFAULT_PROVIDER = "github_models"
+# The Copilot SDK is the approved transport at ABB; GitHub Models via a PAT is
+# not. The compliant path must therefore be the DEFAULT rather than something a
+# developer has to opt into. github_models remains available via
+# QUACK_PROVIDER=github_models because it is currently the only provider that
+# supports tool calling, which the agent's multi-step loop requires.
+DEFAULT_PROVIDER = "copilot_sdk"
 KNOWN_PROVIDERS = ("github_models", "copilot_sdk")
 
 # Used only when no provider can be selected (unknown name, import failure).
