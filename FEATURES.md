@@ -31,11 +31,24 @@ makes no network calls and sends no code anywhere; all AI runs at pre-push via
 
 ## 2. CLI surface
 
+**Two hook surfaces.** quack installs two pre-commit-framework hooks:
+
+- **pre-commit (`quack`)** — local checks only (Tier 1 + gitleaks). No network,
+  no code leaves the machine.
+- **pre-push (`quack-agent`)** — AI review, plus the investigative agent where
+  the provider supports tool calling.
+
+`quack install` writes both entries into `.pre-commit-config.yaml` and installs
+both hook types (the default pre-commit hook and
+`pre-commit install --hook-type pre-push`). The pre-push install is handled
+independently: if it fails, install warns but does not abort, leaving the
+already-installed pre-commit checks active.
+
 | Command | Purpose | Exit-code authority |
 |---|---|---|
 | `quack check` | Full pre-commit gate on **staged** changes (what the hook runs). Fully local: **no network calls, sends no code anywhere.** | Tier 1 only |
 | `quack agent [--fly] [--model M]` | Pre-push investigative agent over the **staged** diff. `--fly` allows a proposed patch. **This is where all AI runs.** | Advisory (informational) |
-| `quack install [--local]` | Write `.pre-commit-config.yaml`, install the hook, bootstrap gitleaks, banner, optional token setup. `--local` targets any repo without a published remote. | n/a |
+| `quack install [--local]` | Write `.pre-commit-config.yaml` (both `quack` + `quack-agent` hooks), install both hook types, bootstrap gitleaks, banner, optional token setup. `--local` targets any repo without a published remote. | n/a |
 | `quack model` | Print the resolved model id. | n/a |
 
 **Model resolution order:** `--model` flag → `QUACK_MODEL` env var → default.

@@ -6,3 +6,11 @@
   language: python
   pass_filenames: false
   stages: [pre-commit]
+
+- id: quack-agent
+  name: quack-agent
+  description: AI review (and agent) pre-push hook.
+  entry: quack agent
+  language: python
+  pass_filenames: false
+  stages: [pre-push]

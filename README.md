@@ -102,6 +102,20 @@ git add .
 quack check
 ```
 
+### Two surfaces: pre-commit and pre-push
+
+quack wires **two** hooks:
+
+- **pre-commit (`quack`)** — local checks only (Tier 1 + gitleaks). No network,
+  no code leaves the machine.
+- **pre-push (`quack-agent`)** — AI review, plus the investigative agent where
+  the provider supports tool calling.
+
+`quack install` writes both entries and installs both hook types (the default
+pre-commit hook and `pre-commit install --hook-type pre-push`). If the pre-push
+hook-type install fails, it warns but does not abort — your pre-commit checks
+stay active.
+
 ### Manual .pre-commit-config.yaml
 
 Local mode (no published repo needed -- what `quack install --local` writes):
@@ -116,6 +130,12 @@ repos:
 		language: system
 		pass_filenames: false
 		stages: [pre-commit]
+	  - id: quack-agent
+		name: quack-agent
+		entry: quack agent
+		language: system
+		pass_filenames: false
+		stages: [pre-push]
 ```
 
 Pinned to a published remote (what `quack install` writes):
@@ -126,6 +146,7 @@ repos:
 	rev: v0.1.0                                # a real git tag
 	hooks:
 	  - id: quack
+	  - id: quack-agent
 ```
 
 ### VS Code / Visual Studio

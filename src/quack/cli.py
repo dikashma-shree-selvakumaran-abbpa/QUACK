@@ -274,6 +274,21 @@ def install(use_local: bool) -> None:
 			render.clean("quack: pre-commit hook installed")
 		except subprocess.CalledProcessError as exc:
 			render.warning(f"quack: `pre-commit install` failed ({exc.returncode})")
+
+		# All AI now lives at pre-push, so the pre-push hook type must be
+		# installed too. Do this INDEPENDENTLY: a failure here must warn but
+		# never abort, and must not undo the pre-commit install that already
+		# succeeded.
+		try:
+			subprocess.run(
+				["pre-commit", "install", "--hook-type", "pre-push"], check=True
+			)
+			render.clean("quack: pre-push hook installed")
+		except subprocess.CalledProcessError as exc:
+			render.warning(
+				f"quack: `pre-commit install --hook-type pre-push` failed "
+				f"({exc.returncode}); pre-commit checks still active"
+			)
 	else:
 		render.warning("quack: `pre-commit` not found; skipping hook install")
 		render.metadata("  install it with: pipx install pre-commit")
@@ -301,25 +316,39 @@ def _upsert_local_stanza(config_path: Path) -> None:
 		data = {}
 
 	repos = data.setdefault("repos", [])
-	hook = {
-		"id": "quack",
-		"name": "quack",
-		"entry": "quack check",
-		"language": "system",
-		"pass_filenames": False,
-		"stages": ["pre-commit"],
-	}
+	# Two surfaces: pre-commit runs local checks only; pre-push runs AI review
+	# (and the agent where the provider supports tool calling).
+	hooks_to_add = [
+		{
+			"id": "quack",
+			"name": "quack",
+			"entry": "quack check",
+			"language": "system",
+			"pass_filenames": False,
+			"stages": ["pre-commit"],
+		},
+		{
+			"id": "quack-agent",
+			"name": "quack-agent",
+			"entry": "quack agent",
+			"language": "system",
+			"pass_filenames": False,
+			"stages": ["pre-push"],
+		},
+	]
 
 	for repo in repos:
 		if isinstance(repo, dict) and repo.get("repo") == "local":
 			hooks = repo.setdefault("hooks", [])
-			if not any(
-				isinstance(h, dict) and h.get("id") == "quack" for h in hooks
-			):
-				hooks.append(hook)
+			for hook in hooks_to_add:
+				if not any(
+					isinstance(h, dict) and h.get("id") == hook["id"]
+					for h in hooks
+				):
+					hooks.append(hook)
 			break
 	else:
-		repos.append({"repo": "local", "hooks": [hook]})
+		repos.append({"repo": "local", "hooks": hooks_to_add})
 
 	config_path.write_text(
 		yaml.safe_dump(data, sort_keys=False, default_flow_style=False),
@@ -335,10 +364,13 @@ def _upsert_precommit_stanza(config_path: Path) -> None:
 		data = {}
 
 	repos = data.setdefault("repos", [])
+	# Both hooks come from the same quack repo: `quack` (pre-commit checks) and
+	# `quack-agent` (pre-push AI review). Their stages are declared in
+	# .pre-commit-hooks.yaml, so listing the ids here is enough.
 	stanza = {
 		"repo": QUACK_REPO_URL,
 		"rev": f"v{__version__}",
-		"hooks": [{"id": "quack"}],
+		"hooks": [{"id": "quack"}, {"id": "quack-agent"}],
 	}
 
 	for repo in repos:
