@@ -51,7 +51,7 @@ and every subprocess call uses portable argument lists.
 | gitleaks **auto**-install | via `winget` | via `brew` | via `brew` if present |
 
 On Linux without Homebrew, `quack install` can't auto-install gitleaks, so
-install it once by hand — quack still runs fully on its built-in patterns
+install it once by hand â€” quack still runs fully on its built-in patterns
 regardless (fail-open):
 
 ```bash
@@ -106,14 +106,14 @@ quack check
 
 quack wires **two** hooks:
 
-- **pre-commit (`quack`)** — local checks only (Tier 1 + gitleaks). No network,
+- **pre-commit (`quack`)** â€” local checks only (Tier 1 + gitleaks). No network,
   no code leaves the machine.
-- **pre-push (`quack-agent`)** — AI review, plus the investigative agent where
+- **pre-push (`quack-agent`)** â€” AI review, plus the investigative agent where
   the provider supports tool calling.
 
 `quack install` writes both entries and installs both hook types (the default
 pre-commit hook and `pre-commit install --hook-type pre-push`). If the pre-push
-hook-type install fails, it warns but does not abort — your pre-commit checks
+hook-type install fails, it warns but does not abort â€” your pre-commit checks
 stay active.
 
 ### Manual .pre-commit-config.yaml
