@@ -21,9 +21,11 @@ quack follows a **functional core / imperative shell** design.
 | Orchestration | `cli`, `tier2`, `agent` | Wire the pieces together; own exit codes and UX. |
 | Presentation | `render` | The single module that writes to the terminal. |
 
-**Design invariant:** only Tier 1 governs the exit code. gitleaks, Tier 2 AI,
-and the agent are all advisory / fail-open and can never turn a passing commit
-into a failing one due to their own unavailability.
+**Design invariant:** only Tier 1 governs the exit code. gitleaks and the agent
+are advisory / fail-open and can never turn a passing commit into a failing one
+due to their own unavailability. **Commit time is fully local** — `quack check`
+makes no network calls and sends no code anywhere; all AI runs at pre-push via
+`quack agent`.
 
 ---
 
@@ -31,16 +33,16 @@ into a failing one due to their own unavailability.
 
 | Command | Purpose | Exit-code authority |
 |---|---|---|
-| `quack check [--model M]` | Full pre-commit gate on **staged** changes (what the hook runs). | Tier 1 only |
-| `quack agent [--fly] [--model M]` | Pre-push investigative agent over the **staged** diff. `--fly` allows a proposed patch. | Advisory (informational) |
+| `quack check` | Full pre-commit gate on **staged** changes (what the hook runs). Fully local: **no network calls, sends no code anywhere.** | Tier 1 only |
+| `quack agent [--fly] [--model M]` | Pre-push investigative agent over the **staged** diff. `--fly` allows a proposed patch. **This is where all AI runs.** | Advisory (informational) |
 | `quack install [--local]` | Write `.pre-commit-config.yaml`, install the hook, bootstrap gitleaks, banner, optional token setup. `--local` targets any repo without a published remote. | n/a |
 | `quack model` | Print the resolved model id. | n/a |
 
 **Model resolution order:** `--model` flag → `QUACK_MODEL` env var → default.
-- `check` default: `openai/gpt-4o-mini` (one-shot review, cheap/fast).
 - `agent` default: `openai/gpt-4.1` (multi-step tool use needs more reasoning).
+- `check` uses **no model** — it makes no AI calls.
 
-**Relevant env vars:** `GITHUB_TOKEN` (AI features), `QUACK_MODEL` (model
+**Relevant env vars:** `GITHUB_TOKEN` (AI features — `agent` only), `QUACK_MODEL` (model
 override), `QUACK_DISABLE_GITLEAKS` (skip gitleaks), `NO_COLOR` (plain output).
 
 ---
@@ -109,12 +111,15 @@ coverage as an optional upgrade.
 
 ---
 
-## 5. Tier 2 — advisory AI review
+## 5. Tier 2 — advisory AI review (pre-push, not commit time)
 
 **Modules:** `tier2.py` + `llmio.py` · **Fail-open. Never changes the exit code.**
 
-- Only runs on an **unblocked** commit, and only when the change is non-trivial
-  (`delta.triviality()` short-circuits tiny/whitespace-only diffs).
+> **Not run at commit time.** The Copilot/model setup cost (~9–15s cold) and
+> per-call credit cost are incompatible with a <6s commit budget and per-commit
+> team economics, so `quack check` makes **no** Tier 2 call. The module and its
+> tests are retained for pre-push use; the `quack agent` loop supersedes Tier 2's
+> one-shot risk scoring today.
 - **Privacy:** the diff is **redacted before it leaves the machine.**
   `tier1.redact()` replaces every detected secret with `[REDACTED]`, and Tier 2
   builds its prompt from that redacted delta (`"Staged diff (redacted):"`).

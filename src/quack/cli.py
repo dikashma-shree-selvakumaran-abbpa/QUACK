@@ -23,13 +23,10 @@ from . import (
 	agent as agent_mod,
 	gitio,
 	gitleaks,
-	instructions,
 	render,
 	testmap,
-	tier2,
 )
-from .llmio import LLMUnavailable
-from .tier1 import Finding, Tier1Config
+from .tier1 import Tier1Config
 from .tier1 import allowlisted_locations
 from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
@@ -37,9 +34,7 @@ from .tier1 import should_block
 
 QUACK_REPO_URL = "https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK"
 
-DEFAULT_MODEL = "openai/gpt-4o-mini"
-
-# Agent uses a stronger model because multi-step tool-using investigation needs
+# Agent uses a stronger model
 # more reasoning capability than check's one-shot review.
 DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
 
@@ -51,13 +46,13 @@ def main() -> None:
 
 
 @main.command()
-@click.option(
-	"--model",
-	default=None,
-	help="Model id for Tier 2 (overrides QUACK_MODEL env var).",
-)
-def check(model: str | None) -> None:
-	"""Run the pre-commit quality checks on staged changes."""
+def check() -> None:
+	"""Run the pre-commit quality checks on staged changes.
+
+	Commit time is fully local: Tier 1 deterministic checks (plus gitleaks when
+	installed) and test guidance only. No network calls, no token, no AI. All
+	AI analysis runs at pre-push via ``quack agent``.
+	"""
 	delta = gitio.staged_delta()
 	if not delta.files:
 		render.clean("nothing staged")
@@ -95,15 +90,9 @@ def check(model: str | None) -> None:
 	# Test guidance (only worth computing on an unblocked commit).
 	plan = testmap.build_plan(delta)
 
-	# Tier 2 (AI analysis). Fully fail-open: it never changes the exit code,
-	# which stays governed only by Tier 1's should_block() above.
-	resolved_model = _resolve_model(model)
-	trivial, trivial_reason = delta.triviality()
-	if trivial:
-		ai = ("skipped", trivial_reason)
-	else:
-		ai = _run_tier2(delta, findings, plan, resolved_model)
-
+	# Commit time is fully local: no Tier 2, no network, no token. The AI
+	# section is simply absent (ai=None). AI analysis runs at pre-push via
+	# `quack agent`.
 	# TODO: thread the real hook duration through to render.report.
 	render.report(
 		files=len(delta.files),
@@ -111,54 +100,15 @@ def check(model: str | None) -> None:
 		removed=delta.total_removed,
 		findings=findings,
 		plan=plan,
-		ai=ai,
-		model=resolved_model,
+		ai=None,
 		blocked=False,
 	)
 	sys.exit(0)
 
 
-def _resolve_model(cli_model: str | None) -> str:
-	"""--model option > QUACK_MODEL env var > default."""
-	return cli_model or os.environ.get("QUACK_MODEL") or DEFAULT_MODEL
-
-
 def _resolve_agent_model(cli_model: str | None) -> str:
 	"""--model option > QUACK_MODEL env var > agent default."""
 	return cli_model or os.environ.get("QUACK_MODEL") or DEFAULT_AGENT_MODEL
-
-
-def _run_tier2(
-	delta,
-	findings: list[Finding],
-	plan: testmap.TestPlan,
-	model: str,
-):
-	"""Return the AI section data. Never raises; never affects the exit code.
-
-	Returns a ``ReviewResult`` on success, or ``("skipped", reason)`` when the
-	analysis is unavailable (fail-open).
-	"""
-	try:
-		project_instructions = instructions.load(Path(gitio.repo_root()))
-		result = tier2.review(
-			delta,
-			findings,
-			plan,
-			model=model,
-			project_instructions=project_instructions,
-		)
-	except LLMUnavailable as exc:
-		return ("skipped", exc.reason)
-	except Exception:  # noqa: BLE001 - Tier 2 must never crash the hook.
-		return ("skipped", "analysis unavailable")
-
-	if result is None:
-		if not os.environ.get("GITHUB_TOKEN"):
-			return ("skipped", "no GITHUB_TOKEN")
-		return ("skipped", "analysis unavailable")
-
-	return result
 
 
 @main.command()

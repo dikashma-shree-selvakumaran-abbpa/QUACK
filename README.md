@@ -8,9 +8,11 @@ commit time and decides whether they are safe -- fast, offline, and fail-safe.
 - **Tier 1** -- deterministic, offline checks (secrets, merge markers, debug
   code, large files, commit-to-test mapping). Always runs, target <1s. The
   ONLY tier that can block a commit.
-- **Tier 2** -- one call to GitHub Models returning schema-validated JSON risk
-  analysis. Skipped for trivial deltas; hard 6s timeout; fail-open.
-- **quack agent** -- an agentic investigate-and-verify loop for pre-push.
+- **Commit time is fully local.** `quack check` performs **no network calls and
+  sends no code anywhere** -- Tier 1 (plus gitleaks when installed) and test
+  guidance only. No token, no AI, no quota.
+- **quack agent** -- an agentic investigate-and-verify loop for pre-push. **All
+  AI runs here**, never at commit time.
 
 > Design principle: *AI advises, deterministic code decides.* The LLM can never
 > stop your commit -- only the offline Tier 1 checks can.
@@ -44,7 +46,7 @@ and every subprocess call uses portable argument lists.
 |---------|---------|-------|-------|
 | Tier 1 checks (secrets, merge markers, debug code) | ? | ? | ? |
 | pre-commit hook | ? | ? | ? |
-| Tier 2 AI review | ? | ? | ? |
+| quack agent AI review (pre-push) | ? | ? | ? |
 | quack agent | ? | ? | ? |
 | gitleaks **auto**-install | via `winget` | via `brew` | via `brew` if present |
 
@@ -69,7 +71,7 @@ quack check
 ## Commands
 
 ```bash
-quack check      # pre-commit hook entry (Tier 1 + Tier 2)
+quack check      # pre-commit hook entry (Tier 1 + gitleaks, fully local, no network)
 quack install    # wire quack into .pre-commit-config.yaml (--local for any project)
 quack agent      # agentic pre-push investigation loop
 quack model      # model/config utilities (stub)
@@ -180,15 +182,18 @@ $env:QUACK_DISABLE_GITLEAKS=1     # PowerShell
 export QUACK_DISABLE_GITLEAKS=1   # bash
 ```
 
-## AI features (Tier 2 and the agent)
+## AI features (the pre-push agent)
+
+`quack check` makes no network calls and needs no token. AI runs only at
+pre-push via `quack agent`, which reads `GITHUB_TOKEN`:
 
 ```bash
 $env:GITHUB_TOKEN=your_token      # PowerShell
 export GITHUB_TOKEN=your_token    # bash
 ```
 
-Without a token, Tier 2 skips (fail-open). Override the model with `--model` or
-the `QUACK_MODEL` env var.
+Without a token, `quack agent` skips cleanly (fail-open). Override the model
+with `--model` or the `QUACK_MODEL` env var.
 
 ## Development
 

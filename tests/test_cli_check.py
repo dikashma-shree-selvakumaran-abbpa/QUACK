@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from click.testing import CliRunner
 
-from quack import cli
+from quack import cli, tier2
 from quack.delta import StagedDelta, StagedFile
 
 
@@ -44,6 +44,35 @@ def test_check_passes_on_clean_delta(monkeypatch) -> None:
 
 	assert result.exit_code == 0
 	assert "BLOCKED" not in result.output
+
+
+def test_check_is_fully_local_no_ai_section(monkeypatch) -> None:
+	"""Commit time is fully local: no Tier 2 call, no AI section rendered."""
+	delta = _delta(
+		"src/app.py",
+		_hunk("def add(a, b):", "    return a + b", "x = add(1, 2)"),
+	)
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+
+	# Any network/AI use would go through tier2.review; make it explode so a
+	# regression that re-adds the commit-time call fails loudly.
+	def _boom(*args, **kwargs):  # pragma: no cover - only hit on regression
+		raise AssertionError("quack check must not call Tier 2 at commit time")
+
+	monkeypatch.setattr(tier2, "review", _boom)
+
+	result = CliRunner().invoke(cli.main, ["check"])
+
+	assert result.exit_code == 0
+	assert "AI" not in result.output
+
+
+def test_check_has_no_model_option() -> None:
+	"""The --model option was removed from check (commit time makes no AI call)."""
+	result = CliRunner().invoke(cli.main, ["check", "--model", "openai/gpt-4o-mini"])
+
+	assert result.exit_code != 0
+	assert "no such option" in result.output.lower()
 
 
 def test_check_nothing_staged(monkeypatch) -> None:

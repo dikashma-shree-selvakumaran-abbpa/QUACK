@@ -280,13 +280,17 @@ def _guidance_group(plan) -> RenderableType | None:
 
 
 def _ai_group(ai, model: str) -> RenderableType | None:
-	"""AI verdict section, a skipped dim line, or nothing."""
+	"""AI verdict section, or nothing.
+
+	At commit time ``ai`` is always ``None`` (no network, no AI), so this
+	section is simply absent. A ``("skipped", reason)`` tuple is likewise
+	treated as absent -- we never render an "AI: skipped" line. Only a real
+	review result renders a verdict (e.g. future pre-push usage).
+	"""
 	if ai is None:
 		return None
 	if isinstance(ai, tuple) and ai and ai[0] == "skipped":
-		reason = ai[1] if len(ai) > 1 else "unknown"
-		# Not a separate titled section -- just one dim line.
-		return Text(f"AI: skipped ({reason})", style=_META)
+		return None
 
 	risk = str(getattr(ai, "risk", "unknown"))
 	risk_style = _RISK_STYLES.get(risk, _WARN)
