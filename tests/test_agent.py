@@ -853,5 +853,140 @@ def test_resolve_agent_model_falls_back_when_no_provider_default(monkeypatch) ->
 	assert cli._resolve_agent_model(None) == cli.DEFAULT_AGENT_MODEL
 
 
+# ---------------------------------------------------------------------------
+# Target selection (pre-push vs manual): quack agent prefers staged changes,
+# else falls back to the unpushed range @{u}..HEAD, else exits cleanly.
+# ---------------------------------------------------------------------------
 
+
+def _empty_delta():
+	from quack.delta import StagedDelta
+
+	return StagedDelta(files=[], raw_diff="")
+
+
+def test_agent_prefers_staged_when_staged_exists(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	def no_range(*a, **k):
+		raise AssertionError("range_delta must not run when staged exists")
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli.gitio, "range_delta", no_range)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "analyzing staged changes" in result.output
+
+
+def test_agent_falls_back_to_unpushed_range(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	captured: dict = {}
+
+	def fake_range_delta(base, head="HEAD"):
+		captured["base"] = base
+		return _plain_delta()
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_delta", fake_range_delta)
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 3)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert captured["base"] == "origin/main"
+	assert "analyzing 3 unpushed commit(s)" in result.output
+
+
+def test_agent_exits_cleanly_when_nothing_staged_or_unpushed(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	def no_agent(*a, **k):
+		raise AssertionError("agent must not run when there is nothing to analyze")
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda: None)
+	monkeypatch.setattr("quack.cli.agent_mod.run", no_agent)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "nothing to analyze" in result.output
+
+
+def test_agent_range_path_is_redacted_before_transmission(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+	from quack.delta import StagedDelta, StagedFile
+
+	secret = "AKIA" + "A" * 16
+	hunk = f'@@ -0,0 +1,1 @@\n+AWS_KEY = "{secret}"'
+	range_delta = StagedDelta(
+		files=[
+			StagedFile(
+				path="src/config.py",
+				status="M",
+				added=1,
+				removed=0,
+				hunks=[hunk],
+			)
+		],
+		raw_diff=hunk,
+	)
+
+	captured: dict = {}
+
+	def fake_chat(messages, model, tools=None, timeout_s=180.0):
+		captured.setdefault("messages", messages)
+		return {
+			"role": "assistant",
+			"content": json.dumps(
+				{
+					"summary": "ok",
+					"tests_run": [],
+					"failures": [],
+					"proposed_patch": None,
+					"proposed_new_tests": None,
+				}
+			),
+		}
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_delta", lambda *a, **k: range_delta)
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 1)
+	monkeypatch.setattr(agent.llmio, "chat", fake_chat)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	serialized = json.dumps(captured["messages"])
+	assert secret not in serialized
+	assert "[REDACTED]" in serialized
 

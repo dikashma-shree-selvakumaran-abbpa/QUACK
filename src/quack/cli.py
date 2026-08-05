@@ -172,9 +172,25 @@ def agent(model: str | None, fly: bool) -> None:
 		sys.exit(0)
 
 	delta = gitio.staged_delta()
-	if not delta.files:
-		render.clean("nothing staged")
-		sys.exit(0)
+	# Choose the analysis target. quack agent runs both manually (where
+	# staged changes are the right target) and as a pre-push hook (where the
+	# index is empty and the real target is the unpushed range @{u}..HEAD).
+	# Prefer staged changes to preserve the manual/demo flow; otherwise fall
+	# back to the unpushed range.
+	if delta.files:
+		render.metadata("analyzing staged changes")
+	else:
+		upstream = gitio.upstream_ref()
+		unpushed = gitio.range_delta(upstream) if upstream else None
+		if unpushed and unpushed.files:
+			delta = unpushed
+			count = gitio.range_commit_count(upstream)
+			render.metadata(f"analyzing {count} unpushed commit(s)")
+		else:
+			render.clean(
+				"nothing to analyze: no staged changes and nothing unpushed"
+			)
+			sys.exit(0)
 
 	# Run Tier 1 and redact any detected secrets before the diff ever leaves
 	# the machine. The agent path must honour the same guarantee as Tier 2:
