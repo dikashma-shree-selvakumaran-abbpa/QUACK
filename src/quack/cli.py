@@ -350,6 +350,7 @@ def _upsert_local_stanza(config_path: Path) -> None:
 			"language": "system",
 			"pass_filenames": False,
 			"stages": ["pre-push"],
+			"verbose": True,
 		},
 	]
 
@@ -386,7 +387,7 @@ def _upsert_precommit_stanza(config_path: Path) -> None:
 	stanza = {
 		"repo": QUACK_REPO_URL,
 		"rev": f"v{__version__}",
-		"hooks": [{"id": "quack"}, {"id": "quack-agent"}],
+		"hooks": [{"id": "quack"}, {"id": "quack-agent", "verbose": True}],
 	}
 
 	for repo in repos:

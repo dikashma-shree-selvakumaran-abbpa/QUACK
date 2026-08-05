@@ -101,3 +101,31 @@ def test_pre_push_install_failure_degrades_gracefully(monkeypatch, tmp_path):
 	assert ["pre-commit", "install"] in calls
 	assert ["pre-commit", "install", "--hook-type", "pre-push"] in calls
 	assert "pre-push" in result.output
+
+
+def test_local_install_quack_agent_has_verbose_flag(monkeypatch, tmp_path):
+	result, config, _ = _run_install(
+		monkeypatch, tmp_path, ["--local"], lambda cmd: None
+	)
+
+	assert result.exit_code == 0
+	for repo in config["repos"]:
+		if repo.get("repo") == "local":
+			hooks = {h["id"]: h for h in repo["hooks"]}
+			# quack-agent is verbose (forces output on push, even on success);
+			# quack is quiet by design (only speaks when it has something to say).
+			assert hooks["quack-agent"].get("verbose") is True
+			assert "verbose" not in hooks["quack"]
+
+
+def test_precommit_install_quack_agent_has_verbose_flag(monkeypatch, tmp_path):
+	result, config, _ = _run_install(
+		monkeypatch, tmp_path, [], lambda cmd: None
+	)
+
+	assert result.exit_code == 0
+	for repo in config["repos"]:
+		if isinstance(repo, dict) and "github.com" in repo.get("repo", ""):
+			hooks = {h["id"]: h for h in repo["hooks"]}
+			assert hooks["quack-agent"].get("verbose") is True
+			assert "verbose" not in hooks["quack"]
