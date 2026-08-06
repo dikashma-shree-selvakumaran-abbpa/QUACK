@@ -10,6 +10,8 @@ import pytest
 from quack import llmio
 from quack.llmio import LLMUnavailable
 
+pytestmark = pytest.mark.allow_provider_calls
+
 
 @pytest.fixture(autouse=True)
 def _restore_provider_modules():

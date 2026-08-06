@@ -430,6 +430,9 @@ def test_agent_redacts_secret_before_sending_to_model(monkeypatch) -> None:
 	monkeypatch.setenv("GITHUB_TOKEN", "t")
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "test stub")
+	)
 	monkeypatch.setattr(agent.llmio, "chat", fake_chat)
 
 	result = CliRunner().invoke(cli.main, ["agent"])
@@ -981,6 +984,9 @@ def test_agent_range_path_is_redacted_before_transmission(monkeypatch) -> None:
 	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda: "origin/main")
 	monkeypatch.setattr(cli.gitio, "range_delta", lambda *a, **k: range_delta)
 	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 1)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "test stub")
+	)
 	monkeypatch.setattr(agent.llmio, "chat", fake_chat)
 
 	result = CliRunner().invoke(cli.main, ["agent"])
