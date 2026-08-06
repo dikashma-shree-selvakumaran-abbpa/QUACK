@@ -68,7 +68,8 @@ def _select_provider():
 	except LLMUnavailable:
 		raise
 	except Exception as exc:
-		raise LLMUnavailable(f"provider unavailable: {type(exc).__name__}")
+		msg = str(exc)[:200].replace("\n", " ")
+		raise LLMUnavailable(f"provider unavailable: {type(exc).__name__}: {msg}")
 
 
 def availability_error() -> str | None:
@@ -85,7 +86,8 @@ def availability_error() -> str | None:
 	except LLMUnavailable as exc:
 		return exc.reason
 	except Exception as exc:
-		return f"provider unavailable: {type(exc).__name__}"
+		msg = str(exc)[:200].replace("\n", " ")
+		return f"provider unavailable: {type(exc).__name__}: {msg}"
 
 	check = getattr(provider, "check_availability", None)
 	if check is None:
@@ -95,7 +97,8 @@ def availability_error() -> str | None:
 	except LLMUnavailable as exc:
 		return exc.reason
 	except Exception as exc:
-		return f"provider unavailable: {type(exc).__name__}"
+		msg = str(exc)[:200].replace("\n", " ")
+		return f"provider unavailable: {type(exc).__name__}: {msg}"
 
 
 def default_timeout() -> float:
@@ -155,7 +158,8 @@ def complete(
 	except LLMUnavailable:
 		raise
 	except Exception as exc:
-		raise LLMUnavailable(f"provider error: {type(exc).__name__}")
+		msg = str(exc)[:200].replace("\n", " ")
+		raise LLMUnavailable(f"provider error: {type(exc).__name__}: {msg}")
 
 
 def chat(
@@ -175,4 +179,5 @@ def chat(
 	except LLMUnavailable:
 		raise
 	except Exception as exc:
-		raise LLMUnavailable(f"provider error: {type(exc).__name__}")
+		msg = str(exc)[:200].replace("\n", " ")
+		raise LLMUnavailable(f"provider error: {type(exc).__name__}: {msg}")

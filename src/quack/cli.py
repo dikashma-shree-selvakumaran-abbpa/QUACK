@@ -245,7 +245,8 @@ def agent(model: str | None, fly: bool) -> None:
 		# llmio, but guard here too so no SDK stack trace ever reaches the
 		# terminal. Report the real exception, not a misleading "timeout".
 		review = None
-		tier2_failure = f"{type(exc).__name__}"
+		msg = str(exc)[:200].replace("\n", " ")
+		tier2_failure = f"{type(exc).__name__}: {msg}"
 	if review is not None:
 		render.review(review, model=tier2_model)
 	elif tier2_failure is not None:

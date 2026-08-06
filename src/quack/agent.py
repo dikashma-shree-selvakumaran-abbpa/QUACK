@@ -326,7 +326,8 @@ def _read_file(root: Path, path: str) -> str:
 					break
 				lines.append(line.rstrip("\n"))
 	except (OSError, ValueError) as exc:
-		return f"error: cannot read {path!r}: {type(exc).__name__}"
+		msg = str(exc)[:200].replace("\n", " ")
+		return f"error: cannot read {path!r}: {type(exc).__name__}: {msg}"
 	return "\n".join(lines)
 
 
@@ -338,7 +339,8 @@ def _list_dir(root: Path, path: str) -> str:
 	try:
 		names = sorted(entry.name for entry in target.iterdir())
 	except (OSError, ValueError) as exc:
-		return f"error: cannot list {path!r}: {type(exc).__name__}"
+		msg = str(exc)[:200].replace("\n", " ")
+		return f"error: cannot list {path!r}: {type(exc).__name__}: {msg}"
 	return "\n".join(names)
 
 

@@ -126,7 +126,8 @@ def complete(
 	except asyncio.TimeoutError:
 		raise LLMUnavailable("copilot sdk timed out")
 	except Exception as exc:
-		raise LLMUnavailable(f"copilot sdk error: {type(exc).__name__}")
+		msg = str(exc)[:200].replace("\n", " ")
+		raise LLMUnavailable(f"copilot sdk error: {type(exc).__name__}: {msg}")
 
 
 def chat(

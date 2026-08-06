@@ -84,7 +84,8 @@ def complete(
 	except httpx.TimeoutException:
 		raise LLMUnavailable("request timed out")
 	except httpx.HTTPError as exc:
-		raise LLMUnavailable(f"request failed: {type(exc).__name__}")
+		msg = str(exc)[:200].replace("\n", " ")
+		raise LLMUnavailable(f"request failed: {type(exc).__name__}: {msg}")
 
 	if not (200 <= response.status_code < 300):
 		raise LLMUnavailable(f"HTTP {response.status_code}")
@@ -142,7 +143,8 @@ def chat(
 	except httpx.TimeoutException:
 		raise LLMUnavailable("request timed out")
 	except httpx.HTTPError as exc:
-		raise LLMUnavailable(f"request failed: {type(exc).__name__}")
+		msg = str(exc)[:200].replace("\n", " ")
+		raise LLMUnavailable(f"request failed: {type(exc).__name__}: {msg}")
 
 	if not (200 <= response.status_code < 300):
 		raise LLMUnavailable(f"HTTP {response.status_code}")
