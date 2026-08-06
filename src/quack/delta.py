@@ -102,9 +102,18 @@ class StagedDelta:
 
 
 def parse_staged_delta(
-	name_status: str, numstat: str, unified_diff: str
+	name_status: str | None, numstat: str | None, unified_diff: str | None
 ) -> StagedDelta:
 	"""Build a StagedDelta from the three raw git outputs."""
+	if name_status is None or numstat is None or unified_diff is None:
+		from . import render
+
+		render.metadata("quack: could not read staged diff, skipping analysis")
+		return StagedDelta()
+
+	if len(unified_diff) > MAX_RAW_DIFF:
+		unified_diff = unified_diff[:MAX_RAW_DIFF] + TRUNCATION_MARKER
+
 	statuses = _parse_name_status(name_status)
 	counts = _parse_numstat(numstat)
 	hunks_by_path, binary_paths = _parse_unified_diff(unified_diff)
@@ -125,11 +134,7 @@ def parse_staged_delta(
 			)
 		)
 
-	raw_diff = unified_diff
-	if len(raw_diff) > MAX_RAW_DIFF:
-		raw_diff = raw_diff[:MAX_RAW_DIFF] + TRUNCATION_MARKER
-
-	return StagedDelta(files=files, raw_diff=raw_diff)
+	return StagedDelta(files=files, raw_diff=unified_diff)
 
 
 def _parse_name_status(text: str) -> list[tuple[str, str]]:

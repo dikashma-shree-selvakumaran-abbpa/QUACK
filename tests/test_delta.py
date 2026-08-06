@@ -124,6 +124,12 @@ def test_empty_inputs():
 	assert d.raw_diff == ""
 
 
+def test_none_unified_diff_returns_empty_delta():
+	d = parse_staged_delta("M\tsrc/app.py", "1\t0\tsrc/app.py", None)
+	assert d.files == []
+	assert d.raw_diff == ""
+
+
 def test_triviality_no_changes():
 	d = parse_staged_delta("", "", "")
 	is_trivial, reason = d.triviality()
