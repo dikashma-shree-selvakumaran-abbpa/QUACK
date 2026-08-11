@@ -58,6 +58,48 @@ def test_cs_conventional_and_mirrored(tmp_path: Path) -> None:
 	assert not plan.untested_sources
 
 
+def test_cs_sibling_test_project_is_mapped(tmp_path: Path) -> None:
+	_write(
+		tmp_path,
+		"packages/GraphicsModelEditor/FabricWasmHost/FabricWasmHost.csproj",
+		"<Project />",
+	)
+	_write(
+		tmp_path,
+		"packages/GraphicsModelEditor/FabricWasmHost/SvgDrawingAdapter.cs",
+		"public class SvgDrawingAdapter {}",
+	)
+	_write(
+		tmp_path,
+		"packages/GraphicsModelEditor/FabricWasmHost.Tests/FabricWasmHost.Tests.csproj",
+		"<Project />",
+	)
+	_write(
+		tmp_path,
+		"packages/GraphicsModelEditor/FabricWasmHost.Tests/SvgDrawingAdapterTests.cs",
+		"public class SvgDrawingAdapterTests {}",
+	)
+
+	plan = build_plan(
+		_delta("packages/GraphicsModelEditor/FabricWasmHost/SvgDrawingAdapter.cs"),
+		root=tmp_path,
+	)
+
+	mapping = plan.mappings[0]
+	assert mapping.tests == [
+		"packages/GraphicsModelEditor/FabricWasmHost.Tests/SvgDrawingAdapterTests.cs"
+	]
+	assert mapping.test_project == (
+		"packages/GraphicsModelEditor/FabricWasmHost.Tests/"
+		"FabricWasmHost.Tests.csproj"
+	)
+	assert plan.runner_commands == [
+		'dotnet test packages/GraphicsModelEditor/FabricWasmHost.Tests/'
+		'FabricWasmHost.Tests.csproj --no-build --filter '
+		'"FullyQualifiedName~SvgDrawingAdapterTests"'
+	]
+
+
 def test_cs_runner_command_no_build_filter(tmp_path: Path) -> None:
 	_make_cs_repo(tmp_path)
 	plan = build_plan(_delta("src/Lib/Sub/Foo.cs", "src/Lib/Bar.cs"), root=tmp_path)
