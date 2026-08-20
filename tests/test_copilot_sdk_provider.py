@@ -52,6 +52,18 @@ class _FakeClient:
 		self.stopped = True
 
 
+class _FakeModelClient(_FakeClient):
+	def __init__(self, models=None, list_error=None):
+		super().__init__()
+		self._models = models or []
+		self._list_error = list_error
+
+	async def list_models(self):
+		if self._list_error is not None:
+			raise self._list_error
+		return self._models
+
+
 def _install_client(monkeypatch, client):
 	monkeypatch.setattr(copilot_sdk, "CopilotClient", lambda: client)
 	return client
@@ -95,6 +107,30 @@ def test_none_response_raises_llm_unavailable(monkeypatch):
 		copilot_sdk.complete(
 			[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
 		)
+	assert client.stopped is True
+
+
+def test_list_models_returns_normalized_ids_and_stops_client(monkeypatch):
+	models = [
+		SimpleNamespace(id="model-a", name="A"),
+		{"id": "model-b"},
+		"model-c",
+	]
+	client = _install_client(monkeypatch, _FakeModelClient(models=models))
+
+	assert copilot_sdk.list_models() == ["model-a", "model-b", "model-c"]
+	assert client.stopped is True
+
+
+def test_list_models_failure_is_normalized_and_stops_client(monkeypatch):
+	client = _install_client(
+		monkeypatch, _FakeModelClient(list_error=RuntimeError("authorization failed"))
+	)
+
+	with pytest.raises(LLMUnavailable) as excinfo:
+		copilot_sdk.list_models()
+
+	assert "model list unavailable" in excinfo.value.reason
 	assert client.stopped is True
 
 

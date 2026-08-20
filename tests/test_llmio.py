@@ -181,6 +181,23 @@ def test_default_model_none_on_unknown_kind(monkeypatch):
 	assert llmio.default_model(kind="nonsense") is None
 
 
+def test_list_models_delegates_to_selected_provider(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
+	_stub_provider("copilot_sdk").list_models = lambda: ["model-a", "model-b"]
+
+	assert llmio.list_models() == ["model-a", "model-b"]
+
+
+def test_list_models_reports_unavailable_when_provider_lacks_method(monkeypatch):
+	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
+	_stub_provider("copilot_sdk")
+
+	with pytest.raises(LLMUnavailable) as excinfo:
+		llmio.list_models()
+
+	assert excinfo.value.reason == "model list unavailable"
+
+
 def test_default_model_none_on_unknown_provider(monkeypatch):
 	monkeypatch.setenv("QUACK_PROVIDER", "does_not_exist")
 	assert llmio.default_model(kind="completion") is None

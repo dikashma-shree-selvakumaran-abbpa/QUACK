@@ -141,6 +141,28 @@ def default_model(kind: str = "completion") -> str | None:
 	return getattr(provider, attr, None)
 
 
+def list_models() -> list[str]:
+	"""Return model ids reachable through the selected provider.
+
+	Model discovery is optional. Providers that do not expose it, and every
+	provider-specific failure, are normalised to :class:`LLMUnavailable` so a
+	diagnostic caller can remain fully fail-open.
+	"""
+	provider = _select_provider()
+	discover = getattr(provider, "list_models", None)
+	if discover is None:
+		raise LLMUnavailable("model list unavailable")
+	try:
+		return list(discover())
+	except LLMUnavailable:
+		raise
+	except Exception as exc:
+		msg = str(exc)[:200].replace("\n", " ")
+		raise LLMUnavailable(
+			f"model list unavailable: {type(exc).__name__}: {msg}"
+		)
+
+
 def complete(
 	messages: list[dict],
 	model: str,

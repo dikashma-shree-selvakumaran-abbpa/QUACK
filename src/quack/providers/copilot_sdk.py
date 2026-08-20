@@ -83,6 +83,50 @@ def _flatten(messages: list[dict]) -> str:
 	return "\n\n".join(sections)
 
 
+def _model_id(model) -> str | None:
+	"""Extract a stable model id from SDK objects across supported versions."""
+	if isinstance(model, str):
+		return model or None
+	if isinstance(model, dict):
+		value = model.get("id") or model.get("name")
+	else:
+		value = getattr(model, "id", None) or getattr(model, "name", None)
+	return str(value) if value else None
+
+
+async def _list_models_async() -> list[str]:
+	"""Start the SDK runtime and return model ids reachable by this login."""
+	if CopilotClient is None:
+		raise LLMUnavailable("copilot sdk not installed")
+
+	client = CopilotClient()
+	discover = getattr(client, "list_models", None)
+	if discover is None:
+		raise LLMUnavailable("model list unavailable")
+	try:
+		await client.start()
+		models = await discover()
+		return [model_id for model in models if (model_id := _model_id(model))]
+	finally:
+		try:
+			await client.stop()
+		except Exception:
+			pass
+
+
+def list_models() -> list[str]:
+	"""Return reachable Copilot model ids, normalising every SDK failure."""
+	try:
+		return asyncio.run(_list_models_async())
+	except LLMUnavailable:
+		raise
+	except Exception as exc:
+		msg = str(exc)[:200].replace("\n", " ")
+		raise LLMUnavailable(
+			f"model list unavailable: {type(exc).__name__}: {msg}"
+		)
+
+
 async def _complete_async(prompt: str, model: str, timeout_s: float) -> str:
 	"""Drive the async SDK for a single completion and return the text."""
 	if CopilotClient is None:

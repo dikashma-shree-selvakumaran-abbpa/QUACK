@@ -511,11 +511,101 @@ def metrics_summary() -> None:
 	)
 
 
+def _diagnostic_model(kind: str, cli_model: str | None) -> tuple[str | None, str]:
+	"""Resolve one model surface and identify the winning configuration layer."""
+	if cli_model:
+		return cli_model, "--model"
+	env_model = os.environ.get("QUACK_MODEL")
+	if env_model:
+		return env_model, "QUACK_MODEL"
+	provider_default = llmio.default_model(kind=kind)
+	if provider_default:
+		return provider_default, "provider default"
+	if kind == "agent":
+		return DEFAULT_AGENT_MODEL, "fallback (provider unresolved)"
+	return None, "unresolved"
+
+
+def _availability_hint(reason: str) -> str:
+	if "GITHUB_TOKEN" in reason:
+		return "set GITHUB_TOKEN with models:read permission"
+	if "not installed" in reason:
+		return "install the selected provider runtime"
+	if "unknown provider" in reason:
+		return "set QUACK_PROVIDER to github_models or copilot_sdk"
+	return "verify the selected provider's credentials and runtime"
+
+
+def _render_model_diagnostic(cli_model: str | None) -> None:
+	configured_provider = os.environ.get("QUACK_PROVIDER")
+	provider = configured_provider or llmio.DEFAULT_PROVIDER
+	selection = (
+		"QUACK_PROVIDER environment variable"
+		if configured_provider
+		else f"default (QUACK_PROVIDER unset; default is {llmio.DEFAULT_PROVIDER})"
+	)
+	render.info(f"Provider: {provider} - selected by {selection}")
+
+	reason = llmio.availability_error()
+	if reason:
+		render.warning(f"Auth status: problem - {reason}")
+		if "unknown provider" in reason or "provider unavailable" in reason:
+			render.warning(f"Provider resolution: unavailable - {reason}")
+		render.metadata(f"Suggested fix: {_availability_hint(reason)}")
+	else:
+		render.info("Auth status: available")
+
+	ambient_tokens = [
+		(name, len(os.environ[name]))
+		for name in ("GITHUB_TOKEN", "GH_TOKEN", "COPILOT_GITHUB_TOKEN")
+		if name in os.environ
+	]
+	if provider == "copilot_sdk" and ambient_tokens:
+		details = ", ".join(
+			f"{name} is set (length {length})" for name, length in ambient_tokens
+		)
+		render.warning(
+			f"WARNING: {details}. An ambient token SHADOWS the Copilot CLI's "
+			"stored login in the SDK auth precedence order and can cause "
+			'"Authorization error" failures.'
+		)
+		render.metadata("Suggested fix: unset the ambient token before running quack")
+
+	for kind, label in (("completion", "Completion"), ("agent", "Agent")):
+		resolved, source = _diagnostic_model(kind, cli_model)
+		value = resolved or "unresolved"
+		render.info(f"{label} model: {value} (source: {source})")
+
+	render.info(f"Timeout: {llmio.default_timeout():g}s")
+
+	if provider == "copilot_sdk" and reason is None:
+		try:
+			models = llmio.list_models()
+		except Exception:
+			render.warning("Reachable models: model list unavailable")
+		else:
+			visible = models[:15]
+			render.info(
+				"Reachable models: " + (", ".join(visible) if visible else "none reported")
+			)
+			if len(models) > len(visible):
+				render.metadata(f"Showing first {len(visible)} of {len(models)} models")
+
+
 @main.command()
-def model() -> None:
-	"""Inspect model configuration and connectivity (stub)."""
-	render.metadata("quack model: not implemented yet")
-	sys.exit(0)
+@click.option(
+	"--model",
+	default=None,
+	help="Model id to diagnose (overrides QUACK_MODEL and provider defaults).",
+)
+def model(model: str | None) -> None:
+	"""Report model configuration and connectivity without changing it."""
+	# This command is intentionally read-only; it reports defaults but never sets them.
+	try:
+		_render_model_diagnostic(model)
+	except Exception as exc:
+		# Diagnostics must never become a new failure mode or expose exception data.
+		render.warning(f"quack model: diagnostic unavailable ({type(exc).__name__})")
 
 
 @main.command()
