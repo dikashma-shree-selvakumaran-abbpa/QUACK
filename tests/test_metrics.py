@@ -32,6 +32,105 @@ def test_log_never_raises_for_unwritable_path(tmp_path, monkeypatch) -> None:
 	metrics.log({"not_serializable": object()})
 
 
+def test_log_replaces_paths_in_failure_strings(tmp_path, monkeypatch) -> None:
+	path = tmp_path / "metrics.jsonl"
+	monkeypatch.setattr(metrics, "metrics_path", lambda: path)
+
+	metrics.log(
+		{
+			"failure": (
+				"failed at C:\\private\\source.py, /home/user/source.py, "
+				"and \\\\server\\share\\source.py"
+			)
+		}
+	)
+
+	failure = json.loads(path.read_text(encoding="utf-8"))["failure"]
+	assert failure.count("<path>") == 3
+	assert "source.py" not in failure
+
+
+def test_log_redacts_token_shaped_strings(tmp_path, monkeypatch) -> None:
+	path = tmp_path / "metrics.jsonl"
+	monkeypatch.setattr(metrics, "metrics_path", lambda: path)
+
+	metrics.log(
+		{
+			"failure": (
+				"tokens ghp_abcdefghijklmnopqrstuvwxyz123456 "
+				"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef123456"
+			)
+		}
+	)
+
+	failure = json.loads(path.read_text(encoding="utf-8"))["failure"]
+	assert failure == "tokens <redacted> <redacted>"
+
+
+def test_log_drops_unexpected_keys(tmp_path, monkeypatch) -> None:
+	path = tmp_path / "metrics.jsonl"
+	monkeypatch.setattr(metrics, "metrics_path", lambda: path)
+
+	metrics.log({"command": "check", "private_path": "/private/source.py"})
+
+	assert json.loads(path.read_text(encoding="utf-8")) == {"command": "check"}
+
+
+def test_log_drops_malformed_tier1_findings_entries(tmp_path, monkeypatch) -> None:
+	path = tmp_path / "metrics.jsonl"
+	monkeypatch.setattr(metrics, "metrics_path", lambda: path)
+
+	metrics.log(
+		{
+			"tier1_findings": {
+				"secrets": 1,
+				"debug_code": "one",
+				3: 2,
+				"nested": {"merge_markers": 1},
+			}
+		}
+	)
+
+	assert json.loads(path.read_text(encoding="utf-8")) == {
+		"tier1_findings": {"secrets": 1}
+	}
+
+
+def test_log_sanitization_of_pathological_input_never_raises(
+	tmp_path, monkeypatch
+) -> None:
+	path = tmp_path / "metrics.jsonl"
+	monkeypatch.setattr(metrics, "metrics_path", lambda: path)
+
+	metrics.log({"failure": object(), "tier1_findings": object()})
+
+	assert json.loads(path.read_text(encoding="utf-8")) == {}
+
+
+def test_log_normal_event_round_trips_unchanged(tmp_path, monkeypatch) -> None:
+	path = tmp_path / "metrics.jsonl"
+	monkeypatch.setattr(metrics, "metrics_path", lambda: path)
+	event = {
+		"ts": "2026-01-02T03:04:05+00:00",
+		"command": "check",
+		"duration_ms": 12,
+		"files": 2,
+		"lines_added": 4,
+		"lines_removed": 1,
+		"tier1_findings": {"debug_code": 1},
+		"blocked": False,
+		"tests_mapped": 1,
+		"untested_sources": 0,
+		"review_cache": "hit",
+		"risk": "low",
+		"exit": 0,
+	}
+
+	metrics.log(event)
+
+	assert json.loads(path.read_text(encoding="utf-8")) == event
+
+
 def test_log_rolls_over_file_past_max_bytes(tmp_path, monkeypatch) -> None:
 	path = tmp_path / "metrics.jsonl"
 	path.write_text("old metrics", encoding="utf-8")
