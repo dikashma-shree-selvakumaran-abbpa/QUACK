@@ -83,7 +83,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 			return WatchResult(files=len(delta.files), reason=availability)
 
 		with render.thinking("reviewing changes..."):
-			review = tier2.review(
+			review, reason = tier2.review_with_reason(
 				delta,
 				findings,
 				plan,
@@ -92,7 +92,10 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 				timeout_s=llmio.default_timeout(),
 			)
 		if review is None:
-			return WatchResult(files=len(delta.files), reason="AI analysis unavailable")
+			return WatchResult(
+				files=len(delta.files),
+				reason=reason or llmio.availability_error() or "AI analysis unavailable",
+			)
 
 		payload = asdict(review)
 		payload["model"] = resolved_model

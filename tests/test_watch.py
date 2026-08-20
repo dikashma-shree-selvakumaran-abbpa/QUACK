@@ -33,9 +33,10 @@ def test_watch_once_reviews_and_writes_cache(monkeypatch) -> None:
 	monkeypatch.setattr(watch.llmio, "availability_error", lambda: None)
 	monkeypatch.setattr(
 		watch.tier2,
-		"review",
-		lambda *args, **kwargs: ReviewResult(
-			risk="medium", one_liner="Review complete."
+		"review_with_reason",
+		lambda *args, **kwargs: (
+			ReviewResult(risk="medium", one_liner="Review complete."),
+			None,
 		),
 	)
 
@@ -52,3 +53,24 @@ def test_watch_once_reviews_and_writes_cache(monkeypatch) -> None:
 	assert written["digest"] == watch.reviewcache.diff_hash(delta.raw_diff)
 	assert written["payload"]["risk"] == "medium"
 	assert written["payload"]["model"] == "test-model"
+
+
+def test_watch_once_surfaces_actionable_review_failure(monkeypatch) -> None:
+	delta = _delta()
+	monkeypatch.setattr(watch.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(watch.gitio, "working_delta", lambda: StagedDelta())
+	monkeypatch.setattr(watch.testmap, "build_plan", lambda *args, **kwargs: TestPlan())
+	monkeypatch.setattr(watch.instructions, "load", lambda root: None)
+	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: "test-model")
+	monkeypatch.setattr(watch.llmio, "default_timeout", lambda: 12.0)
+	monkeypatch.setattr(watch.llmio, "availability_error", lambda: None)
+	monkeypatch.setattr(
+		watch.tier2,
+		"review_with_reason",
+		lambda *args, **kwargs: (None, "some actionable reason"),
+	)
+
+	result = watch.review_once("/repo")
+
+	assert result.reason == "some actionable reason"
+	assert result.reason != "AI analysis unavailable"
