@@ -6,6 +6,7 @@ import pytest
 from click.testing import CliRunner
 
 from quack import cli
+from quack.llmio import LLMUnavailable
 
 
 @pytest.fixture(autouse=True)
@@ -109,15 +110,37 @@ def test_model_resolution_precedence(monkeypatch):
 
 def test_list_models_failure_is_fail_open(monkeypatch):
 	def fail():
-		raise RuntimeError("authorization failed")
+		raise LLMUnavailable(
+			"model list unavailable: 401: token lacks Copilot Requests permission"
+		)
 
 	monkeypatch.setattr(cli.llmio, "list_models", fail)
 
 	result = _invoke()
 
 	assert result.exit_code == 0
-	assert "Reachable models: model list unavailable" in result.output
-	assert "authorization failed" not in result.output
+	assert (
+		"Reachable models: model list unavailable "
+		"(401: token lacks Copilot Requests permission)"
+	) in result.output
+	assert "Traceback" not in result.output
+
+
+def test_list_models_reason_is_one_line_truncated_and_token_redacted(monkeypatch):
+	secret = "ambient-secret"
+	monkeypatch.setenv("GITHUB_TOKEN", secret)
+
+	def fail():
+		raise RuntimeError(f"denied for {secret}\n" + "x" * 300)
+
+	monkeypatch.setattr(cli.llmio, "list_models", fail)
+
+	result = _invoke()
+
+	assert result.exit_code == 0
+	assert secret not in result.output
+	assert "denied for [REDACTED] x" in result.output
+	assert "..." in result.output
 
 
 def test_caps_reachable_models_at_fifteen(monkeypatch):

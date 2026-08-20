@@ -6,3 +6,7 @@
 
 ## Reporting Guidelines
 - Display hook durations in quack report titles with one decimal place while keeping the underlying duration value as a float.
+
+## SDK Integration Guidelines
+- Suppress SDK logger output and child-log records during both model discovery and completion calls; restore logging state afterward.
+- Surface only a one-line normalized/truncated reason with no traceback.

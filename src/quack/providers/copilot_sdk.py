@@ -20,6 +20,8 @@ reason so callers can implement fail-open behaviour.
 from __future__ import annotations
 
 import asyncio
+import logging
+from contextlib import contextmanager
 
 from ..llmio import LLMUnavailable
 
@@ -41,6 +43,42 @@ DEFAULT_TIMEOUT_S = 60.0
 # loops and fails.
 DEFAULT_COMPLETION_MODEL = "claude-haiku-4.5"
 DEFAULT_AGENT_MODEL = "claude-sonnet-4.5"
+
+
+@contextmanager
+def _silence_sdk_logging():
+	"""Suppress Copilot SDK log records for one adapter operation."""
+	parent = logging.getLogger("copilot")
+	parent_state = (
+		list(parent.handlers),
+		parent.level,
+		parent.propagate,
+		parent.disabled,
+	)
+	children = [
+		(logger, logger.disabled)
+		for name, logger in logging.Logger.manager.loggerDict.items()
+		if name.startswith("copilot.") and isinstance(logger, logging.Logger)
+	]
+	parent.handlers = [logging.NullHandler()]
+	parent.propagate = False
+	parent.disabled = False
+	for logger, _ in children:
+		logger.disabled = True
+	try:
+		yield
+	finally:
+		parent.handlers, parent.level, parent.propagate, parent.disabled = parent_state
+		for logger, disabled in children:
+			logger.disabled = disabled
+
+
+def _short_error(exc: Exception, limit: int = 160) -> str:
+	"""Return a single-line bounded SDK error without traceback content."""
+	message = " ".join(str(exc).split()) or type(exc).__name__
+	if len(message) > limit:
+		return message[: limit - 3].rstrip() + "..."
+	return message
 
 
 def check_availability() -> str | None:
@@ -117,14 +155,12 @@ async def _list_models_async() -> list[str]:
 def list_models() -> list[str]:
 	"""Return reachable Copilot model ids, normalising every SDK failure."""
 	try:
-		return asyncio.run(_list_models_async())
+		with _silence_sdk_logging():
+			return asyncio.run(_list_models_async())
 	except LLMUnavailable:
 		raise
 	except Exception as exc:
-		msg = str(exc)[:200].replace("\n", " ")
-		raise LLMUnavailable(
-			f"model list unavailable: {type(exc).__name__}: {msg}"
-		)
+		raise LLMUnavailable(f"model list unavailable: {_short_error(exc)}")
 
 
 async def _complete_async(prompt: str, model: str, timeout_s: float) -> str:
@@ -164,14 +200,16 @@ def complete(
 	"""
 	prompt = _flatten(messages)
 	try:
-		return asyncio.run(_complete_async(prompt, model, timeout_s))
+		with _silence_sdk_logging():
+			return asyncio.run(_complete_async(prompt, model, timeout_s))
 	except LLMUnavailable:
 		raise
 	except asyncio.TimeoutError:
 		raise LLMUnavailable("copilot sdk timed out")
 	except Exception as exc:
-		msg = str(exc)[:200].replace("\n", " ")
-		raise LLMUnavailable(f"copilot sdk error: {type(exc).__name__}: {msg}")
+		raise LLMUnavailable(
+			f"copilot sdk error: {type(exc).__name__}: {_short_error(exc)}"
+		)
 
 
 def chat(

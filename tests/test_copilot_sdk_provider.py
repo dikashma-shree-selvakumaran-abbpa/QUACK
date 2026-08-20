@@ -7,6 +7,8 @@ replaced with in-memory fakes via monkeypatch.
 from __future__ import annotations
 
 import asyncio
+import io
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -62,6 +64,29 @@ class _FakeModelClient(_FakeClient):
 		if self._list_error is not None:
 			raise self._list_error
 		return self._models
+
+
+class _LoggingSession:
+	async def send_and_wait(self, prompt):
+		try:
+			raise RuntimeError("session authorization failed")
+		except RuntimeError:
+			logging.getLogger("copilot.session").exception(
+				"CopilotSession.send_and_wait failed"
+			)
+			raise
+
+
+class _LoggingClient(_FakeClient):
+	async def create_session(self, model):
+		return _LoggingSession()
+
+	async def list_models(self):
+		try:
+			raise RuntimeError("401: token lacks Copilot Requests permission")
+		except RuntimeError:
+			logging.getLogger("copilot._jsonrpc").exception("JsonRpcError")
+			raise
 
 
 def _install_client(monkeypatch, client):
@@ -132,6 +157,45 @@ def test_list_models_failure_is_normalized_and_stops_client(monkeypatch):
 
 	assert "model list unavailable" in excinfo.value.reason
 	assert client.stopped is True
+
+
+@pytest.mark.parametrize(
+	("operation", "logger_name", "leaked_message"),
+	[
+		("list_models", "copilot._jsonrpc", "JsonRpcError"),
+		("complete", "copilot.session", "CopilotSession.send_and_wait failed"),
+	],
+)
+def test_sdk_error_logging_is_suppressed_and_restored(
+	monkeypatch, operation, logger_name, leaked_message
+):
+	client = _install_client(monkeypatch, _LoggingClient())
+	logger = logging.getLogger(logger_name)
+	stream = io.StringIO()
+	handler = logging.StreamHandler(stream)
+	state = (logger.level, logger.propagate, logger.disabled)
+	logger.addHandler(handler)
+	logger.setLevel(logging.ERROR)
+	logger.propagate = False
+	logger.disabled = False
+	try:
+		with pytest.raises(LLMUnavailable):
+			if operation == "list_models":
+				copilot_sdk.list_models()
+			else:
+				copilot_sdk.complete(
+					[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
+				)
+
+		assert stream.getvalue() == ""
+		assert logger.disabled is False
+		logger.error("logging restored")
+		assert "logging restored" in stream.getvalue()
+		assert leaked_message not in stream.getvalue()
+		assert client.stopped is True
+	finally:
+		logger.removeHandler(handler)
+		logger.level, logger.propagate, logger.disabled = state
 
 
 def test_chat_raises_llm_unavailable():

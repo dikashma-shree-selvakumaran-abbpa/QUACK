@@ -536,6 +536,24 @@ def _availability_hint(reason: str) -> str:
 	return "verify the selected provider's credentials and runtime"
 
 
+def _model_list_failure_reason(exc: Exception, limit: int = 160) -> str:
+	"""Return a safe, bounded, single-line reason for model discovery failure."""
+	reason = getattr(exc, "reason", None) or str(exc)
+	reason = " ".join(reason.split())
+	prefix = "model list unavailable:"
+	if reason.lower().startswith(prefix):
+		reason = reason[len(prefix) :].strip()
+	for name in ("GITHUB_TOKEN", "GH_TOKEN", "COPILOT_GITHUB_TOKEN"):
+		token = os.environ.get(name)
+		if token:
+			reason = reason.replace(token, "[REDACTED]")
+	if not reason:
+		return "unknown reason"
+	if len(reason) > limit:
+		return reason[: limit - 3].rstrip() + "..."
+	return reason
+
+
 def _render_model_diagnostic(cli_model: str | None) -> None:
 	configured_provider = os.environ.get("QUACK_PROVIDER")
 	provider = configured_provider or llmio.DEFAULT_PROVIDER
@@ -581,8 +599,9 @@ def _render_model_diagnostic(cli_model: str | None) -> None:
 	if provider == "copilot_sdk" and reason is None:
 		try:
 			models = llmio.list_models()
-		except Exception:
-			render.warning("Reachable models: model list unavailable")
+		except Exception as exc:
+			reason = _model_list_failure_reason(exc)
+			render.warning(f"Reachable models: model list unavailable ({reason})")
 		else:
 			visible = models[:15]
 			render.info(
