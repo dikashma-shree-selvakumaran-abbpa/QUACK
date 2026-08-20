@@ -6,9 +6,12 @@ or subprocess is involved.
 
 from __future__ import annotations
 
+import time
+
+import pytest
 from click.testing import CliRunner
 
-from quack import cli, tier2
+from quack import cli, reviewcache, tier2
 from quack.delta import StagedDelta, StagedFile
 
 
@@ -20,6 +23,11 @@ def _hunk(*added_lines: str, start: int = 1) -> str:
 def _delta(path: str, hunk: str) -> StagedDelta:
 	file = StagedFile(path=path, status="M", added=1, removed=0, hunks=[hunk])
 	return StagedDelta(files=[file], raw_diff=hunk)
+
+
+@pytest.fixture(autouse=True)
+def _empty_review_cache(monkeypatch):
+	monkeypatch.setattr(cli.reviewcache, "read", lambda *args, **kwargs: None)
 
 
 def test_check_blocks_on_secret(monkeypatch) -> None:
@@ -47,7 +55,7 @@ def test_check_passes_on_clean_delta(monkeypatch) -> None:
 
 
 def test_check_is_fully_local_no_ai_section(monkeypatch) -> None:
-	"""Commit time is fully local: no Tier 2 call, no AI section rendered."""
+	"""Commit time performs a cache lookup but never calls Tier 2."""
 	delta = _delta(
 		"src/app.py",
 		_hunk("def add(a, b):", "    return a + b", "x = add(1, 2)"),
@@ -60,11 +68,63 @@ def test_check_is_fully_local_no_ai_section(monkeypatch) -> None:
 		raise AssertionError("quack check must not call Tier 2 at commit time")
 
 	monkeypatch.setattr(tier2, "review", _boom)
+	lookups: list[tuple] = []
+	monkeypatch.setattr(
+		cli.reviewcache,
+		"read",
+		lambda *args, **kwargs: lookups.append(args) or None,
+	)
 
 	result = CliRunner().invoke(cli.main, ["check"])
 
 	assert result.exit_code == 0
-	assert "AI" not in result.output
+	assert len(lookups) == 1
+	assert "AI review: not reviewed yet" in result.output
+
+
+def test_check_renders_cached_review_with_age_without_provider(monkeypatch) -> None:
+	delta = _delta(
+		"src/app.py",
+		_hunk("def add(a, b):", "    return a + b", "x = add(1, 2)"),
+	)
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: "/repo")
+	entry = reviewcache.CacheEntry(
+		diff_hash=reviewcache.diff_hash(delta.raw_diff),
+		timestamp=time.time() - 125,
+		repo_root="/repo",
+		review_payload={
+			"risk": "medium",
+			"reasons": ["src/app.py: boundary changed"],
+			"tests_to_run": ["pytest tests/test_app.py"],
+			"missing_tests": [],
+			"one_liner": "Review complete.",
+			"model": "test-model",
+		},
+	)
+	monkeypatch.setattr(cli.reviewcache, "read", lambda *args, **kwargs: entry)
+
+	def _boom(*args, **kwargs):
+		raise AssertionError("cache hits must not call Tier 2")
+
+	monkeypatch.setattr(tier2, "review", _boom)
+
+	result = CliRunner().invoke(cli.main, ["check"])
+
+	assert result.exit_code == 0
+	assert "Review complete." in result.output
+	assert "risk: MEDIUM" in result.output
+	assert "reviewed 2 min ago by quack watch" in result.output
+
+
+def test_check_cache_miss_renders_watch_nudge(monkeypatch) -> None:
+	delta = _delta("src/app.py", _hunk("x = 1", "y = 2", "z = 3"))
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+
+	result = CliRunner().invoke(cli.main, ["check"])
+
+	assert result.exit_code == 0
+	assert "run `quack watch` to review in the background" in result.output
 
 
 def test_check_has_no_model_option() -> None:

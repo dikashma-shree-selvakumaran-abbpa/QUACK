@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # Directories that never contain first-party source or tests we care about.
-_PRUNE_DIRS = frozenset(
+PRUNE_DIRS = frozenset(
 	{
 		".git",
 		".hg",
@@ -148,7 +148,7 @@ def _build_index(root: Path, config: TestMapConfig) -> _Index:
 	all_py: list[Path] = []
 
 	for dirpath, dirnames, filenames in os.walk(root):
-		dirnames[:] = [d for d in dirnames if d not in _PRUNE_DIRS]
+		dirnames[:] = [d for d in dirnames if d not in PRUNE_DIRS]
 		here = Path(dirpath)
 		for name in filenames:
 			if name.endswith(".csproj"):

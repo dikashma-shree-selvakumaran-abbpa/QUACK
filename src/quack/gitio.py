@@ -57,6 +57,19 @@ def staged_delta() -> StagedDelta:
 	)
 
 
+def working_delta() -> StagedDelta:
+	"""Collect tracked working-tree changes versus HEAD.
+
+	This includes staged and unstaged changes. Untracked files are visible to
+	the watcher's filesystem snapshot but have no Git diff until staged.
+	"""
+	return delta.parse_staged_delta(
+		_run_git(["diff", "--name-status", "-M", "HEAD"]),
+		_run_git(["diff", "--numstat", "-M", "HEAD"]),
+		_run_git(["diff", "-M", "--unified=3", "HEAD"]),
+	)
+
+
 def range_delta(base: str, head: str = "HEAD") -> StagedDelta:
 	"""Collect the delta for a commit range and parse it into a StagedDelta.
 

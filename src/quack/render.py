@@ -168,6 +168,7 @@ def report(
 	plan,
 	ai,
 	model: str = "",
+	ai_note: str | None = None,
 	blocked: bool = False,
 	duration: float = 0.0,
 ) -> None:
@@ -191,7 +192,7 @@ def report(
 		_findings_table(findings),
 		_quack_alarm(findings, blocked),
 		_guidance_group(plan),
-		_ai_group(ai, model),
+		_ai_group(ai, model, ai_note),
 	):
 		if section is not None:
 			sections.append(section)
@@ -279,18 +280,13 @@ def _guidance_group(plan) -> RenderableType | None:
 	return Group(*lines)
 
 
-def _ai_group(ai, model: str) -> RenderableType | None:
-	"""AI verdict section, or nothing.
-
-	At commit time ``ai`` is always ``None`` (no network, no AI), so this
-	section is simply absent. A ``("skipped", reason)`` tuple is likewise
-	treated as absent -- we never render an "AI: skipped" line. Only a real
-	review result renders a verdict (e.g. future pre-push usage).
-	"""
+def _ai_group(ai, model: str, note: str | None = None) -> RenderableType | None:
+	"""Render an AI verdict, cache-miss message, and optional provenance note."""
 	if ai is None:
 		return None
 	if isinstance(ai, tuple) and ai and ai[0] == "skipped":
-		return None
+		reason = str(ai[1]) if len(ai) > 1 else "AI analysis unavailable"
+		return Text(reason, style=_META)
 
 	risk = str(getattr(ai, "risk", "unknown"))
 	risk_style = _RISK_STYLES.get(risk, _WARN)
@@ -308,6 +304,8 @@ def _ai_group(ai, model: str) -> RenderableType | None:
 		lines.append(Text(test, style=_CMD))
 	for source in getattr(ai, "missing_tests", []) or []:
 		lines.append(Text(f"{source}: no test covers this change", style=_WARN))
+	if note:
+		lines.append(Text(note, style=_META))
 	return Group(*lines)
 
 

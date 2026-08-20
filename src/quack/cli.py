@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -26,8 +27,10 @@ from . import (
 	instructions,
 	llmio,
 	render,
+	reviewcache,
 	testmap,
 	tier2,
+	watch as watch_mod,
 )
 from .tier1 import Tier1Config
 from .tier1 import allowlisted_locations
@@ -64,7 +67,8 @@ def check() -> None:
 		sys.exit(0)
 
 	# Tier 1: deterministic checks (offline, always run).
-	findings = tier1_run(delta, Tier1Config())
+	redaction_findings = tier1_run(delta, Tier1Config())
+	findings = redaction_findings
 
 	# Optional power mode: layer gitleaks' rules on top when it is installed.
 	# Fully fail-open -- returns [] when gitleaks is unavailable or errors.
@@ -95,9 +99,29 @@ def check() -> None:
 	# Test guidance (only worth computing on an unblocked commit).
 	plan = testmap.build_plan(delta)
 
-	# Commit time is fully local: no Tier 2, no network, no token. The AI
-	# section is simply absent (ai=None). AI analysis runs at pre-push via
-	# `quack agent`.
+	# Commit time is fully local: hash the same deterministically redacted diff
+	# used by watch mode and perform one fail-open cache-file lookup. A miss must
+	# never fall back to a provider call.
+	redacted = tier1_redact(delta, redaction_findings)
+	root = gitio.repo_root() or os.getcwd()
+	entry = reviewcache.read(root, reviewcache.diff_hash(redacted.raw_diff))
+	cached_review = None
+	cached_model = ""
+	cache_note = None
+	if entry is not None:
+		cached_review, cached_model = _cached_review(entry.review_payload)
+		if cached_review is not None:
+			cache_note = (
+				f"(reviewed {_format_age(entry.timestamp)} ago by quack watch)"
+			)
+	if cached_review is None:
+		ai = (
+			"skipped",
+			"AI review: not reviewed yet - run `quack watch` to review in the background",
+		)
+	else:
+		ai = cached_review
+
 	# TODO: thread the real hook duration through to render.report.
 	render.report(
 		files=len(delta.files),
@@ -105,10 +129,71 @@ def check() -> None:
 		removed=delta.total_removed,
 		findings=findings,
 		plan=plan,
-		ai=None,
+		ai=ai,
+		model=cached_model,
+		ai_note=cache_note,
 		blocked=False,
 	)
 	sys.exit(0)
+
+
+def _cached_review(payload: dict) -> tuple[tier2.ReviewResult | None, str]:
+	"""Rehydrate a validated review payload without trusting cache contents."""
+	try:
+		return (
+			tier2.ReviewResult(
+				risk=payload["risk"],
+				reasons=list(payload.get("reasons", [])),
+				tests_to_run=list(payload.get("tests_to_run", [])),
+				missing_tests=list(payload.get("missing_tests", [])),
+				one_liner=str(payload.get("one_liner", "")),
+				model_risk=str(payload.get("model_risk", "")),
+				risk_basis=str(payload.get("risk_basis", "")),
+			),
+			str(payload.get("model", "")),
+		)
+	except (KeyError, TypeError, ValueError):
+		return None, ""
+
+
+def _format_age(timestamp: float) -> str:
+	seconds = max(0, int(time.time() - timestamp))
+	if seconds < 60:
+		return f"{seconds} sec"
+	if seconds < 3600:
+		return f"{seconds // 60} min"
+	return f"{seconds // 3600} hr"
+
+
+@main.command()
+@click.option(
+	"--quiet-period",
+	type=click.FloatRange(min=0.0),
+	default=30.0,
+	show_default=True,
+	help="Seconds without file changes before reviewing.",
+)
+@click.option("--once", is_flag=True, help="Run one review immediately and exit.")
+def watch(quiet_period: float, once: bool) -> None:
+	"""Review changes in the background and cache the result for commits."""
+	root = gitio.repo_root()
+	if not root:
+		render.metadata("quack watch: not a git repository")
+		return
+	if once:
+		_render_watch_result(watch_mod.review_once(root))
+		return
+	try:
+		watch_mod.run(root, quiet_period, _render_watch_result)
+	except KeyboardInterrupt:
+		return
+
+
+def _render_watch_result(result: watch_mod.WatchResult) -> None:
+	if result.risk is not None:
+		render.metadata(f"reviewed {result.files} file(s) - risk: {result.risk}")
+	else:
+		render.metadata(f"review unavailable ({result.reason or 'unknown reason'})")
 
 
 def _resolve_agent_model(cli_model: str | None) -> str:
