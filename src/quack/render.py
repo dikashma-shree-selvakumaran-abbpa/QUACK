@@ -1,4 +1,4 @@
-"""Single terminal output module for quack.
+﻿"""Single terminal output module for quack.
 
 All terminal output MUST go through this module. No print() calls elsewhere.
 
@@ -204,7 +204,7 @@ def report(
 	if not body:
 		body.append(Text("no findings", style=_META))
 
-	title = f"quack - {files} file(s) - +{added}/-{removed} - {duration}s"
+	title = f"quack - {files} file(s) - +{added}/-{removed} - {duration:.1f}s"
 	if blocked:
 		# The chick emoji is permitted ONLY on the blocked banner.
 		subtitle = Text("\U0001f424 BLOCKED - fix and re-stage", style="bold red")
