@@ -382,31 +382,32 @@ def agent(model: str | None, fly: bool) -> None:
 	# provider-appropriate timeout so pre-push review does not always time out.
 	tier2_timeout = llmio.default_timeout()
 	tier2_failure: str | None = None
-	try:
-		plan = testmap.build_plan(delta)
-		project_instructions = instructions.load(Path(root))
-		review, reason = tier2.review_with_reason(
-			delta,
-			findings,
-			plan,
-			model=tier2_model,
-			project_instructions=project_instructions,
-			timeout_s=tier2_timeout,
-		)
-		if review is None:
-			# tier2 surfaces the actual normalised reason (e.g. the model was
-			# unavailable). Only fall back to a provider-level cause, and never
-			# invent "timeout": a wrong reason is worse than a generic one.
-			tier2_failure = (
-				reason or llmio.availability_error() or "unavailable"
+	with render.thinking("reviewing changes..."):
+		try:
+			plan = testmap.build_plan(delta)
+			project_instructions = instructions.load(Path(root))
+			review, reason = tier2.review_with_reason(
+				delta,
+				findings,
+				plan,
+				model=tier2_model,
+				project_instructions=project_instructions,
+				timeout_s=tier2_timeout,
 			)
-	except Exception as exc:
-		# Provider exceptions are already normalised to LLMUnavailable inside
-		# llmio, but guard here too so no SDK stack trace ever reaches the
-		# terminal. Report the real exception, not a misleading "timeout".
-		review = None
-		msg = str(exc)[:200].replace("\n", " ")
-		tier2_failure = f"{type(exc).__name__}: {msg}"
+			if review is None:
+				# tier2 surfaces the actual normalised reason (e.g. the model was
+				# unavailable). Only fall back to a provider-level cause, and never
+				# invent "timeout": a wrong reason is worse than a generic one.
+				tier2_failure = (
+					reason or llmio.availability_error() or "unavailable"
+				)
+		except Exception as exc:
+			# Provider exceptions are already normalised to LLMUnavailable inside
+			# llmio, but guard here too so no SDK stack trace ever reaches the
+			# terminal. Report the real exception, not a misleading "timeout".
+			review = None
+			msg = str(exc)[:200].replace("\n", " ")
+			tier2_failure = f"{type(exc).__name__}: {msg}"
 	if review is not None:
 		render.review(review, model=tier2_model)
 	elif tier2_failure is not None:
@@ -414,7 +415,8 @@ def agent(model: str | None, fly: bool) -> None:
 		# even attempted, so surface a single dim line stating why.
 		render.metadata(f"AI review unavailable ({tier2_failure})")
 
-	result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
+	with render.thinking("investigating changes..."):
+		result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
 	render.agent_report(result, fly=fly)
 	_log_agent_metrics(
 		started,

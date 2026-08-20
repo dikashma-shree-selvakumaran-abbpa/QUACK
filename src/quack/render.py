@@ -28,11 +28,14 @@ pipe (or NO_COLOR is set) no ANSI escape codes are emitted, so CI logs and
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
+from typing import Iterator
 
 from rich.box import ROUNDED
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.status import Status
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
@@ -114,6 +117,18 @@ def metadata(message: str) -> None:
 def info(message: str) -> None:
 	"""Print a plain informational line."""
 	_console().print(message)
+
+
+@contextmanager
+def thinking(message: str) -> Iterator[None]:
+	"""Show AI work in progress without corrupting captured output."""
+	console = _console()
+	if os.environ.get("NO_COLOR") or not console.is_terminal:
+		console.print(message)
+		yield
+		return
+	with Status(message, console=console, spinner="dots"):
+		yield
 
 
 # ---------------------------------------------------------------------------

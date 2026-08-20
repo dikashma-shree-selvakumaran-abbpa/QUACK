@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import gitio, instructions, llmio, metrics, reviewcache, testmap, tier2
+from . import gitio, instructions, llmio, metrics, render, reviewcache, testmap, tier2
 from .tier1 import Tier1Config
 from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
@@ -82,14 +82,15 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 		if availability:
 			return WatchResult(files=len(delta.files), reason=availability)
 
-		review = tier2.review(
-			delta,
-			findings,
-			plan,
-			model=resolved_model,
-			project_instructions=project_instructions,
-			timeout_s=llmio.default_timeout(),
-		)
+		with render.thinking("reviewing changes..."):
+			review = tier2.review(
+				delta,
+				findings,
+				plan,
+				model=resolved_model,
+				project_instructions=project_instructions,
+				timeout_s=llmio.default_timeout(),
+			)
 		if review is None:
 			return WatchResult(files=len(delta.files), reason="AI analysis unavailable")
 

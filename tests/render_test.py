@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from quack import render
 
 ANSI = "\x1b["
@@ -105,6 +107,44 @@ def test_primitives_plain_under_no_color(monkeypatch, capsys) -> None:
 	assert ANSI not in out
 	assert "all clean" in out
 	assert "pytest -x" in out
+
+
+def test_thinking_yields_and_returns_normally(capsys) -> None:
+	with render.thinking("reviewing changes..."):
+		result = "complete"
+
+	out = capsys.readouterr().out
+	assert result == "complete"
+	assert "reviewing changes..." in out
+
+
+def test_thinking_clears_on_exception_without_suppressing(capsys) -> None:
+	with pytest.raises(RuntimeError, match="review failed"):
+		with render.thinking("reviewing changes..."):
+			raise RuntimeError("review failed")
+
+	assert "reviewing changes..." in capsys.readouterr().out
+
+
+def test_thinking_non_tty_has_no_ansi(capsys) -> None:
+	with render.thinking("reviewing changes..."):
+		pass
+
+	out = capsys.readouterr().out
+	assert ANSI not in out
+	assert out == "reviewing changes...\n"
+
+
+def test_thinking_no_color_has_no_ansi(monkeypatch, capsys) -> None:
+	monkeypatch.setenv("FORCE_COLOR", "1")
+	monkeypatch.setenv("NO_COLOR", "1")
+
+	with render.thinking("reviewing changes..."):
+		pass
+
+	out = capsys.readouterr().out
+	assert ANSI not in out
+	assert out == "reviewing changes...\n"
 
 
 def _agent_result_with_patch() -> SimpleNamespace:
