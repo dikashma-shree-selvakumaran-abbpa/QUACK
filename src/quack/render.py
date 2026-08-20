@@ -184,8 +184,7 @@ def report(
 	  review result (``.risk``, ``.one_liner``, ``.reasons``,
 	  ``.tests_to_run``, ``.missing_tests``).
 
-	``duration`` is a placeholder for now.
-	TODO: thread the real hook duration through from cli.check.
+	``duration`` is elapsed in-process work in seconds.
 	"""
 	sections: list[RenderableType] = []
 	for section in (

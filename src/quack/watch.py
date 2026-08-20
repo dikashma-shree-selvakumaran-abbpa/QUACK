@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import gitio, instructions, llmio, reviewcache, testmap, tier2
+from . import gitio, instructions, llmio, metrics, reviewcache, testmap, tier2
 from .tier1 import Tier1Config
 from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
@@ -40,6 +40,25 @@ class WatchResult:
 
 def review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
 	"""Review the staged delta, or tracked working changes when unstaged."""
+	started = time.perf_counter()
+	result = _review_once(repo_root, model)
+	try:
+		metrics.log(
+			{
+				"ts": metrics.timestamp(),
+				"command": "watch",
+				"duration_ms": int((time.perf_counter() - started) * 1000),
+				"files": result.files,
+				"risk": result.risk,
+				"failure": result.reason,
+			}
+		)
+	except Exception:
+		pass
+	return result
+
+
+def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
 	root = Path(repo_root)
 	try:
 		delta = gitio.staged_delta()

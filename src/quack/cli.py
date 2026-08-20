@@ -14,7 +14,9 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
+from statistics import median
 
 import click
 import yaml
@@ -26,6 +28,7 @@ from . import (
 	gitleaks,
 	instructions,
 	llmio,
+	metrics as metrics_mod,
 	render,
 	reviewcache,
 	testmap,
@@ -61,9 +64,12 @@ def check() -> None:
 	installed) and test guidance only. No network calls, no token, no AI. All
 	AI analysis runs at pre-push via ``quack agent``.
 	"""
+	# Measures in-process work only, excluding Python interpreter startup.
+	started = time.perf_counter()
 	delta = gitio.staged_delta()
 	if not delta.files:
 		render.clean("nothing staged")
+		_log_check_metrics(started, delta, exit_code=0)
 		sys.exit(0)
 
 	# Tier 1: deterministic checks (offline, always run).
@@ -93,7 +99,9 @@ def check() -> None:
 			plan=None,
 			ai=None,
 			blocked=True,
+			duration=time.perf_counter() - started,
 		)
+		_log_check_metrics(started, delta, findings=findings, blocked=True, exit_code=1)
 		sys.exit(1)
 
 	# Test guidance (only worth computing on an unblocked commit).
@@ -122,7 +130,6 @@ def check() -> None:
 	else:
 		ai = cached_review
 
-	# TODO: thread the real hook duration through to render.report.
 	render.report(
 		files=len(delta.files),
 		added=delta.total_added,
@@ -133,8 +140,51 @@ def check() -> None:
 		model=cached_model,
 		ai_note=cache_note,
 		blocked=False,
+		duration=time.perf_counter() - started,
+	)
+	_log_check_metrics(
+		started,
+		delta,
+		findings=findings,
+		plan=plan,
+		cache_hit=cached_review is not None,
+		risk=cached_review.risk if cached_review is not None else None,
+		exit_code=0,
 	)
 	sys.exit(0)
+
+
+def _log_check_metrics(
+	started: float,
+	delta,
+	*,
+	findings=(),
+	plan=None,
+	blocked: bool = False,
+	cache_hit: bool = False,
+	risk: str | None = None,
+	exit_code: int,
+) -> None:
+	try:
+		metrics_mod.log(
+			{
+				"ts": metrics_mod.timestamp(),
+				"command": "check",
+				"duration_ms": int((time.perf_counter() - started) * 1000),
+				"files": len(delta.files),
+				"lines_added": delta.total_added,
+				"lines_removed": delta.total_removed,
+				"tier1_findings": dict(Counter(item.check for item in findings)),
+				"blocked": blocked,
+				"tests_mapped": len(plan.runner_commands) if plan is not None else 0,
+				"untested_sources": len(plan.untested_sources) if plan is not None else 0,
+				"review_cache": "hit" if cache_hit else "miss",
+				"risk": risk,
+				"exit": exit_code,
+			}
+		)
+	except Exception:
+		pass
 
 
 def _cached_review(payload: dict) -> tuple[tier2.ReviewResult | None, str]:
@@ -242,6 +292,9 @@ def _resolve_completion_model(cli_model: str | None) -> str | None:
 )
 def agent(model: str | None, fly: bool) -> None:
 	"""Run the agentic pre-push analysis loop."""
+	started = time.perf_counter()
+	resolved_model = _resolve_agent_model(model)
+	provider = os.environ.get("QUACK_PROVIDER") or llmio.DEFAULT_PROVIDER
 	# Whether the agent can authenticate is a PROVIDER concern, not a CLI
 	# one: github_models needs GITHUB_TOKEN, but copilot_sdk authenticates
 	# via the Copilot CLI's stored OAuth login and never reads it. Ask the
@@ -249,14 +302,28 @@ def agent(model: str | None, fly: bool) -> None:
 	reason = llmio.availability_error()
 	if reason:
 		render.metadata(f"quack agent: {reason}")
+		_log_agent_metrics(
+			started,
+			provider,
+			resolved_model,
+			tier2_failure=reason,
+			agent_failure=reason,
+		)
 		sys.exit(0)
 
 	root = gitio.repo_root()
 	if not root:
 		render.metadata("quack agent: not a git repository")
+		_log_agent_metrics(
+			started,
+			provider,
+			resolved_model,
+			agent_failure="not a git repository",
+		)
 		sys.exit(0)
 
 	delta = gitio.staged_delta()
+	target = "staged"
 	# Choose the analysis target. quack agent runs both manually (where
 	# staged changes are the right target) and as a pre-push hook (where the
 	# index is empty and the real target is the unpushed range @{u}..HEAD).
@@ -265,6 +332,7 @@ def agent(model: str | None, fly: bool) -> None:
 	if delta.files:
 		render.metadata("analyzing staged changes")
 	else:
+		target = "range"
 		upstream = gitio.upstream_ref()
 		unpushed = gitio.range_delta(upstream) if upstream else None
 		if unpushed and unpushed.files:
@@ -272,8 +340,16 @@ def agent(model: str | None, fly: bool) -> None:
 			count = gitio.range_commit_count(upstream)
 			render.metadata(f"analyzing {count} unpushed commit(s)")
 		else:
+			target = "none"
 			render.clean(
 				"nothing to analyze: no staged changes and nothing unpushed"
+			)
+			_log_agent_metrics(
+				started,
+				provider,
+				resolved_model,
+				target=target,
+				agent_failure="no changes",
 			)
 			sys.exit(0)
 
@@ -283,7 +359,6 @@ def agent(model: str | None, fly: bool) -> None:
 	findings = tier1_run(delta, Tier1Config())
 	redacted = tier1_redact(delta, findings)
 
-	resolved_model = _resolve_agent_model(model)
 	# Tier 2's single-shot review tolerates a cheaper model than the agent's
 	# multi-step investigation, so it uses the provider's COMPLETION default
 	# (an explicit --model/QUACK_MODEL still overrides both surfaces).
@@ -341,7 +416,99 @@ def agent(model: str | None, fly: bool) -> None:
 
 	result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
 	render.agent_report(result, fly=fly)
+	_log_agent_metrics(
+		started,
+		provider,
+		resolved_model,
+		target=target,
+		tier2_risk=review.risk if review is not None else None,
+		tier2_failure=tier2_failure,
+		agent_ran=True,
+		agent_failure=(
+			"analysis unavailable"
+			if result.summary.startswith("AI analysis unavailable:")
+			else None
+		),
+	)
 	sys.exit(0)
+
+
+def _log_agent_metrics(
+	started: float,
+	provider: str,
+	model: str,
+	*,
+	target: str = "none",
+	tier2_risk: str | None = None,
+	tier2_failure: str | None = None,
+	agent_ran: bool = False,
+	agent_failure: str | None = None,
+) -> None:
+	try:
+		metrics_mod.log(
+			{
+				"ts": metrics_mod.timestamp(),
+				"command": "agent",
+				"duration_ms": int((time.perf_counter() - started) * 1000),
+				"target": target,
+				"provider": provider,
+				"model": model,
+				"tier2_risk": tier2_risk,
+				"tier2_failure": tier2_failure,
+				"agent_ran": agent_ran,
+				"agent_failure": agent_failure,
+				"exit": 0,
+			}
+		)
+	except Exception:
+		pass
+
+
+@main.command(name="metrics")
+def metrics_summary() -> None:
+	"""Summarize local metrics without network access."""
+	events = metrics_mod.read()
+	if events is None:
+		click.echo("No metrics available (file missing or unreadable).")
+		return
+
+	commands = Counter(str(event.get("command")) for event in events if event.get("command"))
+	findings: Counter[str] = Counter()
+	durations: list[int] = []
+	cache_hits = 0
+	cache_lookups = 0
+	blocks = 0
+	for event in events:
+		blocks += int(event.get("blocked") is True)
+		duration = event.get("duration_ms")
+		if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+			durations.append(int(duration))
+		raw_findings = event.get("tier1_findings")
+		if isinstance(raw_findings, dict):
+			for name, count in raw_findings.items():
+				if isinstance(name, str) and isinstance(count, int) and count > 0:
+					findings[name] += count
+		cache = event.get("review_cache")
+		if cache in {"hit", "miss"}:
+			cache_lookups += 1
+			cache_hits += int(cache == "hit")
+
+	click.echo(f"Total runs: {len(events)}")
+	click.echo(
+		"Runs by command: "
+		+ (", ".join(f"{name}={count}" for name, count in sorted(commands.items())) or "none")
+	)
+	click.echo(f"Blocks: {blocks}")
+	click.echo(
+		"Most common findings: "
+		+ (", ".join(f"{name}={count}" for name, count in findings.most_common()) or "none")
+	)
+	click.echo(f"Median duration: {median(durations):g} ms" if durations else "Median duration: n/a")
+	click.echo(
+		f"Cache hit rate: {cache_hits / cache_lookups:.1%}"
+		if cache_lookups
+		else "Cache hit rate: n/a"
+	)
 
 
 @main.command()

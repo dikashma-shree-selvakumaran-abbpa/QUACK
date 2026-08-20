@@ -21,8 +21,10 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
-def _block_unmocked_provider_calls(request, monkeypatch):
+def _block_unmocked_provider_calls(request, monkeypatch, tmp_path):
 	"""Prevent tests from reaching a real provider unless explicitly opted in."""
+	monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+	monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
 	if request.node.get_closest_marker("allow_provider_calls") is not None:
 		yield
 		return

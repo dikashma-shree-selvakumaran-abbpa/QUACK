@@ -51,6 +51,21 @@ def test_check_passes_on_clean_delta(monkeypatch) -> None:
 	result = CliRunner().invoke(cli.main, ["check"])
 
 	assert result.exit_code == 0
+
+
+def test_check_passes_nonzero_duration_to_report(monkeypatch) -> None:
+	delta = _delta("src/app.py", _hunk("x = 1"))
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
+	clock = iter((10.0, 10.25, 10.3))
+	monkeypatch.setattr(cli.time, "perf_counter", lambda: next(clock))
+	captured: dict = {}
+	monkeypatch.setattr(cli.render, "report", lambda **kwargs: captured.update(kwargs))
+
+	result = CliRunner().invoke(cli.main, ["check"])
+
+	assert result.exit_code == 0
+	assert captured["duration"] == pytest.approx(0.25)
 	assert "BLOCKED" not in result.output
 
 
