@@ -120,8 +120,8 @@ def test_list_models_failure_is_fail_open(monkeypatch):
 
 	assert result.exit_code == 0
 	assert (
-		"Reachable models: model list unavailable "
-		"(401: token lacks Copilot Requests permission)"
+		"Reachable models unavailable: "
+		"401: token lacks Copilot Requests permission"
 	) in result.output
 	assert "Traceback" not in result.output
 

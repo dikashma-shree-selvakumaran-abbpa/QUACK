@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -23,32 +25,45 @@ def _resp(content):
 
 
 class _FakeSession:
-	def __init__(self, resp=None, delay=0.0):
+	def __init__(self, resp=None, delay=0.0, errors=None):
 		self._resp = resp
 		self._delay = delay
+		self._errors = list(errors or [])
+		self.calls = 0
 
 	async def send_and_wait(self, prompt):
+		self.calls += 1
 		if self._delay:
 			await asyncio.sleep(self._delay)
+		if self._errors:
+			error = self._errors.pop(0)
+			if error is not None:
+				raise error
 		return self._resp
 
 
 class _FakeClient:
 	"""Records lifecycle calls and returns a preconfigured session."""
 
-	def __init__(self, resp=None, delay=0.0, start_error=None):
+	def __init__(
+		self, resp=None, delay=0.0, start_error=None, errors=None, start_delay=0.0
+	):
 		self._resp = resp
 		self._delay = delay
 		self._start_error = start_error
+		self._start_delay = start_delay
+		self.session = _FakeSession(resp, delay, errors)
 		self.stopped = False
 
 	async def start(self):
+		if self._start_delay:
+			await asyncio.sleep(self._start_delay)
 		if self._start_error is not None:
 			raise self._start_error
 
 	async def create_session(self, model):
 		assert model == "claude-haiku-4.5"
-		return _FakeSession(self._resp, self._delay)
+		return self.session
 
 	async def stop(self):
 		self.stopped = True
@@ -77,6 +92,17 @@ class _LoggingSession:
 			raise
 
 
+class _PrintingClient(_FakeClient):
+	async def start(self):
+		print("sdk start stdout")
+		print("sdk start stderr", file=sys.stderr)
+
+	async def stop(self):
+		print("sdk stop stdout")
+		print("sdk stop stderr", file=sys.stderr)
+		await super().stop()
+
+
 class _LoggingClient(_FakeClient):
 	async def create_session(self, model):
 		return _LoggingSession()
@@ -94,6 +120,11 @@ def _install_client(monkeypatch, client):
 	return client
 
 
+@pytest.fixture(autouse=True)
+def _runtime_is_prepared(monkeypatch):
+	monkeypatch.setattr(copilot_sdk, "_runtime_needs_preparation", lambda: False)
+
+
 def test_complete_returns_text(monkeypatch):
 	client = _install_client(monkeypatch, _FakeClient(resp=_resp("hello")))
 	messages = [
@@ -104,26 +135,110 @@ def test_complete_returns_text(monkeypatch):
 	assert client.stopped is True
 
 
-def test_auth_failure_raises_llm_unavailable(monkeypatch):
-	err = RuntimeError("authorization failed")
+@pytest.mark.parametrize(
+	"raw_reason",
+	[
+		"authorization failed",
+		"401 Unauthorized",
+		"Authorization error, you may need to run /login",
+	],
+)
+def test_auth_failure_has_actionable_message(monkeypatch, raw_reason):
+	err = RuntimeError(raw_reason)
 	_install_client(monkeypatch, _FakeClient(start_error=err))
-	with pytest.raises(LLMUnavailable):
+	with pytest.raises(LLMUnavailable) as excinfo:
 		copilot_sdk.complete(
 			[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
 		)
+	assert copilot_sdk._AUTH_MESSAGE in excinfo.value.reason
+	assert raw_reason in excinfo.value.reason
+
+
+def test_copilot_requests_permission_has_actionable_message(monkeypatch):
+	raw_reason = "401: token lacks Copilot Requests permission"
+	client = _install_client(
+		monkeypatch, _FakeClient(errors=[RuntimeError(raw_reason)])
+	)
+
+	with pytest.raises(LLMUnavailable) as excinfo:
+		copilot_sdk.complete(
+			[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
+		)
+
+	assert "`Copilot Requests` permission" in excinfo.value.reason
+	assert raw_reason in excinfo.value.reason
+	assert client.session.calls == 1
 
 
 def test_timeout_raises_llm_unavailable(monkeypatch):
 	client = _install_client(
 		monkeypatch, _FakeClient(resp=_resp("late"), delay=1.0)
 	)
-	with pytest.raises(LLMUnavailable):
+	with pytest.raises(LLMUnavailable) as excinfo:
 		copilot_sdk.complete(
 			[{"role": "user", "content": "hi"}],
 			"claude-haiku-4.5",
 			timeout_s=0.01,
 		)
+	assert "Copilot inference timed out" in excinfo.value.reason
 	assert client.stopped is True
+
+
+def test_runtime_startup_timeout_is_distinct(monkeypatch):
+	client = _install_client(monkeypatch, _FakeClient(start_delay=1.0))
+	with pytest.raises(LLMUnavailable) as excinfo:
+		copilot_sdk.complete(
+			[{"role": "user", "content": "hi"}],
+			"claude-haiku-4.5",
+			timeout_s=0.01,
+		)
+	assert "Copilot runtime startup timed out" in excinfo.value.reason
+	assert client.session.calls == 0
+
+
+def test_auth_failure_from_send_is_not_retried(monkeypatch):
+	client = _install_client(
+		monkeypatch,
+		_FakeClient(errors=[RuntimeError("Authorization error, run /login")]),
+	)
+	with pytest.raises(LLMUnavailable):
+		copilot_sdk.complete(
+			[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
+		)
+	assert client.session.calls == 1
+
+
+def test_transient_send_failure_is_retried_once(monkeypatch):
+	client = _install_client(
+		monkeypatch,
+		_FakeClient(resp=_resp("recovered"), errors=[RuntimeError("connection reset")]),
+	)
+	result = copilot_sdk.complete(
+		[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
+	)
+	assert result == "recovered"
+	assert client.session.calls == 2
+
+
+def test_retry_cannot_exceed_timeout_budget(monkeypatch):
+	client = _install_client(
+		monkeypatch,
+		_FakeClient(
+			resp=_resp("late"),
+			delay=0.05,
+			errors=[RuntimeError("connection reset")],
+		),
+	)
+	started = time.perf_counter()
+	with pytest.raises(LLMUnavailable):
+		copilot_sdk.complete(
+			[{"role": "user", "content": "hi"}],
+			"claude-haiku-4.5",
+			timeout_s=0.08,
+		)
+	elapsed = time.perf_counter() - started
+	assert client.session.calls == 2
+	assert elapsed < 0.2
 
 
 def test_none_response_raises_llm_unavailable(monkeypatch):
@@ -155,7 +270,8 @@ def test_list_models_failure_is_normalized_and_stops_client(monkeypatch):
 	with pytest.raises(LLMUnavailable) as excinfo:
 		copilot_sdk.list_models()
 
-	assert "model list unavailable" in excinfo.value.reason
+	assert copilot_sdk._AUTH_MESSAGE in excinfo.value.reason
+	assert "authorization failed" in excinfo.value.reason
 	assert client.stopped is True
 
 
@@ -196,6 +312,35 @@ def test_sdk_error_logging_is_suppressed_and_restored(
 	finally:
 		logger.removeHandler(handler)
 		logger.level, logger.propagate, logger.disabled = state
+
+
+def test_sdk_stdout_and_stderr_are_suppressed_during_start_and_stop(
+	monkeypatch, capsys
+):
+	client = _install_client(monkeypatch, _PrintingClient(resp=_resp("hello")))
+	assert (
+		copilot_sdk.complete(
+			[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
+		)
+		== "hello"
+	)
+	assert capsys.readouterr() == ("", "")
+	assert client.stopped is True
+
+
+def test_first_run_notice_uses_render_path(monkeypatch):
+	messages = []
+	monkeypatch.setattr(copilot_sdk, "_runtime_needs_preparation", lambda: True)
+	monkeypatch.setattr(copilot_sdk.render, "metadata", messages.append)
+	_install_client(monkeypatch, _FakeClient(resp=_resp("hello")))
+
+	copilot_sdk.complete(
+		[{"role": "user", "content": "hi"}], "claude-haiku-4.5"
+	)
+
+	assert messages == [
+		"first run: preparing the Copilot runtime, this happens once"
+	]
 
 
 def test_chat_raises_llm_unavailable():

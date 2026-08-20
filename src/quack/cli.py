@@ -601,7 +601,7 @@ def _render_model_diagnostic(cli_model: str | None) -> None:
 			models = llmio.list_models()
 		except Exception as exc:
 			reason = _model_list_failure_reason(exc)
-			render.warning(f"Reachable models: model list unavailable ({reason})")
+			render.warning(f"Reachable models unavailable: {reason}")
 		else:
 			visible = models[:15]
 			render.info(

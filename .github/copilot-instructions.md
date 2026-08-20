@@ -6,7 +6,9 @@
 
 ## Reporting Guidelines
 - Display hook durations in quack report titles with one decimal place while keeping the underlying duration value as a float.
+- Enforce privacy at the metrics.log boundary with a strict event-key allowlist, sanitization of failure/reason text, type validation, and fail-open behavior so malformed metrics never reach callers as exceptions.
 
 ## SDK Integration Guidelines
 - Suppress SDK logger output and child-log records during both model discovery and completion calls; restore logging state afterward.
 - Surface only a one-line normalized/truncated reason with no traceback.
+- For the Copilot SDK provider, provide actionable auth guidance for list_models and completion failures; tests should assert the actionable mapping rather than legacy generic wording.

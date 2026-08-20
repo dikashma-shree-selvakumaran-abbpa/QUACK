@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import contextmanager
+import os
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 
+from .. import render
 from ..llmio import LLMUnavailable
 
 try:  # pragma: no cover - exercised via monkeypatch in tests
@@ -44,10 +46,27 @@ DEFAULT_TIMEOUT_S = 60.0
 DEFAULT_COMPLETION_MODEL = "claude-haiku-4.5"
 DEFAULT_AGENT_MODEL = "claude-sonnet-4.5"
 
+_AUTH_MESSAGE = (
+	"Copilot login expired or unavailable — run `copilot` then `/login`. "
+	"(Also check: an ambient GITHUB_TOKEN shadows your Copilot login — "
+	"run `quack model` to diagnose.)"
+)
+_COPILOT_REQUESTS_MESSAGE = (
+	"Copilot access denied — your PAT needs the `Copilot Requests` permission."
+)
+
+
+class _CopilotTimeout(TimeoutError):
+	"""Internal timeout carrying the SDK lifecycle stage that exhausted budget."""
+
+	def __init__(self, stage: str) -> None:
+		super().__init__(f"{stage} timeout")
+		self.stage = stage
+
 
 @contextmanager
 def _silence_sdk_logging():
-	"""Suppress Copilot SDK log records for one adapter operation."""
+	"""Suppress all Copilot SDK terminal output for one adapter operation."""
 	parent = logging.getLogger("copilot")
 	parent_state = (
 		list(parent.handlers),
@@ -66,7 +85,9 @@ def _silence_sdk_logging():
 	for logger, _ in children:
 		logger.disabled = True
 	try:
-		yield
+		with open(os.devnull, "w", encoding="utf-8") as sink:
+			with redirect_stdout(sink), redirect_stderr(sink):
+				yield
 	finally:
 		parent.handlers, parent.level, parent.propagate, parent.disabled = parent_state
 		for logger, disabled in children:
@@ -81,6 +102,52 @@ def _short_error(exc: Exception, limit: int = 160) -> str:
 	return message
 
 
+def _is_auth_error(exc: Exception) -> bool:
+	"""Return whether an SDK failure requires credentials to be repaired."""
+	message = _short_error(exc).lower()
+	return any(
+		signature in message
+		for signature in (
+			"authorization",
+			"authentication",
+			"unauthorized",
+			"401",
+			"run /login",
+			"copilot requests",
+		)
+	)
+
+
+def _error_reason(exc: Exception, *, context: str = "copilot sdk error") -> str:
+	"""Map known SDK failures to actionable text while retaining the reason."""
+	raw_reason = _short_error(exc)
+	lower_reason = raw_reason.lower()
+	if "copilot requests" in lower_reason:
+		message = _COPILOT_REQUESTS_MESSAGE
+	elif _is_auth_error(exc):
+		message = _AUTH_MESSAGE
+	elif isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+		stage = getattr(exc, "stage", "inference")
+		message = f"Copilot {stage} timed out."
+	else:
+		message = context
+	return f"{message} Raw reason: {raw_reason}"
+
+
+async def _within_budget(awaitable, deadline: float, stage: str):
+	"""Await one SDK operation without crossing the caller's deadline."""
+	remaining = deadline - asyncio.get_running_loop().time()
+	if remaining <= 0:
+		close = getattr(awaitable, "close", None)
+		if close is not None:
+			close()
+		raise _CopilotTimeout(stage)
+	try:
+		return await asyncio.wait_for(awaitable, timeout=remaining)
+	except asyncio.TimeoutError as exc:
+		raise _CopilotTimeout(stage) from exc
+
+
 def check_availability() -> str | None:
 	"""Return a readable reason this provider cannot run, or None if it can.
 
@@ -92,6 +159,33 @@ def check_availability() -> str | None:
 	if CopilotClient is None:
 		return "copilot sdk not installed"
 	return None
+
+
+def _runtime_needs_preparation() -> bool:
+	"""Return whether the SDK reliably reports no cached bundled runtime."""
+	if (
+		CopilotClient is None
+		or os.environ.get("COPILOT_CLI_PATH")
+		or os.environ.get("COPILOT_SKIP_CLI_DOWNLOAD", "").lower()
+		in ("1", "true", "yes")
+	):
+		return False
+	try:
+		from copilot._cli_download import get_cached_cli_path
+	except ImportError:
+		return False
+	try:
+		return get_cached_cli_path() is None
+	except Exception:
+		return False
+
+
+def _show_runtime_preparation_notice() -> None:
+	"""Explain the SDK's confirmed first-use runtime preparation delay."""
+	if _runtime_needs_preparation():
+		render.metadata(
+			"first run: preparing the Copilot runtime, this happens once"
+		)
 
 
 def _flatten(messages: list[dict]) -> str:
@@ -155,12 +249,13 @@ async def _list_models_async() -> list[str]:
 def list_models() -> list[str]:
 	"""Return reachable Copilot model ids, normalising every SDK failure."""
 	try:
+		_show_runtime_preparation_notice()
 		with _silence_sdk_logging():
 			return asyncio.run(_list_models_async())
 	except LLMUnavailable:
 		raise
 	except Exception as exc:
-		raise LLMUnavailable(f"model list unavailable: {_short_error(exc)}")
+		raise LLMUnavailable(_error_reason(exc, context="model list unavailable"))
 
 
 async def _complete_async(prompt: str, model: str, timeout_s: float) -> str:
@@ -168,15 +263,24 @@ async def _complete_async(prompt: str, model: str, timeout_s: float) -> str:
 	if CopilotClient is None:
 		raise LLMUnavailable("copilot sdk not installed")
 
+	deadline = asyncio.get_running_loop().time() + max(timeout_s, 0.0)
 	client = CopilotClient()
 	try:
 		# NOTE: auth is the Copilot CLI's stored OAuth login. We must NOT
 		# set or forward GITHUB_TOKEN; an env token shadows that login.
-		await client.start()
-		session = await client.create_session(model=model)
-		resp = await asyncio.wait_for(
-			session.send_and_wait(prompt), timeout=timeout_s
+		await _within_budget(client.start(), deadline, "runtime startup")
+		session = await _within_budget(
+			client.create_session(model=model), deadline, "inference"
 		)
+		for attempt in range(2):
+			try:
+				resp = await _within_budget(
+					session.send_and_wait(prompt), deadline, "inference"
+				)
+				break
+			except Exception as exc:
+				if attempt == 1 or _is_auth_error(exc):
+					raise
 		if resp is None or resp.data is None or not resp.data.content:
 			raise LLMUnavailable("copilot sdk returned no content")
 		return resp.data.content
@@ -200,16 +304,15 @@ def complete(
 	"""
 	prompt = _flatten(messages)
 	try:
+		_show_runtime_preparation_notice()
 		with _silence_sdk_logging():
 			return asyncio.run(_complete_async(prompt, model, timeout_s))
 	except LLMUnavailable:
 		raise
-	except asyncio.TimeoutError:
-		raise LLMUnavailable("copilot sdk timed out")
+	except (asyncio.TimeoutError, TimeoutError) as exc:
+		raise LLMUnavailable(_error_reason(exc))
 	except Exception as exc:
-		raise LLMUnavailable(
-			f"copilot sdk error: {type(exc).__name__}: {_short_error(exc)}"
-		)
+		raise LLMUnavailable(_error_reason(exc))
 
 
 def chat(
