@@ -1,9 +1,9 @@
 ﻿# QUACK — Capability Catalog & Showcase
 
-> A presentation-ready overview of **quack** v0.3.0. For the live,
-> copy-paste walkthrough, see [DEMO.md](DEMO.md).
+> An overview of **quack** v0.3.0. For the live,
 
-**quack** `v0.3.0` · Python 3.11+ · Windows / macOS / Linux · MIT ·
+
+**quack** `v0.3.0` · Python 3.11+ · Windows / Linux 
 <https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK>
 
 ---
