@@ -66,8 +66,7 @@ Only secrets and merge markers block. AI is advisory and fails open: no token, o
 2. Run `copilot`, enter `/login`, complete the browser flow, then exit.
 3. In your repository, run `quack install`.
 
-See [SETUP.md](SETUP.md) for details and troubleshooting, [DEMO.md](DEMO.md)
-for the presenter runbook, and [CURRENT_STATE.md](CURRENT_STATE.md) for the
+See [SETUP.md](SETUP.md) for details and troubleshooting and [CURRENT_STATE.md](CURRENT_STATE.md) for the
 code-grounded v0.3.0 architecture snapshot.
 
 ## Status
