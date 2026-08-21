@@ -31,9 +31,11 @@ from .. import render
 from ..llmio import LLMUnavailable
 
 try:  # pragma: no cover - exercised via monkeypatch in tests
-	from copilot import CopilotClient
+	from copilot import CopilotClient, ToolResult, define_tool
 except ImportError:  # pragma: no cover - SDK is an optional runtime dep
 	CopilotClient = None
+	ToolResult = None
+	define_tool = None
 
 # Realistic minimum timeout for this transport. The Copilot SDK must start a
 # local runtime (~9s) before inference, so a short bound guarantees a timeout
