@@ -64,6 +64,7 @@ A healthy result includes:
 | The first AI call is slow (about 25 seconds) | Copilot is extracting its runtime once. | Wait for the first call to finish; later calls use the extracted runtime. |
 | `AI review: not reviewed yet` | Watch mode has not reviewed the current diff. | Run `quack watch`. |
 | `AI review unavailable` | The provider could not authenticate or complete the advisory request. | The commit/push still proceeds. Run `quack model`, then sign in with `copilot` and `/login` if needed. |
+| `gitleaks not installed` at `quack install` | Machine policy blocks `winget` (or no supported package manager was found). | Optional: gitleaks only adds breadth on top of quack's built-in secret patterns, which still block on their own. Set `QUACK_DISABLE_GITLEAKS=1` to silence the check, or install the `gitleaks` binary manually and re-run `quack install`. |
 
 ## What quack does NOT need
 

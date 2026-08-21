@@ -675,11 +675,30 @@ def install(use_local: bool) -> None:
 
 	# One-time power-mode bootstrap: get gitleaks on this machine so every
 	# later commit benefits automatically. Best-effort and never fatal.
+	# gitleaks is optional -- the built-in Tier 1 patterns still cover the
+	# blocking checks on their own, so a failed bootstrap here is a benign
+	# notice, not an error. Only surface the underlying reason when it is
+	# actionable (i.e. not the generic "no supported package manager" case);
+	# the raw exit code is dropped from the user-facing line and kept in
+	# metrics instead.
 	installed, message = gitleaks.ensure_installed()
 	if installed:
 		render.clean(f"quack: {message}")
 	else:
-		render.warning(f"quack: gitleaks power mode unavailable - {message}")
+		render.warning(
+			"quack: gitleaks not installed (optional - built-in secret "
+			"patterns still active)"
+		)
+		if "no supported package manager" not in message:
+			render.metadata(f"  reason: {message}")
+		render.metadata("  set QUACK_DISABLE_GITLEAKS=1 to silence this check")
+		metrics_mod.log(
+			{
+				"ts": metrics_mod.timestamp(),
+				"command": "install",
+				"failure": f"gitleaks bootstrap: {message}",
+			}
+		)
 	sys.exit(0)
 
 
