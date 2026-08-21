@@ -3,6 +3,11 @@
 Real runs against real repositories, captured during rehearsal on `quack` v0.3.0.
 Every transcript below is unedited terminal output from a live PowerShell session.
 
+> **Historical record:** These transcripts document earlier rehearsal runs and
+> are not the current implementation specification. The current source code,
+> automated tests, and `CURRENT_STATE.md` take precedence. In particular, later
+> changes added SDK-native agent tools and increased the passing test count.
+
 Repos used:
 
 | Name | Path | What it is |
@@ -388,5 +393,30 @@ Cache hit rate: 35.6%
 ```
 
 **Verified:** `quack metrics` aggregates local run history across all three commands (`agent`, `check`, `watch`) into counts, durations, and enums only — no file paths, diff content, or code snippets. Across 67 recorded runs, 9 were blocked, all attributable to the `secrets` finding, with a median duration of 1712 ms and a 35.6% cache hit rate (lower than a fresh-repo session, consistent with a longer-lived working history containing a mix of first-time and repeat reviews).
+
+---
+
+## Case 12 — SDK-native agent regression suite
+
+The post-v0.3.0 agent changes were verified without network access using a fake
+Copilot client and session. The suite covers native custom-tool registration,
+handler containment and command validation, pre-tool denial for iteration and
+test-run budgets, SDK output/log suppression, fail-open normalization, redacted
+diff transmission, final-test-exit reconciliation, and Duck Way patch rendering.
+
+The native opening prompt is checked separately from the legacy budget-exhaustion
+instruction: it asks the model to investigate before requesting final JSON. An
+invalid final JSON response after a real non-zero test exit is reported as an
+invalid model report while retaining the test failure as ground truth.
+
+```text
+PS C:\ABB\AI-Champs\quack> python -m pytest -q
+240 passed in 8.37s
+```
+
+**Verified:** the default `copilot_sdk` agent path owns no arbitrary shell
+execution, remains advisory/fail-open, and its native path is covered by the
+no-network regression tests. The `github_models` provider and legacy loop remain
+reachable separately.
 
 

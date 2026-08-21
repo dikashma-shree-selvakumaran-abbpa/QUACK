@@ -71,9 +71,10 @@ Copilot CLI login.
 Models via a PAT is not, so the compliant path is the default rather than an
 opt-in. `github_models` remains available via `QUACK_PROVIDER=github_models`
 because it is currently the **only** provider that supports tool calling.
-**The `agent` command therefore requires `QUACK_PROVIDER=github_models` today**
-— the Copilot SDK does not yet implement tool calling, so the agent loop cannot
-run under the default provider until SDK tool calling is implemented.
+The default `copilot_sdk` provider uses the Copilot SDK's native custom-tool
+session for the investigation. `github_models` remains selectable and keeps the
+existing OpenAI-style tool-call loop reachable; the provider change does not
+alter the tool contracts or the fail-open command behavior.
 
 ---
 
@@ -145,11 +146,12 @@ coverage as an optional upgrade.
 
 **Modules:** `tier2.py` + `llmio.py` · **Fail-open. Never changes the exit code.**
 
-> **Not run at commit time.** The Copilot/model setup cost (~9–15s cold) and
-> per-call credit cost are incompatible with a <6s commit budget and per-commit
-> team economics, so `quack check` makes **no** Tier 2 call. `quack watch`
-> performs the review after a quiet period and caches it; `quack agent` also
-> runs the same single-shot review at pre-push before any investigation loop.
+> **Not run at commit time.** `quack check` makes **no** Tier 2 call so the
+> commit path remains local and independent of provider availability. It runs
+> deterministic checks, builds test guidance, and performs only a local review
+> cache lookup. `quack watch` performs the review after a quiet period and
+> caches it; `quack agent` also runs the same single-shot review at pre-push
+> before any investigation loop.
 - **Privacy:** the diff is **redacted before it leaves the machine.**
   `tier1.redact()` replaces every detected secret with `[REDACTED]`, and Tier 2
   builds its prompt from that redacted delta (`"Staged diff (redacted):"`).
@@ -190,13 +192,20 @@ framework.
 |---|---|
 | Python | `pytest <paths> -x --tb=short -q` |
 | C# | `dotnet test <project.csproj> --no-build [--filter "…"] -v minimal` |
-| JavaScript / TypeScript | `npx --no-install jest <paths> --silent --runInBand` |
 
-JS/TS targets are recognized by `.test`/`.spec` suffixes across
-`.js/.jsx/.ts/.tsx/.mjs/.cjs`. `--no-install` guarantees jest is never fetched
-from the network; the project's local jest is used.
+### 6.3 Invocation model and method
 
-### 6.3 Method (from the system prompt)
+With `copilot_sdk`, the SDK runtime owns turn progression: quack registers
+`read_file`, `list_dir`, and `run_tests` as custom tools and uses
+`on_pre_tool_use` as the authoritative validation and budget gate. The handlers
+still enforce containment and delegate test execution only to `runio.py`. The
+legacy `github_models` provider uses the existing OpenAI-style loop.
+
+The native opening prompt asks the model to investigate first and requests the
+final JSON only after investigation; the budget-exhaustion instruction is not
+sent on the opening turn.
+
+Method:
 1. Form a hypothesis about what could break, from the diff.
 2. Gather **minimum** evidence — read the changed code and its most relevant
    caller/test (no reading without a stated reason).
@@ -216,10 +225,22 @@ from the network; the project's local jest is used.
 | Wall-clock cap | `WALL_CLOCK_S = 180.0` |
 | File read cap | `READ_FILE_MAX_LINES = 300` |
 | Path containment | `_safe_path()` rejects anything outside the repo root |
-| No shell | `subprocess` with `shell=False`; executables resolved via `shutil.which` |
+| No shell | `subprocess` with `shell=False`; execution remains inside `runio.py` |
 | Filter sanitization | C# `--filter` must match `^[A-Za-z0-9_.~|&=!"\s-]+$` (no shell metacharacters) |
 | Ground-truth reconciliation | A non-zero test exit code **overrides** an over-optimistic model self-report |
-| JSON discipline | One retry on malformed JSON, then graceful degradation |
+| JSON discipline | One retry on malformed JSON, then graceful degradation; invalid final JSON plus real test failures is reported as an invalid model report, with test exit codes retained as ground truth |
+
+The agent is fail-open: SDK errors normalize to `LLMUnavailable`, the command
+still exits 0, and a Tier 2 failure does not affect the agent attempt. Tier-1
+redaction is applied before the diff reaches either AI path. The model never
+receives raw SDK output in the terminal.
+
+### 6.5 Duck Way output
+
+By default, `agent_report` shows the diagnosis and labels withheld patches:
+`THE DUCK WAY - coaching over crutches`. With `--fly`, it labels the revealed
+patch `SKIP AHEAD - the patch, not the lesson`, then shows the unapplied unified
+diff. The mode labels do not change what is gated or applied.
 
 ---
 

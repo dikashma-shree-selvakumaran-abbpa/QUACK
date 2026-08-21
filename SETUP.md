@@ -49,8 +49,9 @@ A healthy result includes:
   result for commit time. Use `quack watch --once` to review immediately.
 - `git push` runs an advisory AI review on unpushed commits. The default
   `copilot_sdk` provider uses the Copilot CLI's stored OAuth login.
-- The optional tool-calling investigation loop requires
-  `QUACK_PROVIDER=github_models` and `GITHUB_TOKEN`; it is advisory as well.
+- The default Copilot SDK runs the advisory SDK-native investigation loop. The
+  legacy OpenAI-style path remains selectable with `QUACK_PROVIDER=github_models`
+  and `GITHUB_TOKEN`.
 - `quack metrics` shows a local summary of what quack has caught.
 
 ## Troubleshooting
@@ -61,17 +62,19 @@ A healthy result includes:
 | `copilot` exits immediately without opening | An ambient token is present. | Run `quack model` to diagnose. Unset `GITHUB_TOKEN`, `GH_TOKEN`, and `COPILOT_GITHUB_TOKEN`; then run `copilot` and enter `/login`. |
 | Unicode crash in a Windows terminal | The terminal is not using UTF-8 output. | Set `PYTHONIOENCODING=utf-8`. In PowerShell: `$env:PYTHONIOENCODING = "utf-8"`. |
 | `where.exe quack` shows two paths | A stale duplicate installation exists. | Delete the `.local\bin` copy. |
-| The first AI call is slow (about 25 seconds) | Copilot is extracting its runtime once. | Wait for the first call to finish; later calls use the extracted runtime. |
+| The first AI call is slow | The Copilot runtime may be initializing for the first request. | Wait for the first call to finish; later calls may be faster after runtime initialization. |
 | `AI review: not reviewed yet` | Watch mode has not reviewed the current diff. | Run `quack watch`. |
 | `AI review unavailable` | The provider could not authenticate or complete the advisory request. | The commit/push still proceeds. Run `quack model`, then sign in with `copilot` and `/login` if needed. |
 | `gitleaks not installed` at `quack install` | Machine policy blocks `winget` (or no supported package manager was found). | Optional: gitleaks only adds breadth on top of quack's built-in secret patterns, which still block on their own. Set `QUACK_DISABLE_GITLEAKS=1` to silence the check, or install the `gitleaks` binary manually and re-run `quack install`. |
 
 ## What quack does NOT need
 
-For default advisory reviews, quack does not need a GitHub Models PAT, API key,
-or config file: the Copilot CLI login is sufficient. The separate, optional
-tool-calling agent loop requires `QUACK_PROVIDER=github_models` and a
+For default advisory reviews and the SDK-native agent, quack does not need a
+GitHub Models PAT, API key, or config file: the Copilot CLI login is sufficient.
+The legacy OpenAI-style agent path uses `QUACK_PROVIDER=github_models` and a
 `GITHUB_TOKEN` with access to GitHub Models.
 
-For a complete live walkthrough, see [DEMO.md](DEMO.md). For the full v0.3.0
-implementation snapshot, see [CURRENT_STATE.md](CURRENT_STATE.md).
+For the code-grounded v0.3.0 implementation snapshot, see
+[CURRENT_STATE.md](CURRENT_STATE.md). Keep live recording scripts with the
+demo materials so timing-dependent transcripts are not treated as product
+behavior guarantees.

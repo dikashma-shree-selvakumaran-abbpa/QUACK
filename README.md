@@ -54,11 +54,11 @@ No apparent replacement code restoring delegates elsewhere in this path
 
 | Surface | When it runs | What it does | Network |
 |---|---|---|---|
-| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, and test guidance. | No; no token required. |
+| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, and test guidance, then performs only a local review-cache lookup. It never calls AI. | No; no token required. |
 | `quack watch` | Alongside development | Reviews changes while you work and caches a verdict for commit time. | Yes, when a provider is available. |
-| `quack agent` | Pre-push | Reviews unpushed commits. Its optional investigative loop can run tests and propose fixes with `QUACK_PROVIDER=github_models`. | Yes, when a provider is available. |
+| `quack agent` | Pre-push | Reviews unpushed commits, then runs the provider's read-only investigation tools and can propose fixes. | Yes, when a provider is available. |
 
-Only secrets and merge markers block. AI is advisory and fails open: no token, offline operation, a slow provider, or rate limiting never prevents a commit.
+Only secrets and merge markers block. AI is advisory and fails open: no token, offline operation, a slow provider, or rate limiting never prevents a commit. A pre-push range review requires an upstream branch; without one, `quack agent` can still analyze staged changes but has no unpushed range to inspect.
 
 ## CLI surface
 
@@ -81,6 +81,21 @@ Commands:
   watch    Review changes in the background and cache the result for...
 ```
 
+Important options:
+
+| Option | Commands | Purpose |
+|---|---|---|
+| `--once` | `watch` | Run one review immediately and exit. |
+| `--quiet-period SECONDS` | `watch` | Set the quiet period before a background review; default is 30 seconds. |
+| `--model MODEL` | `model`, `agent` | Override the configured model for diagnostics or agent review. |
+| `--fly` | `agent` | Reveal an unapplied proposed patch instead of showing coaching-only output. |
+| `--local` | `install` | Install hooks using the installed `quack` command without requiring a published repository revision. |
+
+`quack check` is intentionally fully local. It runs deterministic checks,
+builds test guidance, and reads a matching cached AI review when one exists.
+It never calls an AI provider and never falls back to a network request on a
+cache miss. AI review is performed by `quack watch` or `quack agent`.
+
 ## Install
 
 1. `pipx install git+https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK`
@@ -93,8 +108,8 @@ code-grounded v0.3.0 architecture snapshot.
 ## Status
 
 The deterministic commit checks, background review cache, pre-push Tier 2 review,
-metrics, and hook installation are covered by the current test suite. The
-default `copilot_sdk` provider uses the Copilot CLI's stored login for advisory
-reviews. The agent's tool-calling loop currently requires
-`QUACK_PROVIDER=github_models` and `GITHUB_TOKEN`; SDK-native tools are scoped
-but not built. AI availability and model responses are intentionally advisory.
+SDK-native agent tools, metrics, hook installation, and fail-open behavior are
+covered by the current test suite. The default `copilot_sdk` provider uses the
+Copilot CLI's stored login for both advisory review and native tool calling;
+`github_models` remains reachable as the legacy OpenAI-style provider. AI
+availability and model responses are intentionally advisory.
