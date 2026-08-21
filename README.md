@@ -55,8 +55,8 @@ No apparent replacement code restoring delegates elsewhere in this path
 | Surface | When it runs | What it does | Network |
 |---|---|---|---|
 | `quack check` | Pre-commit | Checks secrets, merge markers, debug code, and test guidance. | No; no token required. |
-| `quack watch` | In the background | Reviews changes while you work and caches a verdict for commit time. | Yes, when a provider is available. |
-| `quack agent` | Pre-push | Reviews unpushed commits; its investigative agent can run tests and propose fixes. | Yes, when a provider is available. |
+| `quack watch` | Alongside development | Reviews changes while you work and caches a verdict for commit time. | Yes, when a provider is available. |
+| `quack agent` | Pre-push | Reviews unpushed commits. Its optional investigative loop can run tests and propose fixes with `QUACK_PROVIDER=github_models`. | Yes, when a provider is available. |
 
 Only secrets and merge markers block. AI is advisory and fails open: no token, offline operation, a slow provider, or rate limiting never prevents a commit.
 
@@ -66,8 +66,15 @@ Only secrets and merge markers block. AI is advisory and fails open: no token, o
 2. Run `copilot`, enter `/login`, complete the browser flow, then exit.
 3. In your repository, run `quack install`.
 
-See [SETUP.md](SETUP.md) for details and troubleshooting.
+See [SETUP.md](SETUP.md) for details and troubleshooting, [DEMO.md](DEMO.md)
+for the presenter runbook, and [CURRENT_STATE.md](CURRENT_STATE.md) for the
+code-grounded v0.3.0 architecture snapshot.
 
 ## Status
 
-The deterministic commit checks, background review cache, pre-push Tier 2 review, metrics, and hook installation are covered by the current test suite. The agent’s tool-calling loop currently requires the `github_models` provider; SDK-native tools are scoped but not built. AI availability and model responses depend on the signed-in provider and are intentionally advisory.
+The deterministic commit checks, background review cache, pre-push Tier 2 review,
+metrics, and hook installation are covered by the current test suite. The
+default `copilot_sdk` provider uses the Copilot CLI's stored login for advisory
+reviews. The agent's tool-calling loop currently requires
+`QUACK_PROVIDER=github_models` and `GITHUB_TOKEN`; SDK-native tools are scoped
+but not built. AI availability and model responses are intentionally advisory.

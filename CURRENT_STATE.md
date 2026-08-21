@@ -312,13 +312,11 @@ The implementation does **not** log one line for every CLI invocation:
 `model`, `metrics`, and `install` do not emit events, and a continuous watch
 emits per review attempt rather than one event for process lifetime.
 
-No diff or file-content field is deliberately written. Tests specifically
-prove the check event contains counts instead of changed paths or content.
-However, the "counts and enums only" description is too strong: events include
-timestamps, provider/model strings, and failure-reason strings. There is no
-central schema or sanitizer preventing a future or exceptional reason string
-from containing a path. Privacy is currently enforced by caller discipline and
-tests, not by payload validation inside `metrics.log()`.
+No diff, file-content, path, commit-message, or repository-name field is
+written. `metrics.log()` applies a central allowlist of event keys, validates
+numeric and risk values, and sanitizes failure strings by bounding their length
+and redacting paths and token-like values. Tests also prove the check event
+contains counts instead of changed paths or content.
 
 ---
 
@@ -466,9 +464,9 @@ commit path and has a 60-second per-call timeout.
 - Cache rehydration catches missing/wrong top-level types but does not re-run
   Tier 2's strict schema validator. For example, it coerces several cached
   fields with `list()`/`str()` and does not revalidate risk membership.
-- Metrics payload privacy has no central allowlist/schema. Current check events
-  are tested not to contain paths or content, but arbitrary failure strings are
-  accepted.
+- Metrics payload privacy uses a central allowlist and sanitizer, but the
+  permitted provider/model strings and bounded failure reasons still need
+  periodic review as telemetry evolves.
 - Metrics are not emitted by every command, and `quack metrics` bypasses the
   single Rich renderer with `click.echo()`.
 

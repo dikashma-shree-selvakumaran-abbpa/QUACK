@@ -17,15 +17,15 @@ quack follows a **functional core / imperative shell** design.
 | Layer | Modules | Responsibility |
 |---|---|---|
 | Pure logic (no I/O) | `delta`, `tier1`, `testmap`, `jsonparse` | Parse diffs, scan for issues, plan tests, parse model JSON. Fully unit-testable. |
-| I/O adapters | `gitio`, `llmio`, `runio`, `gitleaks` | Talk to git, GitHub Models, test runners, and the gitleaks binary. |
+| I/O adapters | `gitio`, `llmio`, `runio`, `gitleaks` | Talk to git, model providers, test runners, and the gitleaks binary. |
 | Orchestration | `cli`, `tier2`, `agent` | Wire the pieces together; own exit codes and UX. |
 | Presentation | `render` | The single module that writes to the terminal. |
 
 **Design invariant:** only Tier 1 governs the exit code. gitleaks and the agent
 are advisory / fail-open and can never turn a passing commit into a failing one
 due to their own unavailability. **Commit time is fully local** — `quack check`
-makes no network calls and sends no code anywhere; all AI runs at pre-push via
-`quack agent`.
+makes no network calls and sends no code anywhere. AI runs in `quack watch`
+while the developer works or at pre-push via `quack agent`.
 
 ---
 
@@ -47,17 +47,24 @@ already-installed pre-commit checks active.
 | Command | Purpose | Exit-code authority |
 |---|---|---|
 | `quack check` | Full pre-commit gate on **staged** changes (what the hook runs). Fully local: **no network calls, sends no code anywhere.** | Tier 1 only |
-| `quack agent [--fly] [--model M]` | Pre-push investigative agent over the **staged** diff. `--fly` allows a proposed patch. **This is where all AI runs.** | Advisory (informational) |
-| `quack install [--local]` | Write `.pre-commit-config.yaml` (both `quack` + `quack-agent` hooks), install both hook types, bootstrap gitleaks, banner, optional token setup. `--local` targets any repo without a published remote. | n/a |
-| `quack model` | Print the resolved model id. | n/a |
+| `quack watch [--quiet-period 30] [--once]` | Review staged or tracked working changes and cache an advisory result for commit time. | Advisory (informational) |
+| `quack agent [--fly] [--model M]` | Pre-push Tier 2 review plus an investigative loop over staged changes or, when the index is empty, unpushed commits. `--fly` allows a proposed patch. | Advisory (informational) |
+| `quack install [--local]` | Write `.pre-commit-config.yaml` (both `quack` + `quack-agent` hooks), install both hook types, and best-effort bootstrap gitleaks. `--local` targets any repo without a published remote. | n/a |
+| `quack model [--model M]` | Report provider, availability, model resolution, timeout, and Copilot SDK model discovery. | n/a |
+| `quack metrics` | Summarize locally recorded aggregate metrics. | n/a |
 
-**Model resolution order:** `--model` flag → `QUACK_MODEL` env var → default.
-- `agent` default: `openai/gpt-4.1` (multi-step tool use needs more reasoning).
-- `check` uses **no model** — it makes no AI calls.
+**Model resolution order:** `--model` flag → `QUACK_MODEL` env var →
+provider-specific default. `copilot_sdk` defaults to `claude-haiku-4.5` for
+single-shot review and `claude-sonnet-4.5` for the agent; `github_models`
+defaults to `openai/gpt-4o-mini` and `openai/gpt-4.1` respectively. `check`
+uses **no model** — it makes no AI calls.
 
-**Relevant env vars:** `QUACK_PROVIDER` (LLM transport — see below), `GITHUB_TOKEN`
-(required by the `github_models` provider), `QUACK_MODEL` (model
-override), `QUACK_DISABLE_GITLEAKS` (skip gitleaks), `NO_COLOR` (plain output).
+**Relevant env vars:** `QUACK_PROVIDER` (LLM transport — see below),
+`GITHUB_TOKEN` (required by the `github_models` provider), `QUACK_MODEL`
+(model override), `QUACK_DISABLE_GITLEAKS` (skip gitleaks), and `NO_COLOR`
+(plain output). `GITHUB_TOKEN`, `GH_TOKEN`, and `COPILOT_GITHUB_TOKEN` should
+be unset when using `copilot_sdk`, because ambient tokens can shadow the
+Copilot CLI login.
 
 **LLM provider:** `QUACK_PROVIDER` selects the transport, defaulting to
 **`copilot_sdk`**. The Copilot SDK is the approved transport at ABB; GitHub
@@ -134,23 +141,23 @@ coverage as an optional upgrade.
 
 ---
 
-## 5. Tier 2 — advisory AI review (pre-push, not commit time)
+## 5. Tier 2 — advisory AI review (watch mode and pre-push)
 
 **Modules:** `tier2.py` + `llmio.py` · **Fail-open. Never changes the exit code.**
 
 > **Not run at commit time.** The Copilot/model setup cost (~9–15s cold) and
 > per-call credit cost are incompatible with a <6s commit budget and per-commit
-> team economics, so `quack check` makes **no** Tier 2 call. The module and its
-> tests are retained for pre-push use; the `quack agent` loop supersedes Tier 2's
-> one-shot risk scoring today.
+> team economics, so `quack check` makes **no** Tier 2 call. `quack watch`
+> performs the review after a quiet period and caches it; `quack agent` also
+> runs the same single-shot review at pre-push before any investigation loop.
 - **Privacy:** the diff is **redacted before it leaves the machine.**
   `tier1.redact()` replaces every detected secret with `[REDACTED]`, and Tier 2
   builds its prompt from that redacted delta (`"Staged diff (redacted):"`).
-- **Transport:** `llmio.complete()` POSTs to the GitHub Models endpoint
-  (`https://models.github.ai/inference/chat/completions`) using `GITHUB_TOKEN`,
-  read at call time. All transport failures normalize to `LLMUnavailable` — no
-  token, network error, or bad response ever crashes the hook; Tier 2 just
-  reports `skipped`.
+- **Transport:** `llmio.complete()` selects `copilot_sdk` by default, using the
+  Copilot CLI's stored OAuth login, or `github_models` when explicitly selected
+  with `QUACK_PROVIDER=github_models` and `GITHUB_TOKEN`. All transport failures
+  normalize to `LLMUnavailable` — no login, token, network error, or bad
+  response ever crashes the hook; Tier 2 reports that review is unavailable.
 - **Project instructions:** repo-local guidance is loaded by
   `instructions.load()` from the first file that exists — `.quack/instructions.md`
   → `instructions.md` → `.github/copilot-instructions.md` → `AGENTS.md` — and
@@ -221,9 +228,6 @@ from the network; the project's local jest is used.
 - **Install banner:** yellow ASCII duck + `QUACK` wordmark on `quack install`.
 - **Blocked-line alarm:** loud `QUACK!!!! check line #…` callout with exact
   line numbers.
-- **Token onboarding:** after install, quack optionally prompts (hidden input)
-  for a `GITHUB_TOKEN`, persists it via `setx` on Windows, and skips cleanly
-  when non-interactive or already set. Opt-in and never fatal.
 - **Output discipline:** all terminal output flows through `render.py` and is
   TTY / `NO_COLOR`-aware (ANSI dropped when piped).
 - **Cross-platform:** Windows / macOS / Linux; works in Visual Studio, VS Code,
@@ -246,7 +250,7 @@ not cosmetic.
 | **Scope of "AI"** | Broad, subjective style/logic opinions | Two bounded roles: a one-shot advisory reviewer, and a **budgeted investigator that runs real tests** |
 | **Guessing vs. verifying** | Reasons over text; rarely executes anything | Agent **runs the actual test suite** (pytest / dotnet / jest) and treats the exit code as ground truth |
 | **Safety** | Frequently has broad tool/file/shell access | Read-only tools, strict path containment, no shell, hard iteration/time/test budgets |
-| **Cost & speed** | Every review is an API round-trip | Tier 1 is milliseconds and offline; AI only fires when it adds value (non-trivial diffs) |
+| **Cost & speed** | Every review is an API round-trip | Tier 1 is local and offline; AI runs through watch mode or at pre-push, never in the commit path |
 | **Authority** | The agent's judgment is the verdict | The agent is **advisory**; a human still decides — it points at root cause and proposes a *minimal* patch |
 
 **In one line:** a code-review agent asks a model _"does this look okay?"_;
