@@ -220,6 +220,13 @@ def test_redacted_diff_reaches_session_not_raw_diff(monkeypatch, tmp_path):
 	assert raw not in session.prompt
 
 
+def test_native_opening_prompt_does_not_stop_investigation(monkeypatch, tmp_path):
+	session = _NativeSession()
+	_install(monkeypatch, session)
+	copilot_sdk.run_agent("diff", tmp_path, "model", timeout_s=5)
+	assert "Stop investigating" not in session.prompt
+
+
 def test_fly_reveals_patch_but_default_hides_it(monkeypatch, tmp_path, capsys):
 	patch = "--- a/x.py\n+++ b/x.py\n"
 	result, _, _ = _run(

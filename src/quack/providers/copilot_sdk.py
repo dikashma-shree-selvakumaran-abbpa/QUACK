@@ -59,6 +59,11 @@ _AUTH_MESSAGE = (
 _COPILOT_REQUESTS_MESSAGE = (
 	"Copilot access denied — your PAT needs the `Copilot Requests` permission."
 )
+_NATIVE_FINAL_INSTRUCTION = (
+	"After investigating the changes and gathering the relevant evidence, "
+	"reply with ONLY the final JSON verdict: "
+	"{summary, tests_run, failures, proposed_patch, proposed_new_tests}."
+)
 
 
 class _CopilotTimeout(TimeoutError):
@@ -474,7 +479,7 @@ async def _run_agent_async(
 			+ "\n\nAccumulated local changes (staged diff):\n\n"
 			+ diff
 			+ "\n\n"
-			+ agent._FINAL_INSTRUCTION
+			+ _NATIVE_FINAL_INSTRUCTION
 		)
 		response = await _within_budget(session.send_and_wait(prompt), deadline, "inference")
 		content = _value(_value(response, "data"), "content")
