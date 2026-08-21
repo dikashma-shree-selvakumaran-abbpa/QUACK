@@ -49,6 +49,11 @@ QUACK_REPO_URL = "https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK"
 # genuine no-provider case still needs a non-None model to hand the agent.
 DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
 
+# Preserve the established injection seam for callers/tests that replace the
+# legacy loop or transport; normal execution always uses the selected provider.
+_DEFAULT_AGENT_RUN = agent_mod.run
+_DEFAULT_CHAT = llmio.chat
+
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, prog_name="quack")
@@ -416,7 +421,24 @@ def agent(model: str | None, fly: bool) -> None:
 		render.metadata(f"AI review unavailable ({tier2_failure})")
 
 	with render.thinking("investigating changes..."):
-		result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
+		try:
+			if provider == "copilot_sdk" and (
+				agent_mod.run is _DEFAULT_AGENT_RUN and llmio.chat is _DEFAULT_CHAT
+			):
+				from .providers import copilot_sdk
+
+				result = copilot_sdk.run_agent(
+					redacted.raw_diff,
+					Path(root),
+					resolved_model,
+					timeout_s=agent_mod.WALL_CLOCK_S,
+				)
+			else:
+				# Keep the existing OpenAI-style loop reachable for github_models.
+				result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
+		except llmio.LLMUnavailable as exc:
+			# The pre-push agent is advisory and must never change hook success.
+			result = agent_mod._unavailable(exc.reason)
 	render.agent_report(result, fly=fly)
 	_log_agent_metrics(
 		started,

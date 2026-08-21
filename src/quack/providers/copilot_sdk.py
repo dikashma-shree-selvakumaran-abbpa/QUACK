@@ -20,9 +20,12 @@ reason so callers can implement fail-open behaviour.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from pathlib import Path
 
 from .. import render
 from ..llmio import LLMUnavailable
@@ -315,15 +318,195 @@ def complete(
 		raise LLMUnavailable(_error_reason(exc))
 
 
+def _value(obj, name: str, default=None):
+	"""Read SDK hook/event values across SDK versions and test doubles."""
+	if isinstance(obj, dict):
+		return obj.get(name, default)
+	return getattr(obj, name, default)
+
+
+def _tool_result(text: str, *, failure: bool = False):
+	"""Build an SDK result without allowing handler failures to escape."""
+	if ToolResult is None:
+		return text
+	return ToolResult(
+		text_result_for_llm=text,
+		result_type="failure" if failure else "success",
+		error=text if failure else None,
+	)
+
+
+def _agent_tool_schema(name: str) -> dict:
+	if name in ("read_file", "list_dir"):
+		parameter = "path"
+		description = "Repo-relative path."
+	else:
+		parameter = "project_or_paths"
+		description = "csproj [--filter ...] OR .py paths."
+	return {
+		"type": "object",
+		"properties": {parameter: {"type": "string", "description": description}},
+		"required": [parameter],
+		"additionalProperties": False,
+	}
+
+
+def _agent_args(input_data) -> dict:
+	args = _value(input_data, "toolArgs", {})
+	return args if isinstance(args, dict) else {}
+
+
+def _validate_agent_call(root: Path, name: str, args: dict) -> str | None:
+	"""Validate a native invocation before its handler is allowed to run."""
+	from .. import agent
+
+	if name in ("read_file", "list_dir"):
+		path = args.get("path")
+		if not isinstance(path, str) or agent._safe_path(root, path) is None:
+			return "path is outside the repository or invalid"
+		return None
+	if name != "run_tests":
+		return "unknown tool"
+	spec = args.get("project_or_paths")
+	if not isinstance(spec, str) or not spec.strip():
+		return "no test target provided"
+	tokens = spec.split()
+	if any(token.endswith(".csproj") for token in tokens):
+		if "--filter" in tokens:
+			index = tokens.index("--filter")
+			if len(tokens[:index]) != 1 or not tokens[index + 1 :]:
+				return "expected exactly one .csproj path before --filter"
+			value = " ".join(tokens[index + 1 :]).strip().strip('"')
+			if not re.match(r'^[A-Za-z0-9_.~|&=!"\s-]+$', value):
+				return "filter rejected (illegal characters)"
+		elif len(tokens) != 1:
+			return "expected exactly one .csproj path before --filter"
+		if agent._safe_path(root, tokens[0]) is None:
+			return "project is outside the repository"
+		return None
+	if not all(token.endswith(".py") for token in tokens):
+		return "unrecognized target"
+	if any(agent._safe_path(root, token) is None for token in tokens):
+		return "path is outside the repository"
+	return None
+
+
+async def _run_agent_async(
+	diff: str, repo_root: Path, model: str, timeout_s: float
+) -> object:
+	"""Run the investigation through SDK-native tools and one native turn."""
+	from .. import agent
+
+	if CopilotClient is None or define_tool is None:
+		raise LLMUnavailable("copilot sdk not installed")
+	root = Path(repo_root).resolve()
+	started = asyncio.get_running_loop().time()
+	deadline = started + min(max(timeout_s, 0.0), agent.WALL_CLOCK_S)
+	invocations = 0
+	run_tests_used = 0
+	test_outputs: list[str] = []
+
+	def pre_tool(input_data):
+		nonlocal invocations, run_tests_used
+		name = str(_value(input_data, "toolName", ""))
+		args = _agent_args(input_data)
+		# Enforcement moved from loop control to denial because the SDK owns
+		# turn progression; every attempted invocation consumes an iteration.
+		invocations += 1
+		if invocations > agent.MAX_ITERATIONS:
+			return {"permissionDecision": "deny", "permissionDecisionReason": "iteration budget exhausted"}
+		if asyncio.get_running_loop().time() - started >= agent.WALL_CLOCK_S:
+			return {"permissionDecision": "deny", "permissionDecisionReason": "wall-clock budget exhausted"}
+		validation_error = _validate_agent_call(root, name, args)
+		if validation_error:
+			return {"permissionDecision": "deny", "permissionDecisionReason": validation_error}
+		if name == "run_tests" and run_tests_used >= agent.MAX_RUN_TESTS:
+			return {"permissionDecision": "deny", "permissionDecisionReason": "run_tests budget exhausted"}
+		if name == "run_tests":
+			run_tests_used += 1
+		return {"permissionDecision": "allow"}
+
+	def make_handler(name: str):
+		def handler(args):
+			try:
+				if name == "read_file":
+					result = agent._read_file(root, str(args.get("path", "")))
+				elif name == "list_dir":
+					result = agent._list_dir(root, str(args.get("path", "")))
+				else:
+					result = agent._run_tests(root, str(args.get("project_or_paths", "")))
+					if result.startswith("exit_code="):
+						test_outputs.append(result)
+				return _tool_result(result, failure=result.startswith("error:"))
+			except Exception:
+				return _tool_result("error: tool execution failed", failure=True)
+		return handler
+
+	tools = []
+	for name, description in (
+		("read_file", "Return the first 300 lines of a repo file."),
+		("list_dir", "List the entry names of a repo directory."),
+		("run_tests", "Run only the permitted pytest or dotnet test target."),
+	):
+		tool = define_tool(name=name, description=description, handler=make_handler(name), skip_permission=True)
+		tool.parameters = _agent_tool_schema(name)
+		tools.append(tool)
+
+	client = CopilotClient()
+	try:
+		await _within_budget(client.start(), deadline, "runtime startup")
+		session = await _within_budget(
+			client.create_session(
+				model=model,
+				tools=tools,
+				# Permission approval is not the security boundary; pre_tool is
+				# the authoritative validation and budget enforcement point.
+				on_permission_request=lambda *_args, **_kwargs: {"kind": "approved"},
+				hooks={"on_pre_tool_use": pre_tool},
+			),
+			deadline,
+			"inference",
+		)
+		prompt = (
+			agent.SYSTEM_PROMPT
+			+ "\n\nAccumulated local changes (staged diff):\n\n"
+			+ diff
+			+ "\n\n"
+			+ agent._FINAL_INSTRUCTION
+		)
+		response = await _within_budget(session.send_and_wait(prompt), deadline, "inference")
+		content = _value(_value(response, "data"), "content")
+		result = agent._parse_and_validate(content)
+		if result is None:
+			# Native turns have no OpenAI message history to retry; ask the same
+			# session once for schema correction, preserving the one-retry contract.
+			response = await _within_budget(session.send_and_wait(agent._RETRY_MESSAGE), deadline, "inference")
+			content = _value(_value(response, "data"), "content")
+			result = agent._parse_and_validate(content)
+		return agent._finalize(result, "AI analysis unavailable", test_outputs)
+	finally:
+		try:
+			await client.stop()
+		except Exception:
+			pass
+
+
+def run_agent(diff: str, repo_root: Path, model: str, timeout_s: float = DEFAULT_TIMEOUT_S):
+	"""Run the SDK-native agent, normalising every failure to LLMUnavailable."""
+	try:
+		_show_runtime_preparation_notice()
+		with _silence_sdk_logging():
+			return asyncio.run(_run_agent_async(diff, repo_root, model, timeout_s))
+	except LLMUnavailable:
+		raise
+	except Exception as exc:
+		raise LLMUnavailable(_error_reason(exc, context="agent unavailable")) from None
+
+
 def chat(
 	messages: list[dict],
 	model: str,
 	tools: list[dict] | None = None,
 ) -> dict:
-	"""Tool calling is unsupported on this provider.
-
-	The Copilot SDK exposes no OpenAI-style ``tool_calls`` surface, so the
-	agent stays on the ``github_models`` provider. We do NOT emulate tool
-	calling; we fail-open instead.
-	"""
+	"""The SDK intentionally has no OpenAI-style chat tool-call surface."""
 	raise LLMUnavailable("tool calling not supported on copilot_sdk provider")

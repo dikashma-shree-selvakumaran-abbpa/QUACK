@@ -371,4 +371,22 @@ pre-push uninstalled
 
 **Verified:** after `git clean -fd` removed the untracked `.pre-commit-config.yaml`, the pre-push hook script itself refused to run (since pre-commit's installed hook still checks for a config file) and blocked the branch-delete push until `PRE_COMMIT_ALLOW_NO_CONFIG=1` was set. This is a real, reproducible edge case: deleting the config file without uninstalling the git hooks first leaves a hook binary in `.git/hooks/` that still enforces a check it can no longer configure. `pre-commit uninstall` (both hook types) fully restored the repo to an unhooked state.
 
+---
+
+## Case 11 — `quack metrics` reports aggregated local counts only
+
+**Repo:** PG2
+
+```
+PS C:\ABB\AI-Champs\PCP.Operations.HMI.Engineering.Graphics> quack metrics
+Total runs: 67
+Runs by command: agent=6, check=45, watch=16
+Blocks: 9
+Most common findings: secrets=9
+Median duration: 1712 ms
+Cache hit rate: 35.6%
+```
+
+**Verified:** `quack metrics` aggregates local run history across all three commands (`agent`, `check`, `watch`) into counts, durations, and enums only — no file paths, diff content, or code snippets. Across 67 recorded runs, 9 were blocked, all attributable to the `secrets` finding, with a median duration of 1712 ms and a 35.6% cache hit rate (lower than a fresh-repo session, consistent with a longer-lived working history containing a mix of first-time and repeat reviews).
+
 
