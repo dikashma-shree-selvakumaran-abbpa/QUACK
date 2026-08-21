@@ -92,9 +92,6 @@ quack agent: pre-push AI review ────────────────
 6. Push an intentional regression to show the advisory pre-push review.
 7. Run `quack model` and `quack metrics` for diagnostics and local evidence.
 
-See [DEMO.md](DEMO.md) for the commands, expected output, reset instructions,
-and presenter talking points.
-
 ## Objection handling
 
 | Question | Answer |
