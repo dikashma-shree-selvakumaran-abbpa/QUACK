@@ -234,6 +234,7 @@ def report(
 		subtitle=subtitle,
 		subtitle_align="left",
 		padding=(0, 1),
+		**({"border_style": _BLOCK} if blocked else {}),
 	)
 	_console().print(panel)
 
@@ -260,7 +261,7 @@ def _findings_table(findings) -> RenderableType | None:
 
 
 def _quack_alarm(findings, blocked: bool) -> RenderableType | None:
-	"""A loud, quacky call-out of the exact lines that blocked the commit."""
+	"""A loud, quacky call-out when the commit is blocked."""
 	if not blocked:
 		return None
 	lines = [
@@ -270,8 +271,7 @@ def _quack_alarm(findings, blocked: bool) -> RenderableType | None:
 	]
 	if not lines:
 		return None
-	where = ", ".join(f"#{n}" for n in lines)
-	return Text(f"\U0001f424 QUACK!!!! check line {where}", style="bold yellow")
+	return Text("\U0001f424 QUACK!!!!", style="bold yellow")
 
 
 def _guidance_group(plan) -> RenderableType | None:
@@ -286,7 +286,7 @@ def _guidance_group(plan) -> RenderableType | None:
 	# Commands sit on their own line with no leading decoration so they stay
 	# triple-click copy-pasteable.
 	for cmd in commands:
-		lines.append(Text(cmd, style=_CMD))
+		lines.append(_command_text(cmd))
 	if getattr(plan, "dotnet_hint", False):
 		lines.append(Text("(first run: build once with dotnet build)", style=_META))
 	for source in untested:
@@ -311,16 +311,21 @@ def _ai_group(ai, model: str, note: str | None = None) -> RenderableType | None:
 	lines: list[RenderableType] = [header]
 	one_liner = getattr(ai, "one_liner", "")
 	if one_liner:
-		lines.append(Text(one_liner))
+		lines.append(Text(one_liner, style="bold"))
 	for reason in getattr(ai, "reasons", []) or []:
-		lines.append(Text(reason))
+		lines.append(Text(f"  {reason}", style=_META))
 	for test in getattr(ai, "tests_to_run", []) or []:
-		lines.append(Text(test, style=_CMD))
+		lines.append(_command_text(test))
 	for source in getattr(ai, "missing_tests", []) or []:
 		lines.append(Text(f"{source}: no test covers this change", style=_WARN))
 	if note:
 		lines.append(Text(note, style=_META))
 	return Group(*lines)
+
+
+def _command_text(command: str) -> Text:
+	"""Render a command in cyan without clipping it at the panel boundary."""
+	return Text(command, style=_CMD, no_wrap=False, overflow="fold")
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
 from quack import render
 
@@ -226,7 +227,19 @@ def test_quack_alarm_lists_blocking_lines(capsys) -> None:
 	)
 	out = capsys.readouterr().out
 	assert "QUACK!!!!" in out
-	assert "#12" in out
+	assert "check line" not in out
+	assert "#12" not in out
+
+
+def test_long_command_folds_without_losing_content() -> None:
+	command = "dotnet test tests/GfxKernel.Tests/GfxKernel.Tests.csproj --filter FullyQualifiedName~CriticalRenderingPath"
+	console = Console(width=80, force_terminal=False, color_system=None, record=True)
+
+	console.print(render._command_text(command))
+
+	out = console.export_text()
+	assert "\n" in out
+	assert "".join(out.split()) == "".join(command.split())
 
 
 def test_quack_alarm_absent_when_not_blocked(capsys) -> None:
