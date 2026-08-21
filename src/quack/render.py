@@ -1,4 +1,4 @@
-﻿"""Single terminal output module for quack.
+"""Single terminal output module for quack.
 
 All terminal output MUST go through this module. No print() calls elsewhere.
 
@@ -311,9 +311,9 @@ def _ai_group(ai, model: str, note: str | None = None) -> RenderableType | None:
 	lines: list[RenderableType] = [header]
 	one_liner = getattr(ai, "one_liner", "")
 	if one_liner:
-		lines.append(Text(one_liner, style="bold"))
+		lines.append(Text(one_liner, style="bold", no_wrap=False, overflow="fold"))
 	for reason in getattr(ai, "reasons", []) or []:
-		lines.append(Text(f"  {reason}", style=_META))
+		lines.append(Text(f"  {reason}", style=_META, no_wrap=False, overflow="fold"))
 	for test in getattr(ai, "tests_to_run", []) or []:
 		lines.append(_command_text(test))
 	for source in getattr(ai, "missing_tests", []) or []:
