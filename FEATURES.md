@@ -262,9 +262,9 @@ by actually running your tests_. The LLM assists; it never holds the gate.
 
 ## 9. Guarantees summary
 
-- ✅ Secrets and merge markers are caught **offline and deterministically**.
-- ✅ Detected secrets are **redacted** before any AI call.
-- ✅ AI/gitleaks unavailability **never** breaks your workflow (fail-open).
-- ✅ The agent can only **read** files and run **whitelisted** tests, within the
+- [x] Secrets and merge markers are caught **offline and deterministically**.
+- [x] Detected secrets are **redacted** before any AI call.
+- [x] AI/gitleaks unavailability **never** breaks your workflow (fail-open).
+- [x] The agent can only **read** files and run **whitelisted** tests, within the
   repo, under strict budgets, with no shell.
-- ✅ Only Tier 1 owns the exit code.
+- [x] Only Tier 1 owns the exit code.
