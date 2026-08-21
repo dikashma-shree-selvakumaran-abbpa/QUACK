@@ -1,10 +1,10 @@
-# quack
+# QUACK
 
-Catch problems before they reach CI — a pre-commit quality hook with AI review at pre-push.
+Catch problems before they reach CI : a pre-commit quality hook with AI review at pre-push.
 
 ## The problem
 
-For most teams, the first real quality gate is CI. You push, wait 15–20 minutes, and learn that a secret was committed, debug code was left in, or a test was broken — after you have context-switched and after teammates are blocked. The cost of a defect grows with the distance from the keystroke that made it. quack moves the first check back to the commit and push that introduced the change.
+For most teams, the first real quality gate is CI. You push, wait 15–20 minutes, and learn that a secret was committed, debug code was left in, or a test was broken , after you have context-switched and after teammates are blocked. The cost of a defect grows with the distance from the keystroke that made it. quack moves the first check back to the commit and push that introduced the change.
 
 ## What it looks like
 
