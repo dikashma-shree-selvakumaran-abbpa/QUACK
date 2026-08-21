@@ -490,7 +490,7 @@ async def _run_agent_async(
 			response = await _within_budget(session.send_and_wait(agent._RETRY_MESSAGE), deadline, "inference")
 			content = _value(_value(response, "data"), "content")
 			result = agent._parse_and_validate(content)
-		return agent._finalize(result, "AI analysis unavailable", test_outputs)
+		return agent._finalize(result, "final JSON schema validation failed", test_outputs)
 	finally:
 		try:
 			await client.stop()

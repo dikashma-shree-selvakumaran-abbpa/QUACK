@@ -221,6 +221,10 @@ _OVERRIDE_DIAGNOSIS = (
 	"Non-zero exit code from run_tests; failure present in tool output but "
 	"absent from the model's self-report."
 )
+_INVALID_FINAL_REPORT_SUMMARY = (
+	"Investigation ran, but the model's final report was invalid; failures "
+	"below are from actual test exit codes."
+)
 
 # Matches ".NET" and pytest failure lines, e.g. "Failed Ns.Class.Method [12 ms]"
 # or "FAILED tests/test_x.py::test_y".
@@ -261,11 +265,14 @@ def _reconcile(result: AgentResult, test_run_outputs: list[str]) -> AgentResult:
 	result.failures = [
 		{"test": name, "diagnosis": _OVERRIDE_DIAGNOSIS} for name in failed_names
 	]
-	note = (
-		f"[verified] {len(failed_names)} test(s) failed per tool output, "
-		f"overriding model's self-report."
-	)
-	result.summary = f"{note} {result.summary}".strip()
+	if result.summary.startswith("AI analysis unavailable:"):
+		result.summary = _INVALID_FINAL_REPORT_SUMMARY
+	else:
+		note = (
+			f"[verified] {len(failed_names)} test(s) failed per tool output, "
+			f"overriding model's self-report."
+		)
+		result.summary = f"{note} {result.summary}".strip()
 	return result
 
 

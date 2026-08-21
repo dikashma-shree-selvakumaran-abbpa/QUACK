@@ -189,6 +189,24 @@ def test_nonzero_test_output_reconciles_success_to_failure(monkeypatch, tmp_path
 	assert "verified" in result.summary
 
 
+def test_invalid_final_json_with_failed_test_reports_investigation_ran(monkeypatch, tmp_path):
+	(tmp_path / "test_x.py").write_text("", encoding="utf-8")
+	monkeypatch.setattr(
+		agent.runio,
+		"run_pytest",
+		lambda *a, **k: (1, "FAILED test_x.py::test_bad"),
+	)
+	result, _, _ = _run(
+		monkeypatch,
+		tmp_path,
+		[("run_tests", {"project_or_paths": "test_x.py"})],
+		response="not valid JSON",
+	)
+	assert "Investigation ran" in result.summary
+	assert "actual test exit codes" in result.summary
+	assert "AI analysis unavailable: AI analysis unavailable" not in result.summary
+
+
 def test_sdk_output_and_logging_are_suppressed(monkeypatch, tmp_path, capsys):
 	logger = logging.getLogger("copilot.native-agent")
 	stream = io.StringIO()
