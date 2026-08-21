@@ -60,6 +60,27 @@ No apparent replacement code restoring delegates elsewhere in this path
 
 Only secrets and merge markers block. AI is advisory and fails open: no token, offline operation, a slow provider, or rate limiting never prevents a commit.
 
+## CLI surface
+
+```text
+PS> quack --help
+Usage: quack [OPTIONS] COMMAND [ARGS]...
+
+  quack: an AI-assisted pre-commit quality hook.
+
+Options:
+  --version   Show the version and exit.
+  -h, --help  Show this message and exit.
+
+Commands:
+  agent    Run the agentic pre-push analysis loop.
+  check    Run the pre-commit quality checks on staged changes.
+  install  Add the quack stanza to .pre-commit-config.yaml and install...
+  metrics  Summarize local metrics without network access.
+  model    Report model configuration and connectivity without changing it.
+  watch    Review changes in the background and cache the result for...
+```
+
 ## Install
 
 1. `pipx install git+https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK`
