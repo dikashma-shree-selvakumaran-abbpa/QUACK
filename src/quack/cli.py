@@ -9,6 +9,7 @@ Subcommands:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -641,9 +642,46 @@ def _render_model_diagnostic(cli_model: str | None) -> None:
 	default=None,
 	help="Model id to diagnose (overrides QUACK_MODEL and provider defaults).",
 )
-def model(model: str | None) -> None:
+@click.option(
+	"--json",
+	"as_json",
+	is_flag=True,
+	default=False,
+	help="Emit machine-readable model diagnostic payload as JSON and suppress terminal rendering.",
+)
+def model(model: str | None, as_json: bool) -> None:
 	"""Report model configuration and connectivity without changing it."""
 	# This command is intentionally read-only; it reports defaults but never sets them.
+	if as_json:
+		current_model = (
+			model
+			or os.environ.get("QUACK_MODEL")
+			or llmio.default_model(kind="completion")
+			or ""
+		)
+		default_mod = llmio.default_model(kind="completion") or ""
+		provider = os.environ.get("QUACK_PROVIDER") or llmio.DEFAULT_PROVIDER
+		try:
+			discovered = llmio.list_models()
+		except Exception:
+			discovered = []
+		payload = {
+			"schemaVersion": 1,
+			"currentModel": current_model,
+			"defaultModel": default_mod,
+			"models": [
+				{
+					"id": m,
+					"displayName": m,
+					"provider": provider,
+					"available": True,
+				}
+				for m in discovered
+			],
+		}
+		click.echo(json.dumps(payload, separators=(",", ":")))
+		return
+
 	try:
 		_render_model_diagnostic(model)
 	except Exception as exc:
