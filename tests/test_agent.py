@@ -90,6 +90,38 @@ def test_run_tests_accepts_valid_filter(
 	assert captured["filter"] == "FullyQualifiedName~RectTransformTests"
 
 
+@pytest.mark.parametrize(
+	"cmd",
+	[
+		"npm test",
+		"npm run test",
+		"npx jest",
+		"npx vitest",
+		"yarn test",
+		"yarn jest",
+		"vitest",
+		"jest",
+	],
+)
+def test_run_tests_accepts_js_test_prefixes(
+	tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cmd: str
+) -> None:
+	def fake_js_test(args, cwd=None, timeout_s=180):
+		return (0, "PASS")
+
+	monkeypatch.setattr(agent.runio, "run_js_test", fake_js_test)
+
+	result = agent._run_tests(tmp_path, cmd)
+	assert not result.startswith("error:")
+	assert "exit_code=0" in result
+
+
+def test_run_tests_rejects_unapproved_command(tmp_path: Path) -> None:
+	result = agent._run_tests(tmp_path, "node_modules/.bin/evil")
+	assert result.startswith("error:")
+	assert "unrecognized target" in result
+
+
 # ---------------------------------------------------------------------------
 # Loop budgets.
 # ---------------------------------------------------------------------------

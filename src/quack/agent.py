@@ -117,14 +117,17 @@ TOOLS = [
 			"description": (
 				"Run tests. For C#: a .csproj path plus optional "
 				'--filter "<value>". For Python: one or more .py test '
-				"file paths."
+				"file paths. For JS/TS: npm test, npm run test, npx jest, "
+				"npx vitest, yarn test, yarn jest, vitest, or jest."
 			),
 			"parameters": {
 				"type": "object",
 				"properties": {
 					"project_or_paths": {
 						"type": "string",
-						"description": "csproj [--filter ...] OR .py paths.",
+						"description": (
+							"csproj [--filter ...], .py paths, or JS/TS test command."
+						),
 					}
 				},
 				"required": ["project_or_paths"],
@@ -357,14 +360,34 @@ def _run_tests(root: Path, spec: str) -> str:
 	if not tokens:
 		return "error: no test target provided"
 
+	js_allowed_prefixes = (
+		("npm", "test"),
+		("npm", "run", "test"),
+		("npx", "jest"),
+		("npx", "vitest"),
+		("yarn", "test"),
+		("yarn", "jest"),
+		("vitest",),
+		("jest",),
+	)
+	for prefix in js_allowed_prefixes:
+		if tuple(tokens[: len(prefix)]) == prefix:
+			return _run_js_test(root, tokens)
+
 	if any(token.endswith(".csproj") for token in tokens):
 		return _run_dotnet(root, tokens)
 	if all(token.endswith(".py") for token in tokens):
 		return _run_pytest(root, tokens)
 	return (
 		"error: unrecognized target; expected a .csproj (with optional "
-		"--filter) or .py test file paths"
+		"--filter), .py test file paths, or JS/TS test command"
 	)
+
+
+def _run_js_test(root: Path, tokens: list[str]) -> str:
+	"""Validate and run whitelisted JS/TS test command tokens."""
+	exit_code, output = runio.run_js_test(tokens, cwd=str(root))
+	return _format_test_output(exit_code, output)
 
 
 def _run_dotnet(root: Path, tokens: list[str]) -> str:

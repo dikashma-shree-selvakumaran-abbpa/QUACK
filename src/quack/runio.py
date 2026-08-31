@@ -37,7 +37,16 @@ def run_dotnet_test(
 	return _run(args, timeout_s)
 
 
-def _run(args: list[str], timeout_s: int) -> tuple[int, str]:
+def run_js_test(
+	args: list[str], cwd: str | None = None, timeout_s: int = DEFAULT_TIMEOUT_S
+) -> tuple[int, str]:
+	"""Run a whitelisted JS/TS test command list."""
+	return _run(args, timeout_s, cwd=cwd)
+
+
+def _run(
+	args: list[str], timeout_s: int, cwd: str | None = None
+) -> tuple[int, str]:
 	"""Execute a fixed argument list without a shell. Never raises."""
 	try:
 		result = subprocess.run(
@@ -45,6 +54,7 @@ def _run(args: list[str], timeout_s: int) -> tuple[int, str]:
 			capture_output=True,
 			text=True,
 			timeout=timeout_s,
+			cwd=cwd,
 		)
 	except FileNotFoundError:
 		return (127, f"<runner not found: {args[0]}>")
