@@ -57,6 +57,7 @@ def test_check_passes_nonzero_duration_to_report(monkeypatch) -> None:
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
 	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
+	monkeypatch.setattr(cli.sonar, "scan", lambda current, root: None)
 	clock = iter((10.0, 10.25, 10.3))
 	monkeypatch.setattr(cli.time, "perf_counter", lambda: next(clock))
 	captured: dict = {}
@@ -140,6 +141,21 @@ def test_check_cache_miss_renders_watch_nudge(monkeypatch) -> None:
 
 	assert result.exit_code == 0
 	assert "run `quack watch` to review in the background" in result.output
+
+
+def test_check_passes_sonar_result_to_report(monkeypatch) -> None:
+	delta = _delta("src/app.py", _hunk("x = 1"))
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
+	sonar_result = object()
+	monkeypatch.setattr(cli.sonar, "scan", lambda current, root: sonar_result)
+	captured: dict = {}
+	monkeypatch.setattr(cli.render, "report", lambda **kwargs: captured.update(kwargs))
+
+	result = CliRunner().invoke(cli.main, ["check"])
+
+	assert result.exit_code == 0
+	assert captured["sonar"] is sonar_result
 
 
 def test_check_has_no_model_option() -> None:

@@ -31,7 +31,7 @@ import os
 from contextlib import contextmanager
 from typing import Iterator
 
-from rich.box import ROUNDED
+from rich.box import ASCII
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.rule import Rule
@@ -49,11 +49,11 @@ _META = "dim"
 
 # Per-severity symbol + color for a Tier 1 finding row.
 _SYMBOLS: dict[str, tuple[str, str]] = {
-	"error": ("\u2717", _BLOCK),  # x
-	"warn": ("\u26a0", _WARN),  # warning triangle
-	"warning": ("\u26a0", _WARN),
-	"ok": ("\u2713", _CLEAN),  # check mark
-	"info": ("\u2713", _CLEAN),
+	"error": ("x", _BLOCK),
+	"warn": ("!", _WARN),
+	"warning": ("!", _WARN),
+	"ok": ("+", _CLEAN),
+	"info": ("+", _CLEAN),
 }
 
 # Risk level -> color.
@@ -160,7 +160,7 @@ def install_banner() -> None:
 	console.print(
 		Panel(
 			Text(_BANNER_ART, style=f"bold {_WARN}", justify="left"),
-			box=ROUNDED,
+			box=ASCII,
 			border_style=_WARN,
 			title=f"[bold {_WARN}]QUACK[/]",
 			subtitle="your commits just got a quality gate",
@@ -182,6 +182,7 @@ def report(
 	findings,
 	plan,
 	ai,
+	sonar=None,
 	model: str = "",
 	ai_note: str | None = None,
 	blocked: bool = False,
@@ -195,6 +196,8 @@ def report(
 	  ``.path``, ``.line``, ``.message``).
 	* ``plan``      -- test plan (``.runner_commands``, ``.untested_sources``,
 	  ``.dotnet_hint``) or ``None``.
+	* ``sonar``     -- optional SonarQube result (``.status``, ``.reason``,
+	  ``.dashboard_url``).
 	* ``ai``        -- ``None`` (no AI section), ``("skipped", reason)``, or a
 	  review result (``.risk``, ``.one_liner``, ``.reasons``,
 	  ``.tests_to_run``, ``.missing_tests``).
@@ -206,6 +209,7 @@ def report(
 		_findings_table(findings),
 		_quack_alarm(findings, blocked),
 		_guidance_group(plan),
+		_sonar_group(sonar),
 		_ai_group(ai, model, ai_note),
 	):
 		if section is not None:
@@ -214,21 +218,20 @@ def report(
 	body: list[RenderableType] = []
 	for index, section in enumerate(sections):
 		if index:
-			body.append(Rule(style=_META))
+			body.append(Rule(style=_META, characters="-"))
 		body.append(section)
 	if not body:
 		body.append(Text("no findings", style=_META))
 
 	title = f"quack - {files} file(s) - +{added}/-{removed} - {duration:.1f}s"
 	if blocked:
-		# The chick emoji is permitted ONLY on the blocked banner.
-		subtitle = Text("\U0001f424 BLOCKED - fix and re-stage", style="bold red")
+		subtitle = Text("BLOCKED - fix and re-stage", style="bold red")
 	else:
 		subtitle = Text("advisory: commit allowed", style=_META)
 
 	panel = Panel(
 		Group(*body),
-		box=ROUNDED,
+		box=ASCII,
 		title=title,
 		title_align="left",
 		subtitle=subtitle,
@@ -271,7 +274,7 @@ def _quack_alarm(findings, blocked: bool) -> RenderableType | None:
 	]
 	if not lines:
 		return None
-	return Text("\U0001f424 QUACK!!!!", style="bold yellow")
+	return Text("QUACK!!!!", style="bold yellow")
 
 
 def _guidance_group(plan) -> RenderableType | None:
@@ -292,6 +295,23 @@ def _guidance_group(plan) -> RenderableType | None:
 	for source in untested:
 		lines.append(Text(f"{source}: NO TESTS FOUND", style=_BLOCK))
 	return Group(*lines)
+
+
+def _sonar_group(result) -> RenderableType | None:
+	"""Render one safe, advisory SonarQube status line."""
+	if result is None:
+		return None
+	status = str(getattr(result, "status", "failed"))
+	reason = str(getattr(result, "reason", "") or "unavailable")
+	if status == "passed":
+		url = getattr(result, "dashboard_url", None)
+		message = f"SonarQube: {reason}"
+		if url:
+			message += f" - {url}"
+		return Text(message, style=_CLEAN, no_wrap=False, overflow="fold")
+	if status == "skipped":
+		return Text(f"SonarQube: skipped ({reason})", style=_META)
+	return Text(f"SonarQube: advisory failure ({reason})", style=_WARN)
 
 
 def _ai_group(ai, model: str, note: str | None = None) -> RenderableType | None:
@@ -383,7 +403,7 @@ def agent_report(result, fly: bool = False) -> None:
 			console.print(
 				Panel(
 					syntax,
-					box=ROUNDED,
+					box=ASCII,
 					title="PROPOSED -- not applied",
 					title_align="left",
 					padding=(0, 1),

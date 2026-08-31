@@ -12,9 +12,15 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.scannerwork/
+coverage.xml
+.coverage
 
 # IDE
 .vs/
+
+# Local SonarQube and scanner installations/runtime data.
+tools/
 
 # Personal / local-only notes
 CATALOG.md

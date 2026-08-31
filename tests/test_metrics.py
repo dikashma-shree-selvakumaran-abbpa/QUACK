@@ -96,6 +96,40 @@ def test_log_drops_malformed_tier1_findings_entries(tmp_path, monkeypatch) -> No
 	}
 
 
+def test_log_validates_sonar_status_and_sanitizes_reason(tmp_path, monkeypatch) -> None:
+	path = tmp_path / "metrics.jsonl"
+	monkeypatch.setattr(metrics, "metrics_path", lambda: path)
+
+	metrics.log(
+		{
+			"sonar_status": "failed",
+			"sonar_duration_ms": 12,
+			"sonar_failure": "failed at C:\\private\\source.py",
+		}
+	)
+
+	assert json.loads(path.read_text(encoding="utf-8")) == {
+		"sonar_status": "failed",
+		"sonar_duration_ms": 12,
+		"sonar_failure": "failed at <path>",
+	}
+
+
+def test_log_drops_malformed_sonar_metrics(tmp_path, monkeypatch) -> None:
+	path = tmp_path / "metrics.jsonl"
+	monkeypatch.setattr(metrics, "metrics_path", lambda: path)
+
+	metrics.log(
+		{
+			"sonar_status": "UNKNOWN",
+			"sonar_duration_ms": "slow",
+			"sonar_failure": object(),
+		}
+	)
+
+	assert json.loads(path.read_text(encoding="utf-8")) == {}
+
+
 def test_log_sanitization_of_pathological_input_never_raises(
 	tmp_path, monkeypatch
 ) -> None:

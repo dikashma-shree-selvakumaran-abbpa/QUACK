@@ -1,0 +1,18 @@
+repos:
+- repo: local
+  hooks:
+  - id: quack
+    name: quack
+    entry: quack check
+    language: system
+    pass_filenames: false
+    stages:
+    - pre-commit
+  - id: quack-agent
+    name: quack-agent
+    entry: quack agent
+    language: system
+    pass_filenames: false
+    stages:
+    - pre-push
+    verbose: true

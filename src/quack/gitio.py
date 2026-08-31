@@ -6,7 +6,9 @@ Everything else should take data in and return data out.
 
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 
 from . import delta
 from .delta import StagedDelta
@@ -55,6 +57,31 @@ def staged_delta() -> StagedDelta:
 		staged_numstat(),
 		staged_diff(),
 	)
+
+
+def export_staged_snapshot(
+	destination: str | Path, root: str | Path | None = None
+) -> bool:
+	"""Export the index contents into an empty directory.
+
+	The scanner must inspect exactly what is staged, not unstaged working-tree
+	edits. ``git checkout-index`` copies the index snapshot without invoking a
+	shell and without exposing repository contents to another process.
+	"""
+	destination_path = Path(destination)
+	try:
+		destination_path.mkdir(parents=True, exist_ok=True)
+		prefix = f"--prefix={destination_path.resolve()}{os.sep}"
+		result = subprocess.run(
+			["git", "checkout-index", "--all", prefix],
+			cwd=str(root) if root else None,
+			stdout=subprocess.DEVNULL,
+			stderr=subprocess.DEVNULL,
+			check=False,
+		)
+	except (OSError, subprocess.SubprocessError):
+		return False
+	return result.returncode == 0
 
 
 def working_delta() -> StagedDelta:

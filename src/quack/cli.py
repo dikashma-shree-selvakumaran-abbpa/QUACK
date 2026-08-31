@@ -5,6 +5,7 @@ Subcommands:
 	agent   agentic pre-push loop (stub)
 	model   model/config utilities (stub)
 	install wire quack into .pre-commit-config.yaml and run `pre-commit install`
+	sonar-mcp connect to the configured SonarQube MCP server through Podman
 """
 
 from __future__ import annotations
@@ -31,10 +32,12 @@ from . import (
 	metrics as metrics_mod,
 	render,
 	reviewcache,
+	sonar,
 	testmap,
 	tier2,
 	watch as watch_mod,
 )
+from .mcp import sonarqube as sonarqube_mcp
 from .tier1 import Tier1Config
 from .tier1 import allowlisted_locations
 from .tier1 import redact as tier1_redact
@@ -60,9 +63,9 @@ def main() -> None:
 def check() -> None:
 	"""Run the pre-commit quality checks on staged changes.
 
-	Commit time is fully local: Tier 1 deterministic checks (plus gitleaks when
-	installed) and test guidance only. No network calls, no token, no AI. All
-	AI analysis runs at pre-push via ``quack agent``.
+	Commit time runs local Tier 1 checks (plus gitleaks when installed), test
+	guidance, and an optional local SonarQube analysis. SonarQube is advisory
+	and fail-open; all AI analysis runs at pre-push via ``quack agent``.
 	"""
 	# Measures in-process work only, excluding Python interpreter startup.
 	started = time.perf_counter()
@@ -104,6 +107,12 @@ def check() -> None:
 		_log_check_metrics(started, delta, findings=findings, blocked=True, exit_code=1)
 		sys.exit(1)
 
+	root = gitio.repo_root() or os.getcwd()
+
+	# SonarQube analyzes a temporary export of the staged index. It is
+	# advisory and returns quickly when the local scanner/server is unavailable.
+	sonar_result = sonar.scan(delta, root)
+
 	# Test guidance (only worth computing on an unblocked commit).
 	plan = testmap.build_plan(delta)
 
@@ -111,7 +120,6 @@ def check() -> None:
 	# used by watch mode and perform one fail-open cache-file lookup. A miss must
 	# never fall back to a provider call.
 	redacted = tier1_redact(delta, redaction_findings)
-	root = gitio.repo_root() or os.getcwd()
 	entry = reviewcache.read(root, reviewcache.diff_hash(redacted.raw_diff))
 	cached_review = None
 	cached_model = ""
@@ -137,6 +145,7 @@ def check() -> None:
 		findings=findings,
 		plan=plan,
 		ai=ai,
+		sonar=sonar_result,
 		model=cached_model,
 		ai_note=cache_note,
 		blocked=False,
@@ -149,6 +158,7 @@ def check() -> None:
 		plan=plan,
 		cache_hit=cached_review is not None,
 		risk=cached_review.risk if cached_review is not None else None,
+		sonar_result=sonar_result,
 		exit_code=0,
 	)
 	sys.exit(0)
@@ -163,26 +173,35 @@ def _log_check_metrics(
 	blocked: bool = False,
 	cache_hit: bool = False,
 	risk: str | None = None,
+	sonar_result=None,
 	exit_code: int,
 ) -> None:
 	try:
-		metrics_mod.log(
-			{
-				"ts": metrics_mod.timestamp(),
-				"command": "check",
-				"duration_ms": int((time.perf_counter() - started) * 1000),
-				"files": len(delta.files),
-				"lines_added": delta.total_added,
-				"lines_removed": delta.total_removed,
-				"tier1_findings": dict(Counter(item.check for item in findings)),
-				"blocked": blocked,
-				"tests_mapped": len(plan.runner_commands) if plan is not None else 0,
-				"untested_sources": len(plan.untested_sources) if plan is not None else 0,
-				"review_cache": "hit" if cache_hit else "miss",
-				"risk": risk,
-				"exit": exit_code,
-			}
-		)
+		event = {
+			"ts": metrics_mod.timestamp(),
+			"command": "check",
+			"duration_ms": int((time.perf_counter() - started) * 1000),
+			"files": len(delta.files),
+			"lines_added": delta.total_added,
+			"lines_removed": delta.total_removed,
+			"tier1_findings": dict(Counter(item.check for item in findings)),
+			"blocked": blocked,
+			"tests_mapped": len(plan.runner_commands) if plan is not None else 0,
+			"untested_sources": len(plan.untested_sources) if plan is not None else 0,
+			"review_cache": "hit" if cache_hit else "miss",
+			"risk": risk,
+			"exit": exit_code,
+		}
+		if sonar_result is not None:
+			event.update(
+				{
+					"sonar_status": sonar_result.status,
+					"sonar_duration_ms": int(sonar_result.duration_s * 1000),
+				}
+			)
+			if sonar_result.status != "passed":
+				event["sonar_failure"] = sonar_result.reason
+		metrics_mod.log(event)
 	except Exception:
 		pass
 
@@ -683,6 +702,154 @@ def install(use_local: bool) -> None:
 	sys.exit(0)
 
 
+@main.command("sonar-mcp")
+@click.option(
+	"--project-path",
+	type=click.Path(
+		exists=True, file_okay=False, dir_okay=True, path_type=Path
+	),
+	default=None,
+	help="Local SonarQube workspace to mount read-only in the MCP container.",
+)
+@click.option(
+	"--project-key",
+	default=None,
+	help="Default SonarQube project key for the MCP server.",
+)
+@click.option(
+	"--ca-dir",
+	type=click.Path(
+		exists=True, file_okay=False, dir_okay=True, path_type=Path
+	),
+	default=None,
+	help="Directory containing the corporate .crt or .pem CA certificate.",
+)
+@click.option(
+	"--url",
+	"server_url",
+	default=None,
+	help="SonarQube server URL (overrides SONARQUBE_URL).",
+)
+def sonar_mcp(
+	project_path: Path | None,
+	project_key: str | None,
+	ca_dir: Path | None,
+	server_url: str | None,
+) -> None:
+	"""Start the SonarQube MCP server through Podman and list its tools."""
+	render.info("SonarQube MCP: connecting via Podman...")
+	if (
+		project_path is None
+		and project_key is None
+		and ca_dir is None
+		and server_url is None
+	):
+		client, reason = sonarqube_mcp.connection_from_environment()
+	else:
+		client, reason = sonarqube_mcp.connection_from_environment(
+			project_path=project_path,
+			project_key=project_key,
+			ca_dir=ca_dir,
+			server_url=server_url,
+			base_path=Path.cwd(),
+		)
+	if client is None:
+		render.warning(f"quack sonar-mcp: {reason or 'unavailable'}")
+		sys.exit(1)
+	try:
+		with render.thinking("SonarQube MCP: discovering available tools"):
+			tools = client.tool_definitions()
+	except sonarqube_mcp.SonarQubeMcpUnavailable as exc:
+		render.warning(f"quack sonar-mcp: {exc.reason}")
+		sys.exit(1)
+	render.clean(f"SonarQube MCP connected via podman ({len(tools)} tool(s))")
+	for tool in tools:
+		name = tool.get("function", {}).get("name")
+		if isinstance(name, str):
+			render.metadata(f"  {name}")
+	issue_tool = next(
+		(
+			name
+			for tool in tools
+			if isinstance((name := tool.get("function", {}).get("name")), str)
+			and "search_sonar_issues_in_projects" in name
+		),
+		None,
+	)
+	if issue_tool is None:
+		render.warning(
+			"SonarQube vulnerability report failed: "
+			"security issue search tool is unavailable"
+		)
+		sys.exit(1)
+	project_key = client.project_key
+	if not project_key:
+		render.warning(
+			"SonarQube vulnerability report failed: no project key was supplied; "
+			"use --project-key or --project-path"
+		)
+		sys.exit(1)
+	try:
+		with render.thinking(
+			"SonarQube MCP: checking open security violations"
+		):
+			report = client.call_tool_data(
+				issue_tool,
+				{
+					"projects": [project_key],
+					"impactSoftwareQualities": ["SECURITY"],
+					"issueStatuses": ["OPEN"],
+					"ps": 100,
+				},
+			)
+	except sonarqube_mcp.SonarQubeMcpUnavailable as exc:
+		render.warning(f"SonarQube vulnerability report failed: {exc.reason}")
+		sys.exit(1)
+	issues = report.get("issues")
+	paging = report.get("paging")
+	if not isinstance(issues, list) or not isinstance(paging, dict):
+		render.warning(
+			"SonarQube vulnerability report failed: malformed issue response"
+		)
+		sys.exit(1)
+	total = paging.get("total")
+	if not isinstance(total, int) or total < 0:
+		render.warning(
+			"SonarQube vulnerability report failed: issue count unavailable"
+		)
+		sys.exit(1)
+	if total == 0:
+		render.clean(
+			f"SonarQube vulnerability report: no open security violations "
+			f"found for {project_key}"
+		)
+		sys.exit(0)
+	render.warning(
+		f"SonarQube vulnerability report: {total} open security "
+		f"violation(s) found for {project_key}"
+	)
+	for issue in issues[:10]:
+		if not isinstance(issue, dict):
+			continue
+		key = _sonar_issue_value(issue, "key", "unknown")
+		severity = _sonar_issue_value(issue, "severity", "unknown")
+		message = _sonar_issue_value(issue, "message", "no message")
+		render.metadata(f"  {key} [{severity}] {message}")
+	if total > len(issues):
+		render.metadata(f"  ...and {total - len(issues)} more")
+	sys.exit(0)
+
+
+def _sonar_issue_value(
+	issue: dict[str, object], key: str, default: str
+) -> str:
+	value = issue.get(key)
+	if not isinstance(value, str):
+		return default
+	value = " ".join(value.split())
+	return value[:240] or default
+
+
 def _upsert_local_stanza(config_path: Path) -> None:
 	"""Insert or update a `repo: local` quack stanza.
 
@@ -770,4 +937,3 @@ def _upsert_precommit_stanza(config_path: Path) -> None:
 
 if __name__ == "__main__":
 	main()
-

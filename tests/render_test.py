@@ -255,6 +255,26 @@ def test_quack_alarm_absent_when_not_blocked(capsys) -> None:
 	assert "QUACK!!!!" not in capsys.readouterr().out
 
 
+def test_sonar_status_is_rendered_as_advisory(capsys) -> None:
+	render.report(
+		files=1,
+		added=1,
+		removed=0,
+		findings=[],
+		plan=None,
+		sonar=SimpleNamespace(
+			status="passed",
+			reason="analysis uploaded",
+			dashboard_url="http://127.0.0.1:9002/dashboard?id=quack-local",
+		),
+		ai=None,
+	)
+
+	out = capsys.readouterr().out
+	assert "SonarQube: analysis uploaded" in out
+	assert "dashboard?id=quack-local" in out
+
+
 def test_install_banner_prints_wordmark(capsys) -> None:
 	render.install_banner()
 	out = capsys.readouterr().out
