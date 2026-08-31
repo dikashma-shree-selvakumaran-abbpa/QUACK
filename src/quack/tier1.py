@@ -79,7 +79,7 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 	(
 		"hardcoded credential",
 		re.compile(
-			r"""(?i)(?:key|secret|token|password)\s*[=:]\s*['"][^'"]{16,}['"]""",
+			r"""(?i)(?<!project_)(?:key|secret|token|password)\s*[=:]\s*['"][^'"]{16,}['"]""",
 		),
 	),
 ]

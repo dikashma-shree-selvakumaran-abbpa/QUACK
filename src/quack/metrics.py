@@ -41,6 +41,9 @@ _ALLOWED_KEYS = frozenset(
 		"tier2_failure",
 		"agent_ran",
 		"agent_failure",
+		"sonar_status",
+		"sonar_duration_ms",
+		"sonar_failure",
 		"failure",
 	}
 )
@@ -54,10 +57,14 @@ _NUMERIC_KEYS = frozenset(
 		"tests_mapped",
 		"untested_sources",
 		"exit",
+		"sonar_duration_ms",
 	}
 )
-_FAILURE_KEYS = frozenset({"tier2_failure", "agent_failure", "failure"})
+_FAILURE_KEYS = frozenset(
+	{"tier2_failure", "agent_failure", "sonar_failure", "failure"}
+)
 _RISKS = frozenset({"low", "medium", "high"})
+_SONAR_STATUSES = frozenset({"passed", "skipped", "failed"})
 _PATH_RE = re.compile(
 	r"(?:\b[A-Za-z]:[\\/][^\s]*|\\\\[^\s\\]+\\[^\s\\]+(?:\\[^\s]*)?|(?<![\w:/])\/[^\s]+)"
 )
@@ -106,6 +113,10 @@ def _sanitize_event(event: dict) -> dict[str, Any]:
 			continue
 		if key == "risk":
 			if value is None or value in _RISKS:
+				sanitized[key] = value
+			continue
+		if key == "sonar_status":
+			if value in _SONAR_STATUSES:
 				sanitized[key] = value
 			continue
 		if key in _FAILURE_KEYS:
