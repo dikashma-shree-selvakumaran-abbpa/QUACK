@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 
@@ -63,7 +64,14 @@ def main() -> None:
 
 
 @main.command()
-def check() -> None:
+@click.option(
+	"--json",
+	"as_json",
+	is_flag=True,
+	default=False,
+	help="Emit machine-readable verdict as JSON and suppress terminal rendering.",
+)
+def check(as_json: bool) -> None:
 	"""Run the pre-commit quality checks on staged changes.
 
 	Commit time is fully local: Tier 1 deterministic checks (plus gitleaks when
@@ -73,8 +81,21 @@ def check() -> None:
 	# Measures in-process work only, excluding Python interpreter startup.
 	started = time.perf_counter()
 	delta = gitio.staged_delta()
+	root = gitio.repo_root() or os.getcwd()
 	if not delta.files:
-		render.clean("nothing staged")
+		if as_json:
+			payload = {
+				"schemaVersion": 1,
+				"repository": root,
+				"blocked": False,
+				"findings": [],
+				"testGuidance": [],
+				"aiReview": None,
+				"aiError": None,
+			}
+			click.echo(json.dumps(payload, separators=(",", ":")))
+		else:
+			render.clean("nothing staged")
 		_log_check_metrics(started, delta, exit_code=0)
 		sys.exit(0)
 
@@ -95,29 +116,73 @@ def check() -> None:
 
 	blocked = should_block(findings, block_on=("secrets", "merge_markers"))
 
+	json_findings = [
+		{
+			"severity": f.severity,
+			"source": "gitleaks" if f.message.startswith("gitleaks:") else getattr(f, "source", "quack"),
+			"rule": f.message.removeprefix("gitleaks: ") if f.message.startswith("gitleaks:") else f.check,
+			"file": f.path,
+			"line": f.line,
+			"message": f.message,
+		}
+		for f in findings
+	]
+
 	if blocked:
 		# Only Tier 1 governs the exit code. Show findings + BLOCKED banner.
-		render.report(
-			files=len(delta.files),
-			added=delta.total_added,
-			removed=delta.total_removed,
-			findings=findings,
-			plan=None,
-			ai=None,
-			blocked=True,
-			duration=time.perf_counter() - started,
-		)
+		if as_json:
+			payload = {
+				"schemaVersion": 1,
+				"repository": root,
+				"blocked": True,
+				"findings": json_findings,
+				"testGuidance": [],
+				"aiReview": None,
+				"aiError": None,
+			}
+			click.echo(json.dumps(payload, separators=(",", ":")))
+		else:
+			render.report(
+				files=len(delta.files),
+				added=delta.total_added,
+				removed=delta.total_removed,
+				findings=findings,
+				plan=None,
+				ai=None,
+				blocked=True,
+				duration=time.perf_counter() - started,
+			)
 		_log_check_metrics(started, delta, findings=findings, blocked=True, exit_code=1)
 		sys.exit(1)
 
 	# Test guidance (only worth computing on an unblocked commit).
 	plan = testmap.build_plan(delta)
+	json_test_guidance = []
+	if plan is not None:
+		for mapping in getattr(plan, "mappings", []):
+			if mapping.tests:
+				json_test_guidance.append(
+					{
+						"sourceFile": mapping.source,
+						"testOrCommand": ", ".join(mapping.tests),
+						"status": "mapped",
+						"recommendation": "run mapped tests",
+					}
+				)
+		for source in getattr(plan, "untested_sources", []):
+			json_test_guidance.append(
+				{
+					"sourceFile": source,
+					"testOrCommand": "",
+					"status": "untested",
+					"recommendation": "no tests found",
+				}
+			)
 
 	# Commit time is fully local: hash the same deterministically redacted diff
 	# used by watch mode and perform one fail-open cache-file lookup. A miss must
 	# never fall back to a provider call.
 	redacted = tier1_redact(delta, redaction_findings)
-	root = gitio.repo_root() or os.getcwd()
 	entry = reviewcache.read(root, reviewcache.diff_hash(redacted.raw_diff))
 	cached_review = None
 	cached_model = ""
@@ -136,18 +201,46 @@ def check() -> None:
 	else:
 		ai = cached_review
 
-	render.report(
-		files=len(delta.files),
-		added=delta.total_added,
-		removed=delta.total_removed,
-		findings=findings,
-		plan=plan,
-		ai=ai,
-		model=cached_model,
-		ai_note=cache_note,
-		blocked=False,
-		duration=time.perf_counter() - started,
-	)
+	if as_json:
+		ai_review = None
+		ai_error = None
+		if cached_review is not None and entry is not None:
+			ai_review = {
+				"available": True,
+				"model": cached_model,
+				"risk": cached_review.risk,
+				"summary": cached_review.one_liner,
+				"reasons": cached_review.reasons,
+				"testsToRun": cached_review.tests_to_run,
+				"missingTests": cached_review.missing_tests,
+				"reviewedAtUtc": datetime.fromtimestamp(entry.timestamp, tz=timezone.utc).isoformat(),
+			}
+		else:
+			ai_error = ai[1] if isinstance(ai, tuple) and len(ai) > 1 else "AI analysis unavailable"
+
+		payload = {
+			"schemaVersion": 1,
+			"repository": root,
+			"blocked": False,
+			"findings": json_findings,
+			"testGuidance": json_test_guidance,
+			"aiReview": ai_review,
+			"aiError": ai_error,
+		}
+		click.echo(json.dumps(payload, separators=(",", ":")))
+	else:
+		render.report(
+			files=len(delta.files),
+			added=delta.total_added,
+			removed=delta.total_removed,
+			findings=findings,
+			plan=plan,
+			ai=ai,
+			model=cached_model,
+			ai_note=cache_note,
+			blocked=False,
+			duration=time.perf_counter() - started,
+		)
 	_log_check_metrics(
 		started,
 		delta,
