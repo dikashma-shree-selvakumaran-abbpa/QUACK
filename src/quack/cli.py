@@ -824,6 +824,18 @@ def model(model: str | None, as_json: bool) -> None:
 
 
 @main.command()
+@click.option("--port", default=8787)
+@click.option("--host", default="127.0.0.1")
+def serve(port: int, host: str) -> None:
+	"""Start the quack FastAPI server."""
+	import uvicorn
+
+	from . import server
+
+	uvicorn.run(server.app, host=host, port=port)
+
+
+@main.command()
 @click.option(
 	"--local",
 	"use_local",
