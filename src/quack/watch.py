@@ -36,12 +36,17 @@ class WatchResult:
 	files: int
 	risk: str | None = None
 	reason: str | None = None
+	diff_hash: str | None = None
 
 
-def review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
+def review_once(
+	repo_root: str | Path,
+	model: str | None = None,
+	quiet: bool = False,
+) -> WatchResult:
 	"""Review the staged delta, or tracked working changes when unstaged."""
 	started = time.perf_counter()
-	result = _review_once(repo_root, model)
+	result = _review_once(repo_root, model, quiet=quiet)
 	try:
 		metrics.log(
 			{
@@ -58,7 +63,11 @@ def review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
 	return result
 
 
-def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
+def _review_once(
+	repo_root: str | Path,
+	model: str | None = None,
+	quiet: bool = False,
+) -> WatchResult:
 	root = Path(repo_root)
 	try:
 		delta = gitio.staged_delta()
@@ -82,7 +91,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 		if availability:
 			return WatchResult(files=len(delta.files), reason=availability)
 
-		with render.thinking("reviewing changes..."):
+		if quiet:
 			review, reason = tier2.review_with_reason(
 				delta,
 				findings,
@@ -91,6 +100,16 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 				project_instructions=project_instructions,
 				timeout_s=llmio.default_timeout(),
 			)
+		else:
+			with render.thinking("reviewing changes..."):
+				review, reason = tier2.review_with_reason(
+					delta,
+					findings,
+					plan,
+					model=resolved_model,
+					project_instructions=project_instructions,
+					timeout_s=llmio.default_timeout(),
+				)
 		if review is None:
 			return WatchResult(
 				files=len(delta.files),
@@ -99,12 +118,13 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 
 		payload = asdict(review)
 		payload["model"] = resolved_model
+		d_hash = reviewcache.diff_hash(redacted.raw_diff)
 		reviewcache.write(
 			root,
-			reviewcache.diff_hash(redacted.raw_diff),
+			d_hash,
 			payload,
 		)
-		return WatchResult(files=len(delta.files), risk=review.risk)
+		return WatchResult(files=len(delta.files), risk=review.risk, diff_hash=d_hash)
 	except Exception as exc:
 		message = str(exc)[:160].replace("\n", " ")
 		return WatchResult(

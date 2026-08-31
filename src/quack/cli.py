@@ -323,14 +323,33 @@ def _format_age(timestamp: float) -> str:
 	help="Seconds without file changes before reviewing.",
 )
 @click.option("--once", is_flag=True, help="Run one review immediately and exit.")
-def watch(quiet_period: float, once: bool) -> None:
+@click.option(
+	"--json",
+	"as_json",
+	is_flag=True,
+	default=False,
+	help="Emit machine-readable review result as JSON (requires --once).",
+)
+def watch(quiet_period: float, once: bool, as_json: bool) -> None:
 	"""Review changes in the background and cache the result for commits."""
 	root = gitio.repo_root()
 	if not root:
+		if once and as_json:
+			click.echo(
+				json.dumps(
+					{"schemaVersion": 1, "status": "error", "reason": "not a git repository"},
+					separators=(",", ":"),
+				)
+			)
+			return
 		render.metadata("quack watch: not a git repository")
 		return
 	if once:
-		_render_watch_result(watch_mod.review_once(root))
+		res = watch_mod.review_once(root, quiet=as_json)
+		if as_json:
+			_emit_watch_json(res)
+		else:
+			_render_watch_result(res)
 		return
 	try:
 		watch_mod.run(root, quiet_period, _render_watch_result)
@@ -343,6 +362,28 @@ def _render_watch_result(result: watch_mod.WatchResult) -> None:
 		render.metadata(f"reviewed {result.files} file(s) - risk: {result.risk}")
 	else:
 		render.metadata(f"review unavailable ({result.reason or 'unknown reason'})")
+
+
+def _emit_watch_json(result: watch_mod.WatchResult) -> None:
+	if result.diff_hash:
+		payload = {
+			"schemaVersion": 1,
+			"status": "reviewed",
+			"diffHash": result.diff_hash,
+		}
+	elif result.reason == "no changes":
+		payload = {
+			"schemaVersion": 1,
+			"status": "skipped",
+			"reason": "nothing to review",
+		}
+	else:
+		payload = {
+			"schemaVersion": 1,
+			"status": "error",
+			"reason": result.reason or "unknown error",
+		}
+	click.echo(json.dumps(payload, separators=(",", ":")))
 
 
 def _resolve_agent_model(cli_model: str | None) -> str:
