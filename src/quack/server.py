@@ -12,7 +12,8 @@ from pydantic import BaseModel
 import quack
 from . import cli, gitio, gitleaks, llmio, reviewcache, testmap, tier1, watch
 
-from quack import __version__`napp = FastAPI(title="quack", version=__version__)
+from quack import __version__
+app = FastAPI(title="quack", version=__version__)
 
 
 class CheckRequest(BaseModel):
@@ -185,3 +186,4 @@ def status() -> dict:
 		"availabilityError": llmio.availability_error(),
 		"cachePath": str(reviewcache.cache_path()),
 	}
+
