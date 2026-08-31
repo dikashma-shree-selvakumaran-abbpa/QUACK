@@ -12,7 +12,7 @@ from pydantic import BaseModel
 import quack
 from . import cli, gitio, gitleaks, llmio, reviewcache, testmap, tier1, watch
 
-app = FastAPI(title="quack")
+from quack import __version__`napp = FastAPI(title="quack", version=__version__)
 
 
 class CheckRequest(BaseModel):
