@@ -49,7 +49,7 @@ DEFAULT_TIMEOUT_S = 60.0
 # multi-step tool-using investigation needs a stronger one (sonnet) or it
 # loops and fails.
 DEFAULT_COMPLETION_MODEL = "claude-haiku-4.5"
-DEFAULT_AGENT_MODEL = "claude-sonnet-4.5"
+DEFAULT_AGENT_MODEL = "claude-sonnet-4.6"
 
 _AUTH_MESSAGE = (
 	"Copilot login expired or unavailable — run `copilot` then `/login`. "
