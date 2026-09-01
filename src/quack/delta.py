@@ -12,6 +12,7 @@ The three inputs it understands are produced by:
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass, field
 
 MAX_RAW_DIFF = 60_000
@@ -101,6 +102,42 @@ class StagedDelta:
 		return False, "non-trivial change"
 
 
+def annotate_with_line_numbers(unified_diff: str) -> str:
+	"""Prefix each diff line with its absolute line number in the post-image.
+
+	A bare unified diff forces the model to derive absolute positions by doing
+	offset arithmetic across ``@@`` headers, and it gets this wrong: an observed
+	review claimed one call preceded another when the file had them 17 lines
+	apart in the opposite order. Emitting the number the model would otherwise
+	compute removes that class of error and makes every line citation in the
+	review checkable against the file on disk.
+
+	Context and added lines carry post-image numbers. Removed lines carry none
+	(they do not exist in the post-image). Headers pass through unchanged.
+	"""
+	out: list[str] = []
+	new_line = 0
+
+	for line in unified_diff.split("\n"):
+		if line.startswith("@@"):
+			match = re.search(r"\+(\d+)", line)
+			new_line = int(match.group(1)) if match else 0
+			out.append(line)
+		elif line.startswith("+++") or line.startswith("---"):
+			# File headers must be tested before the bare +/- cases below,
+			# or they get numbered as if they were content lines.
+			out.append(line)
+		elif line.startswith("-"):
+			out.append(f"{'':>6} | {line}")
+		elif line.startswith("+") or line.startswith(" "):
+			out.append(f"{new_line:>6} | {line}")
+			new_line += 1
+		else:
+			out.append(line)
+
+	return "\n".join(out)
+
+
 def parse_staged_delta(
 	name_status: str | None, numstat: str | None, unified_diff: str | None
 ) -> StagedDelta:
@@ -111,8 +148,13 @@ def parse_staged_delta(
 		render.metadata("quack: could not read staged diff, skipping analysis")
 		return StagedDelta()
 
-	if len(unified_diff) > MAX_RAW_DIFF:
-		unified_diff = unified_diff[:MAX_RAW_DIFF] + TRUNCATION_MARKER
+	# Annotate BEFORE truncating so the cap applies to what the model actually
+	# receives. Keep the unannotated form for _parse_unified_diff, whose
+	# line-prefix matching ("+++ b/", "@@", "Binary files") breaks on
+	# annotated lines.
+	annotated = annotate_with_line_numbers(unified_diff)
+	if len(annotated) > MAX_RAW_DIFF:
+		annotated = annotated[:MAX_RAW_DIFF] + TRUNCATION_MARKER
 
 	statuses = _parse_name_status(name_status)
 	counts = _parse_numstat(numstat)
@@ -134,7 +176,7 @@ def parse_staged_delta(
 			)
 		)
 
-	return StagedDelta(files=files, raw_diff=unified_diff)
+	return StagedDelta(files=files, raw_diff=annotated)
 
 
 def _parse_name_status(text: str) -> list[tuple[str, str]]:

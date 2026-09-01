@@ -136,7 +136,11 @@ def build_messages(
 		"Heuristic test plan — sources with no test found:\n"
 		f"{untested or '(none)'}\n\n"
 		f"{instructions_section}"
-		"Staged diff (redacted):\n"
+		"Staged diff (redacted). Each line is prefixed with its absolute "
+		"line number in the post-change file, followed by ' | '. Removed "
+		"lines have no number because they do not exist in the post-change "
+		"file. Cite these numbers directly; do not compute positions from "
+		"the @@ headers:\n"
 		f"{redacted.raw_diff}"
 	)
 
