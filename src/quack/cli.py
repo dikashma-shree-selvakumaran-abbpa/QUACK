@@ -852,8 +852,17 @@ def serve(port: int, host: str) -> None:
 	help="Answer yes to prompts (for non-interactive callers such as the IDE "
 	"extension).",
 )
-def install(use_local: bool, assume_yes: bool) -> None:
+@click.option(
+	"--quack-path",
+	"quack_path",
+	default=None,
+	help="Absolute path to the quack executable to write into hooks. Used by "
+	"IDE extensions, where quack is not on PATH.",
+)
+def install(use_local: bool, assume_yes: bool, quack_path: str | None) -> None:
 	"""Add the quack stanza to .pre-commit-config.yaml and install the hook."""
+	# Quote: Windows paths have spaces.
+	quack_cmd = f'"{quack_path}"' if quack_path else "quack"
 	# Detect husky (or any core.hooksPath) BEFORE writing config: when git reads
 	# hooks from elsewhere, `pre-commit install` cannot work and writing a config
 	# file that nothing executes would leave a misleading artifact behind.
@@ -865,9 +874,9 @@ def install(use_local: bool, assume_yes: bool) -> None:
 				f"install hooks automatically"
 			)
 			render.metadata("  add this line to your pre-commit hook:")
-			render.metadata("    quack check")
+			render.metadata(f"    {quack_cmd} check")
 			render.metadata("  and this to your pre-push hook:")
-			render.metadata("    quack agent")
+			render.metadata(f"    {quack_cmd} agent")
 			sys.exit(1)
 
 		husky_dir = Path(".husky")
@@ -881,14 +890,18 @@ def install(use_local: bool, assume_yes: bool) -> None:
 
 		if not assume_yes and not click.confirm("  add quack to the husky hooks?"):
 			render.metadata("quack: nothing changed. To wire quack up manually, add:")
-			render.metadata("    quack check      # to .husky/pre-commit")
-			render.metadata("    quack agent      # to .husky/pre-push")
+			render.metadata(f"    {quack_cmd} check      # to .husky/pre-commit")
+			render.metadata(f"    {quack_cmd} agent      # to .husky/pre-push")
 			sys.exit(1)
 
 		husky_dir.mkdir(exist_ok=True)
 		render.install_banner()
-		commit_action = _install_into_husky(husky_dir / "pre-commit", "quack check")
-		push_action = _install_into_husky(husky_dir / "pre-push", "quack agent")
+		commit_action = _install_into_husky(
+			husky_dir / "pre-commit", f"{quack_cmd} check"
+		)
+		push_action = _install_into_husky(
+			husky_dir / "pre-push", f"{quack_cmd} agent"
+		)
 		render.clean(f"quack: {commit_action} quack check in .husky/pre-commit")
 		render.clean(f"quack: {push_action} quack agent in .husky/pre-push")
 		render.metadata("  commit these files so your team gets the same hooks")
@@ -897,7 +910,7 @@ def install(use_local: bool, assume_yes: bool) -> None:
 	config_path = Path(".pre-commit-config.yaml")
 	render.install_banner()
 	if use_local:
-		_upsert_local_stanza(config_path)
+		_upsert_local_stanza(config_path, quack_path)
 	else:
 		_upsert_precommit_stanza(config_path)
 	render.clean(f"quack: updated {config_path}")
@@ -1025,7 +1038,7 @@ def _install_into_husky(hook_file: Path, command: str) -> str:
 	return action
 
 
-def _upsert_local_stanza(config_path: Path) -> None:
+def _upsert_local_stanza(config_path: Path, quack_path: str | None = None) -> None:
 	"""Insert or update a `repo: local` quack stanza.
 
 	Uses the `quack` command already on PATH (``language: system``), so no
@@ -1038,13 +1051,15 @@ def _upsert_local_stanza(config_path: Path) -> None:
 		data = {}
 
 	repos = data.setdefault("repos", [])
+	# Quote: Windows paths have spaces.
+	quack_cmd = f'"{quack_path}"' if quack_path else "quack"
 	# Two surfaces: pre-commit runs local checks only; pre-push runs AI review
 	# (and the agent where the provider supports tool calling).
 	hooks_to_add = [
 		{
 			"id": "quack",
 			"name": "quack",
-			"entry": "quack check",
+			"entry": f"{quack_cmd} check",
 			"language": "system",
 			"pass_filenames": False,
 			"stages": ["pre-commit"],
@@ -1052,7 +1067,7 @@ def _upsert_local_stanza(config_path: Path) -> None:
 		{
 			"id": "quack-agent",
 			"name": "quack-agent",
-			"entry": "quack agent",
+			"entry": f"{quack_cmd} agent",
 			"language": "system",
 			"pass_filenames": False,
 			"stages": ["pre-push"],

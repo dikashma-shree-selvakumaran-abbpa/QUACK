@@ -108,3 +108,20 @@ def test_banner_not_shown_when_nothing_installed(monkeypatch, tmp_path):
 	# The banner claims "your commits just got a quality gate" -- it must not
 	# appear when no hook was installed.
 	assert "quality gate" not in result.output
+
+
+def test_quack_path_is_written_into_the_husky_hook(monkeypatch, tmp_path):
+	# A VSIX-only developer has no `quack` on PATH: the hook must carry an
+	# absolute path or every commit fails with "command not found".
+	exe = r"C:\Users\dev\AppData\Local\quack\quack.exe"
+	_, content, _ = _install(
+		monkeypatch,
+		tmp_path,
+		".husky/_",
+		["--local", "--yes", "--quack-path", exe],
+		HUSKY_HOOK,
+	)
+
+	# Quoted: Windows paths contain spaces.
+	assert f'"{exe}" check' in content
+	assert "\nquack check" not in content
