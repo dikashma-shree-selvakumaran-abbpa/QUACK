@@ -21,6 +21,15 @@ def test_removed_lines_carry_no_number_and_do_not_advance_counter() -> None:
 	assert out[3].startswith("    11 | ")
 
 
+def test_pure_deletion_hunk_does_not_number_from_zero() -> None:
+	# "@@ -5,3 +0,0 @@" means every line is removed; the post-image has no
+	# lines here, so nothing in the block should carry a number.
+	diff = "@@ -5,3 +0,0 @@\n-gone1\n-gone2"
+	out = annotate_with_line_numbers(diff).split("\n")
+	assert out[1].startswith("       | -gone1")
+	assert out[2].startswith("       | -gone2")
+
+
 def test_file_headers_are_not_numbered() -> None:
 	# "+++"/"---" start with + and - but are headers, not content.
 	diff = "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n ctx"
