@@ -804,6 +804,17 @@ def _render_model_diagnostic(cli_model: str | None) -> None:
 			)
 			if len(models) > len(visible):
 				render.metadata(f"Showing first {len(visible)} of {len(models)} models")
+			# A default that has aged out of the provider's catalog fails only
+			# at runtime, inside a fail-open path: the agent stops investigating
+			# and nothing says why. claude-sonnet-4.5 did exactly this. Compare
+			# here, where both the defaults and the catalog are already known.
+			for kind, label in (("completion", "Completion"), ("agent", "Agent")):
+				resolved, _ = _diagnostic_model(kind, cli_model)
+				if resolved and models and resolved not in models:
+					render.warning(
+						f"{label} model {resolved} is NOT in the provider's "
+						f"reachable list - it will fail at runtime"
+					)
 
 
 @main.command()

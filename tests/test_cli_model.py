@@ -172,3 +172,26 @@ def test_unknown_provider_and_diagnostic_exception_still_exit_zero(monkeypatch):
 	assert exploded.exit_code == 0
 	assert "diagnostic unavailable (RuntimeError)" in exploded.output
 	assert "private provider detail" not in exploded.output
+
+
+def test_warns_when_a_resolved_model_is_not_in_the_catalog():
+	# claude-sonnet-4.5 aged out of the Copilot catalog and the agent silently
+	# stopped investigating, because the failure lived inside a fail-open path.
+	# `quack model` already knows both the defaults and the catalog, so it is
+	# the right place to notice.
+	result = _invoke()
+
+	assert result.exit_code == 0
+	assert "default-completion is NOT in the provider's reachable list" in result.output
+	assert "default-agent is NOT in the provider's reachable list" in result.output
+
+
+def test_no_warning_when_resolved_models_are_reachable(monkeypatch):
+	monkeypatch.setattr(
+		cli.llmio, "list_models", lambda: ["default-completion", "default-agent"]
+	)
+
+	result = _invoke()
+
+	assert result.exit_code == 0
+	assert "NOT in the provider's reachable list" not in result.output
