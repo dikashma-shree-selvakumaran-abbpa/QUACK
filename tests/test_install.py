@@ -28,7 +28,8 @@ def _run_install(monkeypatch, tmp_path, args, run_side_effect):
 		result = run_side_effect(cmd)
 		if result is not None:
 			raise result
-		return subprocess.CompletedProcess(cmd, 0)
+		# stdout="" so the core.hooksPath probe reads as "unset".
+		return subprocess.CompletedProcess(cmd, 0, stdout="")
 
 	monkeypatch.setattr(cli.subprocess, "run", fake_run)
 

@@ -844,10 +844,58 @@ def serve(port: int, host: str) -> None:
 	help="Wire quack via a `repo: local` stanza using the installed `quack` "
 	"command (works without a published quack repo).",
 )
-def install(use_local: bool) -> None:
+@click.option(
+	"--yes",
+	"assume_yes",
+	is_flag=True,
+	default=False,
+	help="Answer yes to prompts (for non-interactive callers such as the IDE "
+	"extension).",
+)
+def install(use_local: bool, assume_yes: bool) -> None:
 	"""Add the quack stanza to .pre-commit-config.yaml and install the hook."""
-	render.install_banner()
+	# Detect husky (or any core.hooksPath) BEFORE writing config: when git reads
+	# hooks from elsewhere, `pre-commit install` cannot work and writing a config
+	# file that nothing executes would leave a misleading artifact behind.
+	hooks_path = _hooks_path()
+	if hooks_path:
+		if not _is_husky(hooks_path):
+			render.warning(
+				f"quack: core.hooksPath is set to {hooks_path}; quack cannot "
+				f"install hooks automatically"
+			)
+			render.metadata("  add this line to your pre-commit hook:")
+			render.metadata("    quack check")
+			render.metadata("  and this to your pre-push hook:")
+			render.metadata("    quack agent")
+			sys.exit(1)
+
+		husky_dir = Path(".husky")
+		render.metadata(f"quack: husky detected (core.hooksPath = {hooks_path})")
+		render.metadata(
+			"  quack can add itself to .husky/pre-commit and .husky/pre-push"
+		)
+		render.warning(
+			"  these files are tracked in git: this affects everyone on this branch"
+		)
+
+		if not assume_yes and not click.confirm("  add quack to the husky hooks?"):
+			render.metadata("quack: nothing changed. To wire quack up manually, add:")
+			render.metadata("    quack check      # to .husky/pre-commit")
+			render.metadata("    quack agent      # to .husky/pre-push")
+			sys.exit(1)
+
+		husky_dir.mkdir(exist_ok=True)
+		render.install_banner()
+		commit_action = _install_into_husky(husky_dir / "pre-commit", "quack check")
+		push_action = _install_into_husky(husky_dir / "pre-push", "quack agent")
+		render.clean(f"quack: {commit_action} quack check in .husky/pre-commit")
+		render.clean(f"quack: {push_action} quack agent in .husky/pre-push")
+		render.metadata("  commit these files so your team gets the same hooks")
+		sys.exit(0)
+
 	config_path = Path(".pre-commit-config.yaml")
+	render.install_banner()
 	if use_local:
 		_upsert_local_stanza(config_path)
 	else:
@@ -906,6 +954,75 @@ def install(use_local: bool) -> None:
 			}
 		)
 	sys.exit(0)
+
+
+# Marker pair for quack's block inside a husky hook. String search rather than
+# parsing: append, update and remove all stay deterministic even if a developer
+# edits around the block.
+QUACK_HOOK_START = "# >>> quack managed block >>>"
+QUACK_HOOK_END = "# <<< quack managed block <<<"
+
+
+def _hooks_path() -> str | None:
+	"""Return git's configured core.hooksPath, or None when unset.
+
+	When this is set, git ignores .git/hooks entirely -- so `pre-commit install`
+	writes a hook that git will never execute. pre-commit knows this and refuses
+	outright, which is why quack must detect the case rather than treating the
+	failure as incidental.
+	"""
+	try:
+		result = subprocess.run(
+			["git", "config", "core.hooksPath"],
+			capture_output=True,
+			text=True,
+			check=False,
+		)
+	except OSError:
+		return None
+	value = result.stdout.strip()
+	return value or None
+
+
+def _is_husky(hooks_path: str) -> bool:
+	"""True when core.hooksPath looks like husky's generated hook directory."""
+	return "husky" in hooks_path.replace("\\", "/").lower()
+
+
+def _husky_hook_block(command: str) -> str:
+	return (
+		f"\n{QUACK_HOOK_START}\n"
+		f"# Added by `quack install`. Remove this block to disable quack.\n"
+		f"{command} || exit $?\n"
+		f"{QUACK_HOOK_END}\n"
+	)
+
+
+def _install_into_husky(hook_file: Path, command: str) -> str:
+	"""Append (or refresh) quack's block in a husky hook. Returns what happened.
+
+	The hook file is tracked in git, so this is only ever called after explicit
+	consent: appending here changes the hook for everyone on the branch, not
+	just the developer who ran install.
+	"""
+	if hook_file.exists():
+		existing = hook_file.read_text(encoding="utf-8")
+	else:
+		existing = "#!/usr/bin/env sh\n"
+
+	block = _husky_hook_block(command)
+
+	if QUACK_HOOK_START in existing:
+		start = existing.index(QUACK_HOOK_START)
+		end = existing.index(QUACK_HOOK_END) + len(QUACK_HOOK_END)
+		updated = existing[:start].rstrip("\n") + block + existing[end:].lstrip("\n")
+		action = "updated"
+	else:
+		updated = existing.rstrip("\n") + "\n" + block
+		action = "added"
+
+	hook_file.write_text(updated, encoding="utf-8")
+	return action
 
 
 def _upsert_local_stanza(config_path: Path) -> None:
