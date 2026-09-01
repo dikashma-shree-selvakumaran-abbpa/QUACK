@@ -415,12 +415,12 @@ def test_nonzero_exit_overrides_model_all_passed(
 
 
 # ---------------------------------------------------------------------------
-# Security (Rule #4): the agent path must redact secrets before the diff
-# ever reaches the model, exactly like Tier 2 does.
+# Security (Rule #4): a staged secret must never reach the model. Tier 1 now
+# blocks the push before any call, so the diff is never transmitted at all.
 # ---------------------------------------------------------------------------
 
 
-def test_agent_redacts_secret_before_sending_to_model(monkeypatch) -> None:
+def test_agent_never_sends_a_secret_to_the_model(monkeypatch) -> None:
 	from click.testing import CliRunner
 
 	from quack import cli
@@ -469,10 +469,8 @@ def test_agent_redacts_secret_before_sending_to_model(monkeypatch) -> None:
 
 	result = CliRunner().invoke(cli.main, ["agent"])
 
-	assert result.exit_code == 0
-	serialized = json.dumps(captured["messages"])
-	assert secret not in serialized
-	assert "[REDACTED]" in serialized
+	assert result.exit_code == 1
+	assert "messages" not in captured
 
 
 # ---------------------------------------------------------------------------
@@ -972,7 +970,7 @@ def test_agent_exits_cleanly_when_nothing_staged_or_unpushed(monkeypatch) -> Non
 	assert "nothing to analyze" in result.output
 
 
-def test_agent_range_path_is_redacted_before_transmission(monkeypatch) -> None:
+def test_agent_range_path_blocks_a_secret_before_transmission(monkeypatch) -> None:
 	from click.testing import CliRunner
 
 	from quack import cli
@@ -1023,8 +1021,101 @@ def test_agent_range_path_is_redacted_before_transmission(monkeypatch) -> None:
 
 	result = CliRunner().invoke(cli.main, ["agent"])
 
-	assert result.exit_code == 0
-	serialized = json.dumps(captured["messages"])
-	assert secret not in serialized
-	assert "[REDACTED]" in serialized
+	assert result.exit_code == 1
+	assert "messages" not in captured
 
+
+def test_agent_blocks_push_when_tier1_finds_a_secret(monkeypatch) -> None:
+	# Tier 1 is deterministic, so it gates. The AI verdict stays advisory.
+	from click.testing import CliRunner
+
+	from quack import cli
+	from quack.delta import StagedDelta, StagedFile
+
+	secret = "AKIA" + "A" * 16
+	hunk = f'@@ -0,0 +1,1 @@\n+AWS_KEY = "{secret}"'
+	delta = StagedDelta(
+		files=[
+			StagedFile(
+				path="src/config.py",
+				status="M",
+				added=1,
+				removed=0,
+				hunks=[hunk],
+			)
+		],
+		raw_diff=hunk,
+	)
+
+	def no_model(*a, **k):
+		raise AssertionError("must not call the model on a blocked push")
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(cli.tier2, "review_with_reason", no_model)
+	monkeypatch.setattr("quack.cli.agent_mod.run", no_model)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 1
+
+
+def test_agent_still_exits_zero_when_tier1_is_clean(monkeypatch) -> None:
+	# The AI verdict must not change hook success -- only Tier 1 does.
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+
+
+def test_agent_does_not_block_on_warn_level_findings(monkeypatch) -> None:
+	# Only error-level Tier 1 checks gate. debug_code and the other warn types
+	# must still reach the model, since they are advice rather than facts about
+	# secrets leaving the machine.
+	from click.testing import CliRunner
+
+	from quack import cli
+	from quack.delta import StagedDelta, StagedFile
+
+	hunk = "@@ -0,0 +1,1 @@\n+console.log('debugging')"
+	delta = StagedDelta(
+		files=[
+			StagedFile(
+				path="src/thing.js",
+				status="M",
+				added=1,
+				removed=0,
+				hunks=[hunk],
+			)
+		],
+		raw_diff=hunk,
+	)
+
+	seen = {}
+
+	def capture_review(delta_arg, findings, plan, **kwargs):
+		seen["findings"] = [f.check for f in findings]
+		return None, "x"
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(cli.tier2, "review_with_reason", capture_review)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "debug_code" in seen["findings"]

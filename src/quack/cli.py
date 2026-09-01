@@ -511,6 +511,30 @@ def agent(model: str | None, fly: bool) -> None:
 	findings = tier1_run(delta, Tier1Config())
 	redacted = tier1_redact(delta, findings)
 
+	# Tier 1 gates; the AI advises. These checks are deterministic pattern
+	# matches, so a hit is a fact rather than a judgement -- unlike the model's
+	# verdict. A range diff compares endpoints, so a secret added and then
+	# removed within the pushed range never appears here.
+	if should_block(findings, block_on=("secrets", "merge_markers")):
+		render.report(
+			files=len(delta.files),
+			added=delta.total_added,
+			removed=delta.total_removed,
+			findings=findings,
+			plan=None,
+			ai=None,
+			blocked=True,
+			duration=time.perf_counter() - started,
+		)
+		_log_agent_metrics(
+			started,
+			provider,
+			resolved_model,
+			target=target,
+			agent_failure="tier1 blocked",
+		)
+		sys.exit(1)
+
 	# Tier 2's single-shot review tolerates a cheaper model than the agent's
 	# multi-step investigation, so it uses the provider's COMPLETION default
 	# (an explicit --model/QUACK_MODEL still overrides both surfaces).
