@@ -57,8 +57,20 @@ _DEFAULT_AGENT_RUN = agent_mod.run
 _DEFAULT_CHAT = llmio.chat
 
 
+def _version_string() -> str:
+	"""Version plus build provenance, so a stale frozen exe is identifiable."""
+	try:
+		from ._build_info import BUILD_COMMIT, BUILD_DATE
+	except ImportError:
+		return __version__
+	if BUILD_COMMIT == "source":
+		return f"{__version__} (source)"
+	date = BUILD_DATE.split("T")[0] if BUILD_DATE else "unknown"
+	return f"{__version__} (build {BUILD_COMMIT}, {date})"
+
+
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(__version__, prog_name="quack")
+@click.version_option(_version_string(), prog_name="quack")
 def main() -> None:
 	"""quack: an AI-assisted pre-commit quality hook."""
 

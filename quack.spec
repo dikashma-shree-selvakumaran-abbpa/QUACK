@@ -7,6 +7,30 @@ hiddenimports = ['quack.providers.copilot_sdk', 'quack.providers.github_models']
 tmp_ret = collect_all('quack')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# Without this every frozen exe reports the same version regardless of the
+# source it was built from, so a stale bundled exe looks current.
+import subprocess
+from datetime import datetime
+
+try:
+    _commit = subprocess.check_output(
+        ['git', 'rev-parse', '--short', 'HEAD'], text=True
+    ).strip()
+    if subprocess.check_output(['git', 'status', '--porcelain'], text=True).strip():
+        _commit += '-dirty'
+except Exception:
+    _commit = 'unknown'
+
+print(f'quack.spec: stamping build commit {_commit}')
+with open('src/quack/_build_info.py', 'w', encoding='utf-8') as _f:
+    _f.write(
+        '"""Build provenance stamped in by quack.spec at freeze time.\n\n'
+        'The values checked into git mark a source (non-frozen) run; PyInstaller\n'
+        'overwrites this module with the real commit and build date.\n"""\n\n'
+        f'BUILD_COMMIT = {_commit!r}\n'
+        f'BUILD_DATE = {datetime.now().isoformat(timespec="seconds")!r}\n'
+    )
+
 
 a = Analysis(
     ['src/quack/__main__.py'],
