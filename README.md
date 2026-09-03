@@ -1,4 +1,4 @@
-# QUACK
+# QUACK 
 
 Catch problems before they reach CI : a pre-commit quality hook with AI review at pre-push.
 
@@ -113,3 +113,8 @@ covered by the current test suite. The default `copilot_sdk` provider uses the
 Copilot CLI's stored login for both advisory review and native tool calling;
 `github_models` remains reachable as the legacy OpenAI-style provider. AI
 availability and model responses are intentionally advisory.
+
+
+## todo 
+
+[ ] readme not updated to date - now at v 0.3.1
