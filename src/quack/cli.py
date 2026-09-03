@@ -45,17 +45,6 @@ from .tier1 import should_block
 
 QUACK_REPO_URL = "https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK"
 
-# Last-resort agent model, used ONLY when no provider resolves (e.g. an
-# unknown QUACK_PROVIDER) so llmio.default_model("agent") returns None. In the
-# normal path each provider supplies its own split defaults. Kept because that
-# genuine no-provider case still needs a non-None model to hand the agent.
-DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
-
-# Preserve the established injection seam for callers/tests that replace the
-# legacy loop or transport; normal execution always uses the selected provider.
-_DEFAULT_AGENT_RUN = agent_mod.run
-_DEFAULT_CHAT = llmio.chat
-
 
 def _version_string() -> str:
 	"""Version plus build provenance, so a stale frozen exe is identifiable."""
@@ -405,13 +394,11 @@ def _resolve_agent_model(cli_model: str | None) -> str:
 	the selected provider's *agent* default (via llmio). The agent runs a
 	multi-step tool-using investigation that needs a stronger model than Tier
 	2's single-shot review. An explicit --model or QUACK_MODEL always wins.
-	DEFAULT_AGENT_MODEL is only a last resort if no provider resolves.
 	"""
 	return (
 		cli_model
 		or os.environ.get("QUACK_MODEL")
 		or llmio.default_model(kind="agent")
-		or DEFAULT_AGENT_MODEL
 	)
 
 
@@ -593,20 +580,14 @@ def agent(model: str | None, fly: bool) -> None:
 
 	with render.thinking("investigating changes..."):
 		try:
-			if provider == "copilot_sdk" and (
-				agent_mod.run is _DEFAULT_AGENT_RUN and llmio.chat is _DEFAULT_CHAT
-			):
-				from .providers import copilot_sdk
+			from .providers import copilot_sdk
 
-				result = copilot_sdk.run_agent(
-					redacted.raw_diff,
-					Path(root),
-					resolved_model,
-					timeout_s=agent_mod.WALL_CLOCK_S,
-				)
-			else:
-				# Keep the existing OpenAI-style loop reachable for github_models.
-				result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
+			result = copilot_sdk.run_agent(
+				redacted.raw_diff,
+				Path(root),
+				resolved_model,
+				timeout_s=agent_mod.WALL_CLOCK_S,
+			)
 		except llmio.LLMUnavailable as exc:
 			# The pre-push agent is advisory and must never change hook success.
 			result = agent_mod._unavailable(exc.reason)
@@ -716,8 +697,6 @@ def _diagnostic_model(kind: str, cli_model: str | None) -> tuple[str | None, str
 	provider_default = llmio.default_model(kind=kind)
 	if provider_default:
 		return provider_default, "provider default"
-	if kind == "agent":
-		return DEFAULT_AGENT_MODEL, "fallback (provider unresolved)"
 	return None, "unresolved"
 
 

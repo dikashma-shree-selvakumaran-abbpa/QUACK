@@ -25,13 +25,11 @@ def _restore_provider_modules():
 	sys.modules.update(saved)
 
 
-def _stub_provider(name, complete_fn=None, chat_fn=None):
+def _stub_provider(name, complete_fn=None):
 	"""Install a fake provider module at quack.providers.<name>."""
 	module = types.ModuleType(f"quack.providers.{name}")
 	if complete_fn is not None:
 		module.complete = complete_fn
-	if chat_fn is not None:
-		module.chat = chat_fn
 	sys.modules[f"quack.providers.{name}"] = module
 	return module
 
@@ -50,43 +48,23 @@ def test_defaults_to_copilot_sdk_when_unset(monkeypatch):
 	assert captured["provider"] == "copilot_sdk"
 
 
-def test_honors_quack_provider_env(monkeypatch):
-	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
-	captured = {}
-
-	def fake_chat(messages, model, tools=None):
-		captured["provider"] = "copilot_sdk"
-		return {"role": "assistant", "content": "hi"}
-
-	_stub_provider("copilot_sdk", chat_fn=fake_chat)
-	assert llmio.chat([], "m") == {"role": "assistant", "content": "hi"}
-	assert captured["provider"] == "copilot_sdk"
-
-
 def test_unknown_provider_raises_llmunavailable(monkeypatch):
 	monkeypatch.setenv("QUACK_PROVIDER", "does_not_exist")
 	with pytest.raises(LLMUnavailable) as excinfo:
 		llmio.complete([], "m")
 	assert "unknown provider" in excinfo.value.reason
-	with pytest.raises(LLMUnavailable):
-		llmio.chat([], "m")
 
 
 def test_provider_arbitrary_exception_surfaces_as_llmunavailable(monkeypatch):
-	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
+	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
 
 	def boom_complete(messages, model, timeout_s=6.0):
 		raise RuntimeError("kaboom")
 
-	def boom_chat(messages, model, tools=None):
-		raise ValueError("nope")
-
-	_stub_provider("github_models", complete_fn=boom_complete, chat_fn=boom_chat)
+	_stub_provider("copilot_sdk", complete_fn=boom_complete)
 
 	with pytest.raises(LLMUnavailable):
 		llmio.complete([], "m")
-	with pytest.raises(LLMUnavailable):
-		llmio.chat([], "m")
 
 
 def test_provider_llmunavailable_passes_through_unchanged(monkeypatch):
@@ -99,18 +77,6 @@ def test_provider_llmunavailable_passes_through_unchanged(monkeypatch):
 	with pytest.raises(LLMUnavailable) as excinfo:
 		llmio.complete([], "m")
 	assert excinfo.value.reason == "specific reason"
-
-
-def test_copilot_sdk_chat_is_unavailable(monkeypatch):
-	monkeypatch.setenv("QUACK_PROVIDER", "copilot_sdk")
-	# Ensure the real provider module is loaded, not a leftover fake.
-	sys.modules.pop("quack.providers.copilot_sdk", None)
-	# Tool calling is unsupported on copilot_sdk; it must fail-open.
-	with pytest.raises(LLMUnavailable) as excinfo:
-		llmio.chat([], "m")
-	assert excinfo.value.reason == (
-		"tool calling not supported on copilot_sdk provider"
-	)
 
 
 def test_availability_error_delegates_to_provider(monkeypatch):
@@ -164,13 +130,6 @@ def test_default_model_reflects_selected_provider_and_kind(monkeypatch):
 	assert llmio.default_model() == "claude-haiku-4.5"
 	assert llmio.default_model(kind="completion") == "claude-haiku-4.5"
 	assert llmio.default_model(kind="agent") == "claude-sonnet-4.5"
-
-	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
-	stub2 = _stub_provider("github_models")
-	stub2.DEFAULT_COMPLETION_MODEL = "openai/gpt-4o-mini"
-	stub2.DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
-	assert llmio.default_model(kind="completion") == "openai/gpt-4o-mini"
-	assert llmio.default_model(kind="agent") == "openai/gpt-4.1"
 
 
 def test_default_model_none_on_unknown_kind(monkeypatch):
