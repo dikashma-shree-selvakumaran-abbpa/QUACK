@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+from statistics import median
 import threading
 import time
 import uuid
@@ -20,6 +22,7 @@ from . import (
 	gitleaks,
 	instructions,
 	llmio,
+	metrics,
 	reviewcache,
 	testmap,
 	tier1,
@@ -216,6 +219,46 @@ def models() -> dict:
 			}
 			for m in discovered
 		],
+	}
+
+
+@app.get("/metrics")
+def metrics_report() -> dict:
+	# Metrics are per-user (user profile), so there is no repo_path here.
+	events = metrics.read()
+	if events is None:
+		return {"schemaVersion": 1, "available": False, "totalRuns": 0}
+
+	commands = Counter(str(event.get("command")) for event in events if event.get("command"))
+	findings: Counter[str] = Counter()
+	durations: list[int] = []
+	cache_hits = 0
+	cache_lookups = 0
+	blocks = 0
+	for event in events:
+		blocks += int(event.get("blocked") is True)
+		duration = event.get("duration_ms")
+		if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+			durations.append(int(duration))
+		raw_findings = event.get("tier1_findings")
+		if isinstance(raw_findings, dict):
+			for name, count in raw_findings.items():
+				if isinstance(name, str) and isinstance(count, int) and count > 0:
+					findings[name] += count
+		cache = event.get("review_cache")
+		if cache in {"hit", "miss"}:
+			cache_lookups += 1
+			cache_hits += int(cache == "hit")
+
+	return {
+		"schemaVersion": 1,
+		"available": True,
+		"totalRuns": len(events),
+		"runsByCommand": dict(sorted(commands.items())),
+		"blocks": blocks,
+		"findings": dict(findings.most_common()),
+		"medianDurationMs": median(durations) if durations else None,
+		"cacheHitRate": cache_hits / cache_lookups if cache_lookups else None,
 	}
 
 
