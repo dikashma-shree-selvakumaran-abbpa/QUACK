@@ -33,7 +33,7 @@ def _empty_review_cache(monkeypatch):
 def test_check_blocks_on_secret(monkeypatch) -> None:
 	secret = "AKIA" + "A" * 16
 	delta = _delta("src/config.py", _hunk(f'AWS_KEY = "{secret}"'))
-	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
 
 	result = CliRunner().invoke(cli.main, ["check"])
 
@@ -46,7 +46,7 @@ def test_check_passes_on_clean_delta(monkeypatch) -> None:
 		"src/app.py",
 		_hunk("def add(a, b):", "    return a + b", "x = add(1, 2)"),
 	)
-	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
 
 	result = CliRunner().invoke(cli.main, ["check"])
 
@@ -55,7 +55,7 @@ def test_check_passes_on_clean_delta(monkeypatch) -> None:
 
 def test_check_passes_nonzero_duration_to_report(monkeypatch) -> None:
 	delta = _delta("src/app.py", _hunk("x = 1"))
-	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
 	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
 	clock = iter((10.0, 10.25, 10.3))
 	monkeypatch.setattr(cli.time, "perf_counter", lambda: next(clock))
@@ -75,7 +75,7 @@ def test_check_is_fully_local_no_ai_section(monkeypatch) -> None:
 		"src/app.py",
 		_hunk("def add(a, b):", "    return a + b", "x = add(1, 2)"),
 	)
-	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
 
 	# Any network/AI use would go through tier2.review; make it explode so a
 	# regression that re-adds the commit-time call fails loudly.
@@ -102,8 +102,8 @@ def test_check_renders_cached_review_with_age_without_provider(monkeypatch) -> N
 		"src/app.py",
 		_hunk("def add(a, b):", "    return a + b", "x = add(1, 2)"),
 	)
-	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
-	monkeypatch.setattr(cli.gitio, "repo_root", lambda: "/repo")
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: "/repo")
 	entry = reviewcache.CacheEntry(
 		diff_hash=reviewcache.diff_hash(delta.raw_diff),
 		timestamp=time.time() - 125,
@@ -134,7 +134,7 @@ def test_check_renders_cached_review_with_age_without_provider(monkeypatch) -> N
 
 def test_check_cache_miss_renders_watch_nudge(monkeypatch) -> None:
 	delta = _delta("src/app.py", _hunk("x = 1", "y = 2", "z = 3"))
-	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
 
 	result = CliRunner().invoke(cli.main, ["check"])
 
@@ -152,7 +152,7 @@ def test_check_has_no_model_option() -> None:
 
 def test_check_nothing_staged(monkeypatch) -> None:
 	monkeypatch.setattr(
-		cli.gitio, "staged_delta", lambda: StagedDelta(files=[], raw_diff="")
+		cli.gitio, "staged_delta", lambda *, root=None: StagedDelta(files=[], raw_diff="")
 	)
 
 	result = CliRunner().invoke(cli.main, ["check"])
