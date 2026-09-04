@@ -485,7 +485,18 @@ async def _run_agent_async(
 			+ "\n\n"
 			+ _NATIVE_FINAL_INSTRUCTION
 		)
-		response = await _within_budget(session.send_and_wait(prompt), deadline, "agent investigation")
+		try:
+			response = await _within_budget(session.send_and_wait(prompt), deadline, "agent investigation")
+		except _CopilotTimeout as exc:
+			# Zero tool calls means the SDK never got going; several means the
+			# agent was genuinely working and ran out of budget.
+			if invocations:
+				progress = f"after {invocations} tool call(s)"
+				if run_tests_used:
+					progress += f", {run_tests_used} test run(s)"
+			else:
+				progress = "with no tool calls"
+			raise _CopilotTimeout(f"agent investigation {progress}") from exc
 		content = _value(_value(response, "data"), "content")
 		result = agent._parse_and_validate(content)
 		if result is None:
