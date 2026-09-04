@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 import quack
@@ -25,11 +25,23 @@ class ReviewRequest(BaseModel):
 	model: str | None = None
 
 
+def _resolve_repo_path(repo_path: str | None) -> tuple[str | None, str | None]:
+	"""Return (resolved repo root, error) - never falls back to the process cwd."""
+	if not repo_path:
+		return None, "repo_path is required"
+	root = gitio.repo_root(root=repo_path)
+	if not root:
+		return None, f"not a git repository: {repo_path}"
+	return root, None
+
+
 @app.post("/check")
 def check(req: CheckRequest | None = None) -> dict:
 	req = req or CheckRequest()
-	root = req.repo_path or gitio.repo_root() or os.getcwd()
-	delta = gitio.staged_delta()
+	root, error = _resolve_repo_path(req.repo_path)
+	if root is None:
+		raise HTTPException(status_code=400, detail=error)
+	delta = gitio.staged_delta(root=root)
 	if not delta.files:
 		return {
 			"schemaVersion": 1,
@@ -134,7 +146,9 @@ def check(req: CheckRequest | None = None) -> dict:
 @app.post("/review")
 def review(req: ReviewRequest | None = None) -> dict:
 	req = req or ReviewRequest()
-	root = req.repo_path or gitio.repo_root() or os.getcwd()
+	root, error = _resolve_repo_path(req.repo_path)
+	if root is None:
+		raise HTTPException(status_code=400, detail=error)
 	res = watch.review_once(root, model=req.model, quiet=True)
 	if res.diff_hash:
 		return {
@@ -180,10 +194,17 @@ def models() -> dict:
 
 @app.get("/status")
 def status() -> dict:
+	try:
+		from quack._build_info import BUILD_COMMIT, BUILD_DATE
+	except ImportError:
+		BUILD_COMMIT = None
+		BUILD_DATE = None
 	return {
 		"schemaVersion": 1,
 		"version": quack.__version__,
 		"availabilityError": llmio.availability_error(),
 		"cachePath": str(reviewcache.cache_path()),
+		"buildCommit": BUILD_COMMIT,
+		"buildDate": BUILD_DATE,
 	}
 

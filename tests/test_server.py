@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import subprocess
+
+import pytest
 from fastapi.testclient import TestClient
 
 from quack import server
 
 
-def test_server_endpoints(monkeypatch):
+@pytest.fixture
+def git_repo(tmp_path) -> str:
+	"""A real (empty) git repository on disk."""
+	repo = tmp_path / "repo"
+	repo.mkdir()
+	subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+	return str(repo)
+
+
+def test_server_endpoints(monkeypatch, git_repo):
 	client = TestClient(server.app)
 
 	# GET /status
@@ -31,7 +43,7 @@ def test_server_endpoints(monkeypatch):
 	assert data["models"][0]["id"] == "model-a"
 
 	# POST /check
-	res = client.post("/check", json={"repo_path": None})
+	res = client.post("/check", json={"repo_path": git_repo})
 	assert res.status_code == 200
 	data = res.json()
 	assert data["schemaVersion"] == 1
@@ -47,9 +59,31 @@ def test_server_endpoints(monkeypatch):
 			files=1, diff_hash="hash123"
 		),
 	)
-	res = client.post("/review", json={"repo_path": "/tmp", "model": "gpt-4"})
+	res = client.post("/review", json={"repo_path": git_repo, "model": "gpt-4"})
 	assert res.status_code == 200
 	data = res.json()
 	assert data["schemaVersion"] == 1
 	assert data["status"] == "reviewed"
 	assert data["diffHash"] == "hash123"
+
+
+def test_check_requires_repo_path():
+	res = TestClient(server.app).post("/check", json={})
+	assert res.status_code == 400
+
+
+def test_review_requires_repo_path():
+	res = TestClient(server.app).post("/review", json={"model": "gpt-4"})
+	assert res.status_code == 400
+
+
+def test_check_rejects_non_repository(tmp_path):
+	res = TestClient(server.app).post("/check", json={"repo_path": str(tmp_path)})
+	assert res.status_code == 400
+
+
+def test_review_rejects_non_repository(tmp_path):
+	res = TestClient(server.app).post(
+		"/review", json={"repo_path": str(tmp_path), "model": "gpt-4"}
+	)
+	assert res.status_code == 400
