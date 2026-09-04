@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['quack.providers.copilot_sdk', 'quack.providers.github_models']
+hiddenimports = ['quack.providers.copilot_sdk']
 tmp_ret = collect_all('quack')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
