@@ -1,9 +1,9 @@
 ﻿# QUACK — Capability Catalog & Showcase
 
-> An overview of **quack** v0.3.0. For the live,
+> An overview of **quack** v0.3.1. For the live,
 
 
-**quack** `v0.3.0` · Python 3.11+ · Windows / Linux 
+**quack** `v0.3.1` · Python 3.11+ · Windows / Linux 
 <https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK>
 
 ---
@@ -45,6 +45,8 @@ quack agent: pre-push AI review ────────────────
 | `quack agent` | Pre-push | Yes | Advisory review and optional investigation |
 | `quack model` | On demand | Model discovery only | Diagnostics |
 | `quack metrics` | On demand | No | Local aggregate summary |
+| `quack serve` | On demand | Only for AI endpoints | Serves the same checks to editors |
+| VS Code extension | While working | Through the server | Same authority as the CLI it calls |
 
 ## What to showcase
 
@@ -74,6 +76,9 @@ quack agent: pre-push AI review ────────────────
 
 - The only provider is `copilot_sdk`, which uses the Copilot CLI's stored
   OAuth login; no personal access token is needed for advisory reviews.
+- It defaults to `claude-haiku-4.5` for review and `claude-sonnet-5` for the
+  agent; `quack model --list` shows the reachable catalog with those defaults
+  marked.
 - Ambient `GITHUB_TOKEN`, `GH_TOKEN`, and `COPILOT_GITHUB_TOKEN` values can
   shadow that login and should be unset when using the Copilot SDK.
 - The optional tool-calling investigation runs on the same provider, through the
@@ -81,6 +86,19 @@ quack agent: pre-push AI review ────────────────
 - Detected secrets are redacted before a diff is sent to the AI provider.
 - Metrics are stored locally as sanitized aggregates; they contain no code,
   paths, repository names, commit messages, or token values.
+
+### The same gate inside the editor
+
+- `quack serve` exposes the engine on `127.0.0.1:8787`: checks, review, agent
+  jobs with polling and cancellation, the model catalog, metrics, install
+  planning and execution, and status.
+- Every repository-scoped endpoint requires an explicit repository path; the
+  server never guesses from its own working directory.
+- The VS Code extension puts findings in the Problems panel, streams the AI
+  review and investigation into an output channel, and lets the developer pick
+  the model from the live catalog.
+- Each release attaches both `quack.exe` and the matching `.vsix`, and the build
+  fails if the two disagree about the version.
 
 ## Live-demo beats
 
@@ -90,7 +108,8 @@ quack agent: pre-push AI review ────────────────
 4. Change real code and run `quack check` to show cross-package test guidance.
 5. Run `quack watch --once`, then `quack check` to show the cached review.
 6. Push an intentional regression to show the advisory pre-push review.
-7. Run `quack model` and `quack metrics` for diagnostics and local evidence.
+7. Start `quack serve` and run the three QUACK commands in VS Code.
+8. Run `quack model` and `quack metrics` for diagnostics and local evidence.
 
 ## Objection handling
 
@@ -100,7 +119,7 @@ quack agent: pre-push AI review ────────────────
 | Does it block because AI is unavailable? | No. AI, gitleaks, and the agent are advisory and fail open. |
 | Does code leave the machine at commit time? | No. At watch/pre-push, only the redacted diff is sent to the selected provider. |
 | Can the agent run with the default provider? | Yes. Both the review and the tool-calling investigation run on the Copilot SDK, authenticated by the Copilot CLI login. |
-| Does it work in an IDE? | Yes. These are Git hooks, so they work with terminal and IDE Git clients. |
+| Does it work in an IDE? | Yes. These are Git hooks, so they work with terminal and IDE Git clients. A VS Code extension also drives a local `quack serve` for on-demand checks, AI review, and model selection. |
 
 ## Adoption
 
@@ -111,6 +130,7 @@ quack agent: pre-push AI review ────────────────
    commit is useful.
 4. Use `quack model` to diagnose provider and login problems.
 5. Use `quack metrics` to review local aggregate evidence.
+6. For editor use, install the release `.vsix` and keep `quack serve` running.
 
 For installation and troubleshooting, see [SETUP.md](SETUP.md). For the
 implementation-verified v0.3.0 details, see [CURRENT_STATE.md](CURRENT_STATE.md).

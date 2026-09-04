@@ -20,6 +20,7 @@ quack follows a **functional core / imperative shell** design.
 | I/O adapters | `gitio`, `llmio`, `runio`, `gitleaks` | Talk to git, model providers, test runners, and the gitleaks binary. |
 | Orchestration | `cli`, `tier2`, `agent` | Wire the pieces together; own exit codes and UX. |
 | Presentation | `render` | The single module that writes to the terminal. |
+| Service shell | `server` | Exposes the same orchestration over local HTTP for editor clients. |
 
 **Design invariant:** only Tier 1 governs the exit code. gitleaks and the agent
 are advisory / fail-open and can never turn a passing commit into a failing one
@@ -50,8 +51,9 @@ already-installed pre-commit checks active.
 | `quack watch [--quiet-period 30] [--once]` | Review staged or tracked working changes and cache an advisory result for commit time. | Advisory (informational) |
 | `quack agent [--fly] [--model M]` | Pre-push Tier 2 review plus an investigative loop over staged changes or, when the index is empty, unpushed commits. `--fly` allows a proposed patch. | Advisory (informational) |
 | `quack install [--local]` | Write `.pre-commit-config.yaml` (both `quack` + `quack-agent` hooks), install both hook types, and best-effort bootstrap gitleaks. `--local` targets any repo without a published remote. | n/a |
-| `quack model [--model M]` | Report provider, availability, model resolution, timeout, and Copilot SDK model discovery. | n/a |
+| `quack model [--model M] [--list] [--json]` | Report provider, availability, model resolution, timeout, and Copilot SDK model discovery. `--list` prints just the reachable model ids, marking the current completion and agent defaults. | n/a |
 | `quack metrics` | Summarize locally recorded aggregate metrics. | n/a |
+| `quack serve [--host H] [--port P]` | Serve the same engine over local HTTP (`127.0.0.1:8787` by default) for editor clients. | n/a |
 
 **Model resolution order:** `--model` flag → `QUACK_MODEL` env var →
 provider-specific default. `copilot_sdk` defaults to `claude-haiku-4.5` for
@@ -237,7 +239,53 @@ diff. The mode labels do not change what is gated or applied.
 
 ---
 
-## 7. UX / onboarding
+## 7. Service mode and the VS Code client
+
+**Module:** `server.py` (FastAPI) · started by `quack serve`.
+
+The server is a shell over the same orchestration the CLI uses — it adds no
+checks of its own and changes no invariants.
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /check` | Tier 1 + gitleaks, test guidance, and a cached-review lookup. No AI call. |
+| `POST /review` | One Tier 2 review (`watch.review_once`), cached on success. |
+| `POST /agent` | Starts a background job and returns its `jobId`. A repo already running a job returns that job instead of starting a second one. |
+| `GET /agent/{id}` | Poll the job: stages land as `tier1`, `tier2`, then `investigation`. |
+| `DELETE /agent/{id}` | Mark the job cancelled; the worker stops at the next stage boundary. |
+| `GET /models` | Reachable model ids plus the resolved default. |
+| `GET /metrics` | The `quack metrics` aggregate, per user rather than per repo. |
+| `GET /install/plan` | Strategy (`precommit` / `husky` / `unsupported_hooks_path`), hooks path, and tool availability. |
+| `POST /install` | Performs the install and returns per-step results. Tracked husky hooks require explicit consent. |
+| `GET /status` | Version, build commit/date, cache path, and any provider availability error. |
+
+**Invariants specific to service mode:**
+
+- `repo_path` is **required** on every repository-scoped endpoint (`/check`,
+  `/review`, `/agent`, `/install/plan`, `/install`); the server returns 400
+  rather than falling back to its own working directory.
+- Agent jobs live only in memory. Stages carry rendered results, never raw diff
+  text, and finished jobs are swept after `JOB_RETENTION_S` (30 minutes).
+- A Tier 1 block short-circuits the job before any model call, exactly as at the
+  command line.
+- Errors are normalized to one bounded line — never a stack trace.
+
+**VS Code extension** (`clients/vscode`, packaged as `quack-abb-<version>.vsix`)
+talks to that server over HTTP and contributes three commands: *Check staged
+changes* (findings become Problems-panel diagnostics; blocking findings are
+errors, everything else warnings), *Run AI review and investigation* (polls the
+agent job and streams each stage into an output channel, cancellable), and
+*Select model* (picks from `/models` and stores `quack.model` in workspace
+settings). `quack.serverUrl` points it at the server; the status bar reports the
+connected version or `quack offline`.
+
+The release workflow builds and attaches both `quack.exe` and the vsix to a
+tagged GitHub release, and fails if the extension version does not match the
+tag.
+
+---
+
+## 8. UX / onboarding
 
 - **Install banner:** yellow ASCII duck + `QUACK` wordmark on `quack install`.
 - **Blocked-line alarm:** loud `QUACK!!!! check line #…` callout with exact
@@ -249,7 +297,7 @@ diff. The mode labels do not change what is gated or applied.
 
 ---
 
-## 8. How quack differs from a "code review agent"
+## 9. How quack differs from a "code review agent"
 
 quack is **not** a general LLM code reviewer. The distinction is architectural,
 not cosmetic.
@@ -274,7 +322,7 @@ by actually running your tests_. The LLM assists; it never holds the gate.
 
 ---
 
-## 9. Guarantees summary
+## 10. Guarantees summary
 
 - [x] Secrets and merge markers are caught **offline and deterministically**.
 - [x] Detected secrets are **redacted** before any AI call.
