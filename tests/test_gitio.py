@@ -21,7 +21,7 @@ def test_range_delta_parses_range_via_existing_parser(monkeypatch) -> None:
 
 	calls: list[list[str]] = []
 
-	def fake_run_git(args: list[str]) -> str:
+	def fake_run_git(args: list[str], cwd: str | None = None) -> str:
 		calls.append(args)
 		if "--name-status" in args:
 			return name_status
@@ -43,7 +43,7 @@ def test_range_delta_parses_range_via_existing_parser(monkeypatch) -> None:
 
 def test_upstream_ref_returns_none_without_upstream(monkeypatch) -> None:
 	# _run_git already returns "" on any git failure (no upstream configured).
-	monkeypatch.setattr(gitio, "_run_git", lambda args: "")
+	monkeypatch.setattr(gitio, "_run_git", lambda args, cwd=None: "")
 	assert gitio.upstream_ref() is None
 
 
@@ -53,10 +53,10 @@ def test_upstream_ref_does_not_raise_on_git_failure(monkeypatch) -> None:
 
 	# Even if the underlying runner raised, upstream_ref must not propagate.
 	# _run_git itself swallows subprocess errors, but assert the contract.
-	monkeypatch.setattr(gitio, "_run_git", lambda args: "")
+	monkeypatch.setattr(gitio, "_run_git", lambda args, cwd=None: "")
 	assert gitio.upstream_ref() is None
 
 
 def test_upstream_ref_returns_tracking_branch(monkeypatch) -> None:
-	monkeypatch.setattr(gitio, "_run_git", lambda args: "origin/main\n")
+	monkeypatch.setattr(gitio, "_run_git", lambda args, cwd=None: "origin/main\n")
 	assert gitio.upstream_ref() == "origin/main"

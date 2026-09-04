@@ -19,3 +19,7 @@ venv/
 # Personal / local-only notes
 CATALOG.md
 QUACK_DEMO_SCRIPT_*.md
+
+clients/vscode/node_modules/
+clients/vscode/out/
+clients/vscode/*.vsix

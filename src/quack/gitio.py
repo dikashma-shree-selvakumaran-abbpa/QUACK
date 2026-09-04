@@ -71,7 +71,7 @@ def working_delta(*, root: str | None = None) -> StagedDelta:
 	)
 
 
-def range_delta(base: str, head: str = "HEAD") -> StagedDelta:
+def range_delta(base: str, head: str = "HEAD", *, root: str | None = None) -> StagedDelta:
 	"""Collect the delta for a commit range and parse it into a StagedDelta.
 
 	Mirrors staged_delta() but over base..head instead of the index, reusing
@@ -80,13 +80,13 @@ def range_delta(base: str, head: str = "HEAD") -> StagedDelta:
 	"""
 	rng = f"{base}..{head}"
 	return delta.parse_staged_delta(
-		_run_git(["diff", "--name-status", "-M", rng]),
-		_run_git(["diff", "--numstat", "-M", rng]),
-		_run_git(["diff", "-M", "--unified=3", rng]),
+		_run_git(["diff", "--name-status", "-M", rng], cwd=root),
+		_run_git(["diff", "--numstat", "-M", rng], cwd=root),
+		_run_git(["diff", "-M", "--unified=3", rng], cwd=root),
 	)
 
 
-def upstream_ref() -> str | None:
+def upstream_ref(*, root: str | None = None) -> str | None:
 	"""Return the tracking branch (e.g. ``origin/main``) or None.
 
 	Resolves via ``git rev-parse --abbrev-ref --symbolic-full-name @{u}``.
@@ -94,14 +94,14 @@ def upstream_ref() -> str | None:
 	raise -- any git failure yields None.
 	"""
 	ref = _run_git(
-		["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]
+		["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=root
 	).strip()
 	return ref or None
 
 
-def range_commit_count(base: str, head: str = "HEAD") -> int:
+def range_commit_count(base: str, head: str = "HEAD", *, root: str | None = None) -> int:
 	"""Number of commits in ``base..head``, or 0 on any git failure."""
-	out = _run_git(["rev-list", "--count", f"{base}..{head}"]).strip()
+	out = _run_git(["rev-list", "--count", f"{base}..{head}"], cwd=root).strip()
 	try:
 		return int(out)
 	except ValueError:

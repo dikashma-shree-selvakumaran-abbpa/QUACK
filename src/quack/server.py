@@ -5,12 +5,28 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import threading
+import time
+import uuid
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 import quack
-from . import cli, gitio, gitleaks, llmio, reviewcache, testmap, tier1, watch
+from . import (
+	agent,
+	cli,
+	gitio,
+	gitleaks,
+	instructions,
+	llmio,
+	reviewcache,
+	testmap,
+	tier1,
+	tier2,
+	watch,
+)
+from .providers import copilot_sdk
 
 from quack import __version__
 app = FastAPI(title="quack", version=__version__)
@@ -23,6 +39,17 @@ class CheckRequest(BaseModel):
 class ReviewRequest(BaseModel):
 	repo_path: str | None = None
 	model: str | None = None
+
+
+class AgentRequest(BaseModel):
+	repo_path: str | None = None
+	model: str | None = None
+
+
+# Agent jobs live only in memory: `quack agent` takes 60-90s, so clients start
+# a job and poll it. Stages hold rendered results only -- never raw diff text.
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
 
 
 def _resolve_repo_path(repo_path: str | None) -> tuple[str | None, str | None]:
@@ -190,6 +217,220 @@ def models() -> dict:
 			for m in discovered
 		],
 	}
+
+
+def _bounded(text: str) -> str:
+	"""One-line, length-capped text - never a stack trace."""
+	return text.replace("\n", " ").replace("\r", " ")[:200]
+
+
+def _finding_json(f) -> dict:
+	return {
+		"severity": f.severity,
+		"source": getattr(f, "source", "quack"),
+		"rule": f.check,
+		"file": f.path,
+		"line": f.line,
+		"message": f.message,
+	}
+
+
+def _job_json(job: dict) -> dict:
+	return {
+		"schemaVersion": 1,
+		"jobId": job["id"],
+		"status": job["status"],
+		"repoPath": job["repoPath"],
+		"stages": dict(job["stages"]),
+		"error": job["error"],
+	}
+
+
+def _job_cancelled(job_id: str) -> bool:
+	with _jobs_lock:
+		job = _jobs.get(job_id)
+		return job is None or job["status"] == "cancelled"
+
+
+def _set_stage(job_id: str, name: str, value: dict) -> None:
+	with _jobs_lock:
+		job = _jobs.get(job_id)
+		if job is None or job["status"] == "cancelled":
+			return
+		job["stages"][name] = value
+
+
+def _finish_job(job_id: str, status: str, error: str | None = None) -> None:
+	with _jobs_lock:
+		job = _jobs.get(job_id)
+		if job is None or job["status"] == "cancelled":
+			return
+		job["status"] = status
+		job["error"] = error
+
+
+def _run_agent_job(job_id: str, root: str, model: str | None) -> None:
+	"""Mirror `quack agent` (see cli.agent), recording each stage as it lands."""
+	try:
+		resolved_model = cli._resolve_agent_model(model)
+		reason = llmio.availability_error()
+		if reason:
+			_finish_job(job_id, "error", reason)
+			return
+
+		delta = gitio.staged_delta(root=root)
+		if not delta.files:
+			upstream = gitio.upstream_ref(root=root)
+			unpushed = gitio.range_delta(upstream, root=root) if upstream else None
+			if unpushed is not None and unpushed.files:
+				delta = unpushed
+			else:
+				_set_stage(
+					job_id,
+					"tier1",
+					{
+						"blocked": False,
+						"findings": [],
+						"note": "nothing to analyze: no staged changes and nothing unpushed",
+					},
+				)
+				_finish_job(job_id, "done")
+				return
+
+		findings = tier1.run(delta, tier1.Tier1Config())
+		redacted = tier1.redact(delta, findings)
+		json_findings = [_finding_json(f) for f in findings]
+
+		# Tier 1 gates. A staged secret is never transmitted: return before
+		# any model call.
+		if tier1.should_block(findings, block_on=("secrets", "merge_markers")):
+			_set_stage(
+				job_id, "tier1", {"blocked": True, "findings": json_findings}
+			)
+			_finish_job(job_id, "done")
+			return
+
+		_set_stage(job_id, "tier1", {"blocked": False, "findings": json_findings})
+		if _job_cancelled(job_id):
+			return
+
+		tier2_model = cli._resolve_completion_model(model)
+		try:
+			plan = testmap.build_plan(delta, root=Path(root))
+			review, tier2_reason = tier2.review_with_reason(
+				delta,
+				findings,
+				plan,
+				model=tier2_model,
+				project_instructions=instructions.load(Path(root)),
+				timeout_s=llmio.default_timeout(),
+			)
+		except Exception as exc:
+			review = None
+			tier2_reason = f"{type(exc).__name__}: {_bounded(str(exc))}"
+		if review is not None:
+			_set_stage(
+				job_id,
+				"tier2",
+				{
+					"available": True,
+					"model": tier2_model or "",
+					"risk": review.risk,
+					"summary": review.one_liner,
+					"reasons": review.reasons,
+					"testsToRun": review.tests_to_run,
+					"missingTests": review.missing_tests,
+				},
+			)
+		else:
+			_set_stage(
+				job_id,
+				"tier2",
+				{
+					"available": False,
+					"error": tier2_reason
+					or llmio.availability_error()
+					or "unavailable",
+				},
+			)
+		if _job_cancelled(job_id):
+			return
+
+		try:
+			result = copilot_sdk.run_agent(
+				redacted.raw_diff,
+				Path(root),
+				resolved_model,
+				timeout_s=agent.WALL_CLOCK_S,
+			)
+		except llmio.LLMUnavailable as exc:
+			result = agent._unavailable(exc.reason)
+		_set_stage(
+			job_id,
+			"investigation",
+			{
+				"summary": result.summary,
+				"testsRun": result.tests_run,
+				"failures": result.failures,
+				"proposedPatch": result.proposed_patch,
+				"proposedNewTests": result.proposed_new_tests,
+			},
+		)
+		_finish_job(job_id, "done")
+	except Exception as exc:
+		_finish_job(job_id, "error", f"{type(exc).__name__}: {_bounded(str(exc))}")
+
+
+@app.post("/agent")
+def start_agent(req: AgentRequest | None = None) -> dict:
+	req = req or AgentRequest()
+	root, error = _resolve_repo_path(req.repo_path)
+	if root is None:
+		raise HTTPException(status_code=400, detail=error)
+
+	with _jobs_lock:
+		for job in _jobs.values():
+			if job["repoPath"] == root and job["status"] == "running":
+				return {
+					"schemaVersion": 1,
+					"jobId": job["id"],
+					"status": "running",
+				}
+		job_id = uuid.uuid4().hex
+		_jobs[job_id] = {
+			"id": job_id,
+			"repoPath": root,
+			"status": "running",
+			"createdAt": time.time(),
+			"stages": {"tier1": None, "tier2": None, "investigation": None},
+			"error": None,
+		}
+
+	threading.Thread(
+		target=_run_agent_job,
+		args=(job_id, root, req.model),
+		daemon=True,
+	).start()
+	return {"schemaVersion": 1, "jobId": job_id, "status": "running"}
+
+
+@app.get("/agent/{job_id}")
+def agent_job(job_id: str) -> dict:
+	with _jobs_lock:
+		job = _jobs.get(job_id)
+		if job is None:
+			raise HTTPException(status_code=404, detail=f"unknown job: {job_id}")
+		return _job_json(job)
+
+
+@app.delete("/agent/{job_id}")
+def cancel_agent_job(job_id: str) -> dict:
+	with _jobs_lock:
+		job = _jobs.get(job_id)
+		if job is None:
+			raise HTTPException(status_code=404, detail=f"unknown job: {job_id}")
+		job["status"] = "cancelled"
+	return {"schemaVersion": 1, "jobId": job_id, "status": "cancelled"}
 
 
 @app.get("/status")
