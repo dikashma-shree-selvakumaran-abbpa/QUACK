@@ -2,7 +2,7 @@
   "name": "quack-abb",
   "displayName": "QUACK",
   "description": "AI-assisted code review from the quack server.",
-  "version": "0.1.0",
+  "version": "0.3.1",
   "publisher": "quack",
   "engines": {
     "vscode": "^1.136.0"

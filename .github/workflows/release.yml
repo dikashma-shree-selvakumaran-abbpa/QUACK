@@ -55,14 +55,55 @@ jobs:
           }
         shell: pwsh
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build the VS Code extension
+        # The exe is only half the tool: without the vsix, a user who
+        # downloads the release has a CLI and no way to drive it from the
+        # editor. npm ci (not install) so a drifted lockfile fails here
+        # rather than being silently rewritten mid-release.
+        working-directory: clients/vscode
+        run: |
+          npm ci
+          npx vsce package --allow-missing-repository
+
+      - name: Verify the extension version matches the tag
+        # Both halves ship under one release, so they must not disagree about
+        # what version they are. Skipped on workflow_dispatch, where there is
+        # no tag to match against.
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: clients/vscode
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tag package.json=$pkg"
+          if ($tag -ne $pkg) {
+            Write-Error "tag $tag does not match extension version $pkg"
+            exit 1
+          }
+          if (-not (Test-Path "quack-abb-$pkg.vsix")) {
+            Write-Error "expected quack-abb-$pkg.vsix was not produced"
+            exit 1
+          }
+        shell: pwsh
+
       - uses: actions/upload-artifact@v4
         with:
           name: quack-exe
           path: dist/quack.exe
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quack-vsix
+          path: clients/vscode/*.vsix
+
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/quack.exe
+          files: |
+            dist/quack.exe
+            clients/vscode/*.vsix
           generate_release_notes: true
