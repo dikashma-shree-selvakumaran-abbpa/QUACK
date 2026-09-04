@@ -117,9 +117,11 @@ async function refreshStatus(): Promise<void> {
         statusBar.tooltip = data.availabilityError
             ? `Provider problem: ${data.availabilityError}\n${modelLine}`
             : `Connected to ${serverUrl()}\n${modelLine}`;
+        panel?.setStatus(data);
     } catch {
         statusBar.text = "$(circle-slash) quack offline";
         statusBar.tooltip = `No quack server at ${serverUrl()} - run 'quack serve'\n${modelLine}`;
+        panel?.setStatus(null);
     }
     statusBar.show();
 }
@@ -159,6 +161,7 @@ async function runCheck(): Promise<void> {
         list.push(diagnostic);
         byFile.set(f.file, list);
     }
+    panel?.setFindings(data.findings, data.blocked);
     for (const [file, list] of byFile) {
         diagnostics.set(vscode.Uri.file(`${root}/${file}`), list);
     }
@@ -456,8 +459,110 @@ async function runAgent(): Promise<void> {
         }
     );
 }
+class QuackNode extends vscode.TreeItem {
+    children?: QuackNode[];
+}
+
+class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
+    private emitter = new vscode.EventEmitter<void>();
+    readonly onDidChangeTreeData = this.emitter.event;
+
+    private status: StatusResponse | null = null;
+    private findings: Finding[] = [];
+    private blocked = false;
+    private checked = false;
+
+    refresh(): void {
+        this.emitter.fire();
+    }
+
+    setStatus(status: StatusResponse | null): void {
+        this.status = status;
+        this.refresh();
+    }
+
+    setFindings(findings: Finding[], blocked: boolean): void {
+        this.findings = findings;
+        this.blocked = blocked;
+        this.checked = true;
+        this.refresh();
+    }
+
+    getTreeItem(node: QuackNode): vscode.TreeItem {
+        return node;
+    }
+
+    getChildren(node?: QuackNode): QuackNode[] {
+        if (node) {
+            return node.children ?? [];
+        }
+        return [this.statusNode(), this.actionsNode(), this.findingsNode()];
+    }
+
+    private statusNode(): QuackNode {
+        const item = new QuackNode(
+            this.status ? `quack ${this.status.version}` : "offline",
+            vscode.TreeItemCollapsibleState.None
+        );
+        item.iconPath = new vscode.ThemeIcon(this.status ? "pass" : "circle-slash");
+        item.description = this.status
+            ? selectedModel() || "server default"
+            : "run 'quack serve'";
+        item.tooltip = this.status?.availabilityError ?? serverUrl();
+        return item;
+    }
+
+    private actionsNode(): QuackNode {
+        const node = new QuackNode("Actions", vscode.TreeItemCollapsibleState.Expanded);
+        const make = (label: string, icon: string, command: string): QuackNode => {
+            const child = new QuackNode(label, vscode.TreeItemCollapsibleState.None);
+            child.iconPath = new vscode.ThemeIcon(icon);
+            child.command = { command, title: label };
+            return child;
+        };
+        node.children = [
+            make("Check staged changes", "check", "quack.check"),
+            make("Run AI review", "play", "quack.agent"),
+            make("Select model", "settings-gear", "quack.selectModel"),
+        ];
+        return node;
+    }
+
+    private findingsNode(): QuackNode {
+        const label = this.blocked ? "Findings — blocked" : "Findings";
+        const node = new QuackNode(label, vscode.TreeItemCollapsibleState.Expanded);
+        node.description = this.checked ? String(this.findings.length) : "";
+        if (!this.checked) {
+            const hint = new QuackNode("Run a check to see findings", vscode.TreeItemCollapsibleState.None);
+            node.children = [hint];
+            return node;
+        }
+        node.children = this.findings.map((f) => {
+            const child = new QuackNode(`${f.file}:${f.line}`, vscode.TreeItemCollapsibleState.None);
+            child.description = f.message;
+            child.iconPath = new vscode.ThemeIcon(
+                f.severity === "error" ? "error" : "warning"
+            );
+            const root = workspaceRoot();
+            if (root) {
+                const uri = vscode.Uri.file(`${root}/${f.file}`);
+                const line = Math.max(0, f.line - 1);
+                child.command = {
+                    command: "vscode.open",
+                    title: "Open",
+                    arguments: [uri, { selection: new vscode.Range(line, 0, line, 0) }],
+                };
+            }
+            return child;
+        });
+        return node;
+    }
+}
+
+let panel: QuackProvider;
 export function activate(context: vscode.ExtensionContext): void {
     output = vscode.window.createOutputChannel("quack");
+    panel = new QuackProvider();
     diagnostics = vscode.languages.createDiagnosticCollection("quack");
     statusBar = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Left,
@@ -470,6 +575,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("quack.check", runCheck),
         vscode.commands.registerCommand("quack.agent", runAgent),
         vscode.commands.registerCommand("quack.selectModel", selectModel),
+        vscode.window.registerTreeDataProvider("quack.panel", panel),
         output
     );
     void refreshStatus();

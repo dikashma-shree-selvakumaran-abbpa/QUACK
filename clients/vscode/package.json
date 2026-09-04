@@ -13,6 +13,23 @@
   "main": "./out/extension.js",
   "activationEvents": ["onStartupFinished"],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "quack",
+          "title": "QUACK",
+          "icon": "media/quack.svg"
+        }
+      ]
+    },
+    "views": {
+      "quack": [
+        {
+          "id": "quack.panel",
+          "name": "Review"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "quack.check",
