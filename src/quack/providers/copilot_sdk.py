@@ -137,7 +137,9 @@ def _error_reason(exc: Exception, *, context: str = "copilot sdk error") -> str:
 	elif _is_auth_error(exc):
 		message = _AUTH_MESSAGE
 	elif isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-		stage = getattr(exc, "stage", "inference")
+		# Our own _CopilotTimeout always names a stage; a missing one means the
+		# SDK gave up before quack's deadline expired.
+		stage = getattr(exc, "stage", "provider")
 		message = f"Copilot {stage} timed out."
 	else:
 		message = context

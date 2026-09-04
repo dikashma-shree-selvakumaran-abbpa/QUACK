@@ -594,7 +594,7 @@ def _timeout_hint(reason: str, model: str) -> str:
 		return reason
 	named = model or "the selected model"
 	return (
-		f"{reason} - smaller models such as {named} often cannot sustain the "
-		f"multi-step investigation loop; a larger model or the provider default "
-		f"is more likely to complete it"
+		f"{reason} - the investigation using {named} did not return in time; "
+		f"the local checks and the AI review above are unaffected, and a "
+		f"different model may complete it"
 	)
