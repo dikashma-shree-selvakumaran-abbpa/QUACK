@@ -828,3 +828,33 @@ def test_reconcile_still_records_named_failures() -> None:
 
 	assert [f["test"] for f in reconciled.failures] == ["tests/test_x.py::test_y"]
 	assert "[verified]" in reconciled.summary
+
+
+# ---------------------------------------------------------------------------
+# _timeout_hint.
+# ---------------------------------------------------------------------------
+
+
+def test_timeout_hint_names_the_model() -> None:
+	reason = "Copilot inference timed out. Raw reason: inference timeout."
+
+	hint = agent._timeout_hint(reason, "gpt-4o-mini")
+
+	assert reason in hint
+	assert "gpt-4o-mini" in hint
+
+
+def test_timeout_hint_is_case_insensitive() -> None:
+	reason = "Copilot inference Timed Out. Raw reason: inference timeout."
+
+	hint = agent._timeout_hint(reason, "gpt-4o-mini")
+
+	assert hint != reason
+	assert "gpt-4o-mini" in hint
+
+
+def test_timeout_hint_leaves_other_failures_alone() -> None:
+	# Suggesting a different model for an auth failure would misdirect the user.
+	reason = "no Copilot login found"
+
+	assert agent._timeout_hint(reason, "gpt-4o-mini") == reason
