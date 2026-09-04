@@ -37,6 +37,9 @@ MAX_RUN_TESTS = 2
 WALL_CLOCK_S = 180.0
 READ_FILE_MAX_LINES = 300
 OUTPUT_TAIL_LINES = 80
+# pytest exits 5 when no tests were collected - that is "nothing ran",
+# not "something failed".
+NO_TESTS_COLLECTED_EXIT = 5
 
 # C# --filter values may only contain these characters (no shell metacharacters).
 _FILTER_RE = re.compile(r'^[A-Za-z0-9_.~|&=!"\s-]+$')
@@ -252,7 +255,7 @@ def _reconcile(result: AgentResult, test_run_outputs: list[str]) -> AgentResult:
 	failing_outputs = [
 		output
 		for output in test_run_outputs
-		if (_tool_exit_code(output) or 0) != 0
+		if (_tool_exit_code(output) or 0) not in (0, NO_TESTS_COLLECTED_EXIT)
 	]
 	if not failing_outputs or result.failures:
 		return result
@@ -263,7 +266,12 @@ def _reconcile(result: AgentResult, test_run_outputs: list[str]) -> AgentResult:
 			if name not in failed_names:
 				failed_names.append(name)
 	if not failed_names:
-		failed_names = ["<unknown test>"]
+		note = (
+			"[verified] A test command exited non-zero but no individual test "
+			"name could be identified from the tool output."
+		)
+		result.summary = f"{note} {result.summary}".strip()
+		return result
 
 	result.failures = [
 		{"test": name, "diagnosis": _OVERRIDE_DIAGNOSIS} for name in failed_names
