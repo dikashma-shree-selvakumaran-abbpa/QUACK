@@ -81,6 +81,26 @@ _PATH_HINTS = (
 	"transform",
 )
 
+# Generated files are not reviewed line by line, and their contents trip
+# the code-content regexes: package-lock.json contains packages named
+# "async"; any large JSON matches the boundary patterns.
+_GENERATED_NAMES = frozenset({
+	"package-lock.json",
+	"yarn.lock",
+	"pnpm-lock.yaml",
+	"poetry.lock",
+	"cargo.lock",
+	"gemfile.lock",
+	"composer.lock",
+	"go.sum",
+})
+
+
+def _is_generated(path: str) -> bool:
+	"""True for lockfiles and other generated artifacts."""
+	name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+	return name in _GENERATED_NAMES or name.endswith((".min.js", ".min.css"))
+
 
 @dataclass
 class ReviewResult:
@@ -312,7 +332,10 @@ def _deterministic_risk(
 	"""
 	score = 0
 	reasons: list[str] = []
-	changed_lines = sum(f.added + f.removed for f in delta.files if not f.binary)
+	reviewable = [
+		f for f in delta.files if not f.binary and not _is_generated(f.path)
+	]
+	changed_lines = sum(f.added + f.removed for f in reviewable)
 
 	if test_plan.untested_sources:
 		score += 2
@@ -328,7 +351,11 @@ def _deterministic_risk(
 		reasons.append("changed paths include behavior-sensitive areas")
 
 	changed_code_lines = [
-		line for line in delta.raw_diff.splitlines() if line.startswith(("+", "-"))
+		line
+		for f in reviewable
+		for hunk in f.hunks
+		for line in hunk.splitlines()
+		if line.startswith(("+", "-"))
 	]
 	if any(_PUBLIC_CONTRACT_RE.match(line) for line in changed_code_lines):
 		score += 2
