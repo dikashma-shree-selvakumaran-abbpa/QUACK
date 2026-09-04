@@ -12,7 +12,7 @@ from . import delta
 from .delta import StagedDelta
 
 
-def _run_git(args: list[str]) -> str:
+def _run_git(args: list[str], *, cwd: str | None = None) -> str:
 	"""Run a git command and return stdout, or "" if git/repo is unavailable."""
 	try:
 		result = subprocess.run(
@@ -22,51 +22,52 @@ def _run_git(args: list[str]) -> str:
 			errors="replace",
 			bufsize=1024 * 1024,
 			check=True,
+			cwd=cwd,
 		)
 	except (subprocess.CalledProcessError, FileNotFoundError):
 		return ""
 	return result.stdout
 
 
-def repo_root() -> str:
+def repo_root(*, root: str | None = None) -> str:
 	"""Absolute path to the repository top level, or "" if unavailable."""
-	return _run_git(["rev-parse", "--show-toplevel"]).strip()
+	return _run_git(["rev-parse", "--show-toplevel"], cwd=root).strip()
 
 
-def staged_name_status() -> str:
+def staged_name_status(*, root: str | None = None) -> str:
 	"""Raw `git diff --cached --name-status -M` output."""
-	return _run_git(["diff", "--cached", "--name-status", "-M"])
+	return _run_git(["diff", "--cached", "--name-status", "-M"], cwd=root)
 
 
-def staged_numstat() -> str:
+def staged_numstat(*, root: str | None = None) -> str:
 	"""Raw `git diff --cached --numstat -M` output."""
-	return _run_git(["diff", "--cached", "--numstat", "-M"])
+	return _run_git(["diff", "--cached", "--numstat", "-M"], cwd=root)
 
 
-def staged_diff() -> str:
+def staged_diff(*, root: str | None = None) -> str:
 	"""Raw `git diff --cached -M --unified=3` output."""
-	return _run_git(["diff", "--cached", "-M", "--unified=3"])
+	return _run_git(["diff", "--cached", "-M", "--unified=3"], cwd=root)
 
 
-def staged_delta() -> StagedDelta:
+def staged_delta(*, root: str | None = None) -> StagedDelta:
 	"""Collect the staged changes and parse them into a StagedDelta."""
 	return delta.parse_staged_delta(
-		staged_name_status(),
-		staged_numstat(),
-		staged_diff(),
+		staged_name_status(root=root),
+		staged_numstat(root=root),
+		staged_diff(root=root),
 	)
 
 
-def working_delta() -> StagedDelta:
+def working_delta(*, root: str | None = None) -> StagedDelta:
 	"""Collect tracked working-tree changes versus HEAD.
 
 	This includes staged and unstaged changes. Untracked files are visible to
 	the watcher's filesystem snapshot but have no Git diff until staged.
 	"""
 	return delta.parse_staged_delta(
-		_run_git(["diff", "--name-status", "-M", "HEAD"]),
-		_run_git(["diff", "--numstat", "-M", "HEAD"]),
-		_run_git(["diff", "-M", "--unified=3", "HEAD"]),
+		_run_git(["diff", "--name-status", "-M", "HEAD"], cwd=root),
+		_run_git(["diff", "--numstat", "-M", "HEAD"], cwd=root),
+		_run_git(["diff", "-M", "--unified=3", "HEAD"], cwd=root),
 	)
 
 
@@ -107,7 +108,7 @@ def range_commit_count(base: str, head: str = "HEAD") -> int:
 		return 0
 
 
-def staged_files() -> list[str]:
+def staged_files(*, root: str | None = None) -> list[str]:
 	"""Return the list of staged file paths (added/copied/modified/renamed).
 
 	Returns an empty list if git is unavailable or this is not a repo.
@@ -118,6 +119,7 @@ def staged_files() -> list[str]:
 			capture_output=True,
 			text=True,
 			check=True,
+			cwd=root,
 		)
 	except (subprocess.CalledProcessError, FileNotFoundError):
 		return []
