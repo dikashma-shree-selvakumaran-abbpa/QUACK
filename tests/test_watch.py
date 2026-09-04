@@ -24,8 +24,8 @@ def test_watch_once_reviews_and_writes_cache(monkeypatch) -> None:
 	delta = _delta()
 	written: dict = {}
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda: "/repo")
-	monkeypatch.setattr(watch.gitio, "staged_delta", lambda: delta)
-	monkeypatch.setattr(watch.gitio, "working_delta", lambda: StagedDelta())
+	monkeypatch.setattr(watch.gitio, "staged_delta", lambda *, root=None: delta)
+	monkeypatch.setattr(watch.gitio, "working_delta", lambda *, root=None: StagedDelta())
 	monkeypatch.setattr(watch.testmap, "build_plan", lambda *args, **kwargs: TestPlan())
 	monkeypatch.setattr(watch.instructions, "load", lambda root: "local guidance")
 	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: "test-model")
@@ -57,8 +57,8 @@ def test_watch_once_reviews_and_writes_cache(monkeypatch) -> None:
 
 def test_watch_once_surfaces_actionable_review_failure(monkeypatch) -> None:
 	delta = _delta()
-	monkeypatch.setattr(watch.gitio, "staged_delta", lambda: delta)
-	monkeypatch.setattr(watch.gitio, "working_delta", lambda: StagedDelta())
+	monkeypatch.setattr(watch.gitio, "staged_delta", lambda *, root=None: delta)
+	monkeypatch.setattr(watch.gitio, "working_delta", lambda *, root=None: StagedDelta())
 	monkeypatch.setattr(watch.testmap, "build_plan", lambda *args, **kwargs: TestPlan())
 	monkeypatch.setattr(watch.instructions, "load", lambda root: None)
 	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: "test-model")

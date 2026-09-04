@@ -70,9 +70,9 @@ def _review_once(
 ) -> WatchResult:
 	root = Path(repo_root)
 	try:
-		delta = gitio.staged_delta()
+		delta = gitio.staged_delta(root=str(root))
 		if not delta.files:
-			delta = gitio.working_delta()
+			delta = gitio.working_delta(root=str(root))
 		if not delta.files:
 			return WatchResult(files=0, reason="no changes")
 
