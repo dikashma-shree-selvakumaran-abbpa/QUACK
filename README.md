@@ -109,10 +109,9 @@ code-grounded v0.3.0 architecture snapshot.
 
 The deterministic commit checks, background review cache, pre-push Tier 2 review,
 SDK-native agent tools, metrics, hook installation, and fail-open behavior are
-covered by the current test suite. The default `copilot_sdk` provider uses the
-Copilot CLI's stored login for both advisory review and native tool calling;
-`github_models` remains reachable as the legacy OpenAI-style provider. AI
-availability and model responses are intentionally advisory.
+covered by the current test suite. `copilot_sdk` is the only provider; it uses
+the Copilot CLI's stored login for both advisory review and native tool calling.
+AI availability and model responses are intentionally advisory.
 
 
 ## todo 

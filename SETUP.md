@@ -47,11 +47,9 @@ A healthy result includes:
 - `quack watch` is a foreground process you keep running while you work. It
   reviews after 30 seconds without file changes by default, then caches the
   result for commit time. Use `quack watch --once` to review immediately.
-- `git push` runs an advisory AI review on unpushed commits. The default
-  `copilot_sdk` provider uses the Copilot CLI's stored OAuth login.
-- The default Copilot SDK runs the advisory SDK-native investigation loop. The
-  legacy OpenAI-style path remains selectable with `QUACK_PROVIDER=github_models`
-  and `GITHUB_TOKEN`.
+- `git push` runs an advisory AI review on unpushed commits. The `copilot_sdk`
+  provider uses the Copilot CLI's stored OAuth login.
+- The Copilot SDK runs the advisory SDK-native investigation loop.
 - `quack metrics` shows a local summary of what quack has caught.
 
 ## Troubleshooting
@@ -69,10 +67,10 @@ A healthy result includes:
 
 ## What quack does NOT need
 
-For default advisory reviews and the SDK-native agent, quack does not need a
+For advisory reviews and the SDK-native agent, quack does not need a
 GitHub Models PAT, API key, or config file: the Copilot CLI login is sufficient.
-The legacy OpenAI-style agent path uses `QUACK_PROVIDER=github_models` and a
-`GITHUB_TOKEN` with access to GitHub Models.
+The agent runs on `copilot_sdk` through the Copilot SDK's own session API,
+authenticated by the Copilot CLI's stored OAuth login; no `GITHUB_TOKEN` is used.
 
 For the code-grounded v0.3.0 implementation snapshot, see
 [CURRENT_STATE.md](CURRENT_STATE.md). Keep live recording scripts with the
