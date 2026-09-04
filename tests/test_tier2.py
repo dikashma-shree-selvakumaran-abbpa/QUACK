@@ -319,3 +319,63 @@ def test_source_files_still_trip_code_heuristics() -> None:
 	_, reasons = tier2._deterministic_risk(delta, testmap.TestPlan())
 
 	assert "state/concurrency-sensitive logic changed" in reasons
+
+
+def _reasons_for(path: str, body: list[str]) -> list[str]:
+	hunk = "@@ -1,1 +1,%d @@\n" % len(body) + "\n".join(body)
+	file = StagedFile(
+		path=path, status="M", added=len(body), removed=0, hunks=[hunk]
+	)
+	delta = StagedDelta(files=[file], raw_diff="")
+	_, reasons = tier2._deterministic_risk(delta, testmap.TestPlan())
+	return reasons
+
+
+def test_equality_operators_do_not_trip_boundary_reason() -> None:
+	reasons = _reasons_for(
+		"src/widget.py",
+		[
+			"+    assert result.count == 3",
+			"+    assert other != expected",
+			"+    total = size + length_of(name)",
+		],
+	)
+
+	assert "boundary/index/limit logic touched" not in reasons
+
+
+def test_real_boundary_logic_still_trips() -> None:
+	reasons = _reasons_for(
+		"src/widget.py",
+		[
+			"+    if position <= maximum:",
+			"+        position = position + offset",
+		],
+	)
+
+	assert "boundary/index/limit logic touched" in reasons
+
+
+def test_common_words_do_not_trip_stateful_reason() -> None:
+	reasons = _reasons_for(
+		"src/panel.tsx",
+		[
+			"+    this.state = { event: null };",
+			"+    const callback = props.delegate;",
+			"+    setState(nextState);",
+		],
+	)
+
+	assert "state/concurrency-sensitive logic changed" not in reasons
+
+
+def test_real_concurrency_still_trips() -> None:
+	reasons = _reasons_for(
+		"src/panel.tsx",
+		[
+			"+    await lock.acquire();",
+			"+    this.state = { event: null };",
+		],
+	)
+
+	assert "state/concurrency-sensitive logic changed" in reasons

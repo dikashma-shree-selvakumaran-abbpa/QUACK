@@ -54,12 +54,16 @@ _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 _PUBLIC_CONTRACT_RE = re.compile(
 	r"^[+-]\s*(?:public\s+|export\s+)?(?:class|interface|enum|record|def\s+|function\s+)"
 )
+# == and != are equality, not boundary logic; they appear in every assertion
+# and conditional. count/length/size appear in almost every collection op.
 _BOUNDARY_RE = re.compile(
-	r"(?:<=|>=|==|!=|\b(?:boundary|index|offset|limit|range|count|length|size)\b)",
+	r"(?:<=|>=|\b(?:boundary|index|offset|limit|range)\b)",
 	re.IGNORECASE,
 )
+# state/event/callback/delegate are too common in ordinary application code
+# (any UI or component file has all four) to indicate concurrency.
 _STATEFUL_RE = re.compile(
-	r"\b(?:begincapture|endcapture|delegate|event|callback|state|lock|mutex|semaphore|thread|async|await)\b",
+	r"\b(?:begincapture|endcapture|lock|mutex|semaphore|thread|async|await)\b",
 	re.IGNORECASE,
 )
 _PATH_HINTS = (
