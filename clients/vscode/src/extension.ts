@@ -229,6 +229,108 @@ async function selectModel(): Promise<void> {
     );
     await refreshStatus();
 }
+function reportMarkdown(job: AgentJob, model: string): string {
+    const lines: string[] = [];
+    lines.push(`# quack review`);
+    lines.push("");
+    lines.push(`\`${job.repoPath}\``);
+    lines.push("");
+
+    const t1 = job.stages.tier1;
+    if (t1) {
+        lines.push("## Local checks");
+        lines.push("");
+        if (t1.note) {
+            lines.push(t1.note);
+        } else if (t1.blocked) {
+            lines.push(`**Blocked** by ${t1.findings.length} finding(s). No diff was sent to any model.`);
+            lines.push("");
+            lines.push("| File | Line | Rule | Message |");
+            lines.push("|---|---|---|---|");
+            for (const f of t1.findings) {
+                lines.push(`| \`${f.file}\` | ${f.line} | ${f.rule} | ${f.message} |`);
+            }
+        } else {
+            lines.push("Clean.");
+        }
+        lines.push("");
+    }
+
+    const t2 = job.stages.tier2;
+    if (t2) {
+        lines.push("## AI review");
+        lines.push("");
+        if (t2.available) {
+            lines.push(`**Risk: ${t2.risk}** · ${t2.model}`);
+            lines.push("");
+            lines.push(t2.summary ?? "");
+            lines.push("");
+            for (const r of t2.reasons ?? []) {
+                lines.push(`- ${r}`);
+            }
+            for (const m of t2.missingTests ?? []) {
+                lines.push(`- no test covers \`${m}\``);
+            }
+        } else {
+            lines.push(`Unavailable: ${t2.error}`);
+        }
+        lines.push("");
+    }
+
+    const inv = job.stages.investigation;
+    if (inv) {
+        lines.push("## Investigation");
+        lines.push("");
+        lines.push(inv.summary);
+        lines.push("");
+        if (inv.testsRun.length > 0) {
+            lines.push("**Tests run**");
+            lines.push("");
+            for (const test of inv.testsRun) {
+                lines.push(`- \`${test}\``);
+            }
+            lines.push("");
+        }
+        for (const f of inv.failures) {
+            lines.push(`**FAIL** \`${f.test}\` — ${f.diagnosis}`);
+            lines.push("");
+        }
+        if (inv.proposedNewTests) {
+            lines.push("## Proposed tests");
+            lines.push("");
+            lines.push("```");
+            lines.push(inv.proposedNewTests);
+            lines.push("```");
+            lines.push("");
+        }
+        if (inv.proposedPatch) {
+            lines.push("## Proposed patch");
+            lines.push("");
+            lines.push("Not applied.");
+            lines.push("");
+            lines.push("```diff");
+            lines.push(inv.proposedPatch);
+            lines.push("```");
+            lines.push("");
+        }
+    }
+
+    if (job.error) {
+        lines.push("## Error");
+        lines.push("");
+        lines.push(job.error);
+    }
+
+    return lines.join("\n");
+}
+
+async function openReport(job: AgentJob, model: string): Promise<void> {
+    const doc = await vscode.workspace.openTextDocument({
+        content: reportMarkdown(job, model),
+        language: "markdown",
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+}
 function renderStages(job: AgentJob, shown: Set<string>): void {
     const t1 = job.stages.tier1;
     if (t1 && !shown.has("tier1")) {
@@ -296,9 +398,9 @@ async function runAgent(): Promise<void> {
         return;
     }
 
+    const model = selectedModel();
     let job: AgentJob;
     try {
-        const model = selectedModel();
         job = await post("/agent", model ? { repo_path: root, model } : { repo_path: root });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -344,6 +446,9 @@ async function runAgent(): Promise<void> {
                     if (current.status === "error") {
                         output.appendLine("");
                         output.appendLine(`error: ${current.error}`);
+                    }
+                    if (current.status === "done") {
+                        await openReport(current, model);
                     }
                     return;
                 }
