@@ -790,3 +790,41 @@ def test_agent_does_not_block_on_warn_level_findings(monkeypatch) -> None:
 
 	assert result.exit_code == 0
 	assert "debug_code" in seen["findings"]
+
+
+# ---------------------------------------------------------------------------
+# _reconcile exit-code handling.
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_ignores_no_tests_collected() -> None:
+	# Exit 5 means pytest collected nothing, not that a test failed.
+	result = agent.AgentResult(summary="ok")
+	output = f"exit_code={agent.NO_TESTS_COLLECTED_EXIT}\nno tests ran in 0.01s"
+
+	reconciled = agent._reconcile(result, [output])
+
+	assert reconciled.failures == []
+	assert reconciled.summary == "ok"
+
+
+def test_reconcile_notes_unnamed_failure_without_fabricating_one() -> None:
+	result = agent.AgentResult(summary="ok")
+	output = "exit_code=1\nERROR: file or directory not found: tests/missing.py"
+
+	reconciled = agent._reconcile(result, [output])
+
+	assert reconciled.failures == []
+	assert "[verified]" in reconciled.summary
+	assert "no individual test name could be identified" in reconciled.summary
+	assert reconciled.summary.endswith("ok")
+
+
+def test_reconcile_still_records_named_failures() -> None:
+	result = agent.AgentResult(summary="ok")
+	output = "exit_code=1\nFAILED tests/test_x.py::test_y - AssertionError"
+
+	reconciled = agent._reconcile(result, [output])
+
+	assert [f["test"] for f in reconciled.failures] == ["tests/test_x.py::test_y"]
+	assert "[verified]" in reconciled.summary
