@@ -45,17 +45,17 @@ def test_reports_default_provider_when_env_is_unset():
 
 
 def test_reports_provider_selected_by_env(monkeypatch):
-	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
+	monkeypatch.setenv("QUACK_PROVIDER", "not_a_provider")
 
 	result = _invoke()
 
 	assert result.exit_code == 0
-	assert "Provider: github_models" in result.output
+	assert "Provider: not_a_provider" in result.output
 	assert "selected by QUACK_PROVIDER environment variable" in result.output
 
 
 def test_reports_availability_reason_and_suggested_fix(monkeypatch):
-	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
+	monkeypatch.setenv("QUACK_PROVIDER", "not_a_provider")
 	monkeypatch.setattr(cli.llmio, "availability_error", lambda: "no GITHUB_TOKEN")
 
 	result = _invoke()
@@ -70,15 +70,15 @@ def test_warns_about_token_shadowing_only_for_copilot(monkeypatch, token_name):
 	monkeypatch.setenv(token_name, "secret-value")
 
 	copilot_result = _invoke()
-	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
-	github_models_result = _invoke()
+	monkeypatch.setenv("QUACK_PROVIDER", "not_a_provider")
+	other_provider_result = _invoke()
 
 	assert copilot_result.exit_code == 0
 	assert f"{token_name} is set (length 12)" in copilot_result.output
 	assert "SHADOWS the Copilot CLI's stored login" in copilot_result.output
 	assert "secret-value" not in copilot_result.output
-	assert github_models_result.exit_code == 0
-	assert "SHADOWS" not in github_models_result.output
+	assert other_provider_result.exit_code == 0
+	assert "SHADOWS" not in other_provider_result.output
 
 
 def test_does_not_warn_when_no_ambient_token_is_set():

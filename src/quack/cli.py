@@ -435,9 +435,9 @@ def agent(model: str | None, fly: bool) -> None:
 	resolved_model = _resolve_agent_model(model)
 	provider = os.environ.get("QUACK_PROVIDER") or llmio.DEFAULT_PROVIDER
 	# Whether the agent can authenticate is a PROVIDER concern, not a CLI
-	# one: github_models needs GITHUB_TOKEN, but copilot_sdk authenticates
-	# via the Copilot CLI's stored OAuth login and never reads it. Ask the
-	# selected provider (via llmio) rather than hardcoding a token check.
+	# one: copilot_sdk authenticates via the Copilot CLI's stored OAuth
+	# login. Ask the selected provider (via llmio) rather than hardcoding
+	# a token check.
 	reason = llmio.availability_error()
 	if reason:
 		render.metadata(f"quack agent: {reason}")
@@ -706,7 +706,7 @@ def _availability_hint(reason: str) -> str:
 	if "not installed" in reason:
 		return "install the selected provider runtime"
 	if "unknown provider" in reason:
-		return "set QUACK_PROVIDER to github_models or copilot_sdk"
+		return "set QUACK_PROVIDER to copilot_sdk"
 	return "verify the selected provider's credentials and runtime"
 
 

@@ -35,7 +35,7 @@ def _stub_provider(name, complete_fn=None):
 
 
 def test_defaults_to_copilot_sdk_when_unset(monkeypatch):
-	# copilot_sdk is the approved (default) transport; github_models is opt-in.
+	# copilot_sdk is the approved (default) transport; others are opt-in.
 	monkeypatch.delenv("QUACK_PROVIDER", raising=False)
 	captured = {}
 
@@ -111,8 +111,8 @@ def test_default_timeout_reflects_selected_provider(monkeypatch):
 	stub.DEFAULT_TIMEOUT_S = 60.0
 	assert llmio.default_timeout() == 60.0
 
-	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
-	stub2 = _stub_provider("github_models")
+	monkeypatch.setenv("QUACK_PROVIDER", "not_a_provider")
+	stub2 = _stub_provider("not_a_provider")
 	stub2.DEFAULT_TIMEOUT_S = 6.0
 	assert llmio.default_timeout() == 6.0
 
@@ -133,8 +133,8 @@ def test_default_model_reflects_selected_provider_and_kind(monkeypatch):
 
 
 def test_default_model_none_on_unknown_kind(monkeypatch):
-	monkeypatch.setenv("QUACK_PROVIDER", "github_models")
-	stub = _stub_provider("github_models")
+	monkeypatch.setenv("QUACK_PROVIDER", "not_a_provider")
+	stub = _stub_provider("not_a_provider")
 	stub.DEFAULT_COMPLETION_MODEL = "openai/gpt-4o-mini"
 	stub.DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
 	assert llmio.default_model(kind="nonsense") is None
