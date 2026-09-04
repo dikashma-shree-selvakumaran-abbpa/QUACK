@@ -64,6 +64,21 @@ class InstallRequest(BaseModel):
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
+# Finished jobs are kept briefly so a client that reloads can still
+# collect its result, then dropped so the daemon does not grow forever.
+JOB_RETENTION_S = 1800.0
+
+
+def _sweep_jobs() -> None:
+	"""Drop finished jobs older than JOB_RETENTION_S - call with _jobs_lock held."""
+	cutoff = time.time() - JOB_RETENTION_S
+	for job_id in [
+		jid
+		for jid, job in _jobs.items()
+		if job["status"] != "running" and job["createdAt"] < cutoff
+	]:
+		del _jobs[job_id]
+
 
 def _resolve_repo_path(repo_path: str | None) -> tuple[str | None, str | None]:
 	"""Return (resolved repo root, error) - never falls back to the process cwd."""
@@ -442,6 +457,7 @@ def start_agent(req: AgentRequest | None = None) -> dict:
 		raise HTTPException(status_code=400, detail=error)
 
 	with _jobs_lock:
+		_sweep_jobs()
 		for job in _jobs.values():
 			if job["repoPath"] == root and job["status"] == "running":
 				return {
