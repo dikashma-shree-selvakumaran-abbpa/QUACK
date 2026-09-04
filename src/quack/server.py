@@ -432,7 +432,9 @@ def _run_agent_job(job_id: str, root: str, model: str | None) -> None:
 				timeout_s=agent.WALL_CLOCK_S,
 			)
 		except llmio.LLMUnavailable as exc:
-			result = agent._unavailable(exc.reason)
+			result = agent._unavailable(
+				agent._timeout_hint(exc.reason, resolved_model)
+			)
 		_set_stage(
 			job_id,
 			"investigation",

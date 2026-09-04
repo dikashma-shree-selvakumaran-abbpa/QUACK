@@ -586,3 +586,15 @@ def _unavailable(reason: str) -> AgentResult:
 		summary=f"AI analysis unavailable: {reason}. "
 		f"Verify the staged changes manually before pushing.",
 	)
+
+
+def _timeout_hint(reason: str, model: str) -> str:
+	"""Append model-choice advice when a reason is a timeout, else return it."""
+	if "timed out" not in reason.lower():
+		return reason
+	named = model or "the selected model"
+	return (
+		f"{reason} - smaller models such as {named} often cannot sustain the "
+		f"multi-step investigation loop; a larger model or the provider default "
+		f"is more likely to complete it"
+	)

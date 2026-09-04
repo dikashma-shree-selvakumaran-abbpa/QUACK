@@ -590,7 +590,9 @@ def agent(model: str | None, fly: bool) -> None:
 			)
 		except llmio.LLMUnavailable as exc:
 			# The pre-push agent is advisory and must never change hook success.
-			result = agent_mod._unavailable(exc.reason)
+			result = agent_mod._unavailable(
+				agent_mod._timeout_hint(exc.reason, resolved_model)
+			)
 	render.agent_report(result, fly=fly)
 	_log_agent_metrics(
 		started,
