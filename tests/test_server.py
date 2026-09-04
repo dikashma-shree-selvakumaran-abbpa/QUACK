@@ -233,3 +233,96 @@ def test_agent_cancel_marks_job_cancelled(monkeypatch, git_repo):
 	finally:
 		release.set()
 
+
+# ---------------------------------------------------------------------------
+# /metrics - per-user, so there is no repo_path and no real metrics file
+# ---------------------------------------------------------------------------
+
+
+def _metrics(monkeypatch, events) -> dict:
+	monkeypatch.setattr(server.metrics, "read", lambda: events)
+	res = TestClient(server.app).get("/metrics")
+	assert res.status_code == 200
+	return res.json()
+
+
+def test_metrics_unavailable_when_unreadable(monkeypatch):
+	assert _metrics(monkeypatch, None) == {
+		"schemaVersion": 1,
+		"available": False,
+		"totalRuns": 0,
+	}
+
+
+def test_metrics_aggregates_events(monkeypatch):
+	data = _metrics(
+		monkeypatch,
+		[
+			{
+				"command": "check",
+				"blocked": True,
+				"duration_ms": 100,
+				"tier1_findings": {"secrets": 2},
+				"review_cache": "hit",
+			},
+			{
+				"command": "check",
+				"blocked": False,
+				"duration_ms": 300,
+				"tier1_findings": {"secrets": 1, "merge_markers": 2},
+				"review_cache": "miss",
+			},
+			{"command": "agent", "duration_ms": 200, "review_cache": "hit"},
+			{"command": "agent"},
+		],
+	)
+
+	assert data["available"] is True
+	assert data["totalRuns"] == 4
+	assert data["runsByCommand"] == {"agent": 2, "check": 2}
+	assert data["blocks"] == 1
+	assert data["findings"] == {"secrets": 3, "merge_markers": 2}
+	assert data["medianDurationMs"] == 200
+	assert data["cacheHitRate"] == pytest.approx(2 / 3)
+
+
+def test_metrics_ignores_malformed_values(monkeypatch):
+	data = _metrics(
+		monkeypatch,
+		[
+			{
+				"command": "check",
+				# a bool is not a duration, even though bool subclasses int
+				"duration_ms": True,
+				"tier1_findings": {
+					"secrets": 0,
+					"merge_markers": -1,
+					"todos": "many",
+					"large_files": 2,
+				},
+				"review_cache": "stale",
+			},
+			{"command": "check", "duration_ms": 50, "review_cache": "hit"},
+		],
+	)
+
+	assert data["totalRuns"] == 2
+	assert data["blocks"] == 0
+	assert data["findings"] == {"large_files": 2}
+	assert data["medianDurationMs"] == 50
+	assert data["cacheHitRate"] == 1.0
+
+
+def test_metrics_null_when_no_data(monkeypatch):
+	data = _metrics(
+		monkeypatch,
+		[{"command": "check"}, {"command": "check", "blocked": True}],
+	)
+
+	assert data["totalRuns"] == 2
+	assert data["blocks"] == 1
+	# null means "no data", which is not the same as a real 0
+	assert data["medianDurationMs"] is None
+	assert data["cacheHitRate"] is None
+
+
