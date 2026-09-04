@@ -21,6 +21,10 @@
       {
         "command": "quack.agent",
         "title": "QUACK: Run AI review and investigation"
+      },
+      {
+        "command": "quack.selectModel",
+        "title": "QUACK: Select model"
       }
     ],
     "configuration": {
@@ -30,6 +34,11 @@
           "type": "string",
           "default": "http://127.0.0.1:8787",
           "description": "Base URL of the running quack serve instance."
+        },
+        "quack.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model id for AI review and investigation. Empty means use the server's default. Pick from the reachable catalog with 'QUACK: Select model'."
         }
       }
     }

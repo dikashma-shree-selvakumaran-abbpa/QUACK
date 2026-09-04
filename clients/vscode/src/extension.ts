@@ -175,6 +175,58 @@ async function runCheck(): Promise<void> {
     await refreshStatus();
 }
 
+interface ModelsResponse {
+    schemaVersion: number;
+    defaultModel: string;
+    models: { id: string; displayName: string; provider: string }[];
+}
+
+function selectedModel(): string {
+    return vscode.workspace.getConfiguration("quack").get<string>("model", "").trim();
+}
+
+async function selectModel(): Promise<void> {
+    let data: ModelsResponse;
+    try {
+        const res = await fetch(`${serverUrl()}/models`);
+        data = (await res.json()) as ModelsResponse;
+    } catch {
+        vscode.window.showErrorMessage(
+            `quack: no server at ${serverUrl()} - run 'quack serve'`
+        );
+        return;
+    }
+
+    const current = selectedModel();
+    const items: vscode.QuickPickItem[] = [
+        {
+            label: "Use the server default",
+            description: data.defaultModel ? `currently ${data.defaultModel}` : "",
+            detail: current === "" ? "selected" : undefined,
+        },
+        ...data.models.map((m) => ({
+            label: m.id,
+            detail: m.id === current ? "selected" : undefined,
+        })),
+    ];
+
+    const picked = await vscode.window.showQuickPick(items, {
+        title: "QUACK: model for AI review and investigation",
+        placeHolder: "Larger models cost more per run",
+    });
+    if (!picked) {
+        return;
+    }
+
+    const value = picked.label === "Use the server default" ? "" : picked.label;
+    await vscode.workspace
+        .getConfiguration("quack")
+        .update("model", value, vscode.ConfigurationTarget.Workspace);
+    vscode.window.showInformationMessage(
+        value ? `quack: using ${value}` : "quack: using the server default"
+    );
+    await refreshStatus();
+}
 function renderStages(job: AgentJob, shown: Set<string>): void {
     const t1 = job.stages.tier1;
     if (t1 && !shown.has("tier1")) {
@@ -244,7 +296,8 @@ async function runAgent(): Promise<void> {
 
     let job: AgentJob;
     try {
-        job = await post("/agent", { repo_path: root });
+        const model = selectedModel();
+        job = await post("/agent", model ? { repo_path: root, model } : { repo_path: root });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(`quack: ${message}`);
@@ -309,6 +362,7 @@ export function activate(context: vscode.ExtensionContext): void {
         statusBar,
         vscode.commands.registerCommand("quack.check", runCheck),
         vscode.commands.registerCommand("quack.agent", runAgent),
+        vscode.commands.registerCommand("quack.selectModel", selectModel),
         output
     );
     void refreshStatus();
