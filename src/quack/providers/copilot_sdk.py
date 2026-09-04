@@ -282,7 +282,7 @@ async def _complete_async(prompt: str, model: str, timeout_s: float) -> str:
 		# set or forward GITHUB_TOKEN; an env token shadows that login.
 		await _within_budget(client.start(), deadline, "runtime startup")
 		session = await _within_budget(
-			client.create_session(model=model), deadline, "inference"
+			client.create_session(model=model), deadline, "session setup"
 		)
 		for attempt in range(2):
 			try:
@@ -464,6 +464,8 @@ async def _run_agent_async(
 	client = CopilotClient()
 	try:
 		await _within_budget(client.start(), deadline, "runtime startup")
+		# Distinct stages are what let a timeout message identify which SDK
+		# operation ran out of budget.
 		session = await _within_budget(
 			client.create_session(
 				model=model,
@@ -474,7 +476,7 @@ async def _run_agent_async(
 				hooks={"on_pre_tool_use": pre_tool},
 			),
 			deadline,
-			"inference",
+			"agent session setup",
 		)
 		prompt = (
 			agent.SYSTEM_PROMPT
@@ -483,13 +485,13 @@ async def _run_agent_async(
 			+ "\n\n"
 			+ _NATIVE_FINAL_INSTRUCTION
 		)
-		response = await _within_budget(session.send_and_wait(prompt), deadline, "inference")
+		response = await _within_budget(session.send_and_wait(prompt), deadline, "agent investigation")
 		content = _value(_value(response, "data"), "content")
 		result = agent._parse_and_validate(content)
 		if result is None:
 			# Native turns have no OpenAI message history to retry; ask the same
 			# session once for schema correction, preserving the one-retry contract.
-			response = await _within_budget(session.send_and_wait(agent._RETRY_MESSAGE), deadline, "inference")
+			response = await _within_budget(session.send_and_wait(agent._RETRY_MESSAGE), deadline, "agent schema retry")
 			content = _value(_value(response, "data"), "content")
 			result = agent._parse_and_validate(content)
 		return agent._finalize(result, "final JSON schema validation failed", test_outputs)
