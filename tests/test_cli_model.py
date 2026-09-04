@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from click.testing import CliRunner
 
@@ -195,3 +197,62 @@ def test_no_warning_when_resolved_models_are_reachable(monkeypatch):
 
 	assert result.exit_code == 0
 	assert "NOT in the provider's reachable list" not in result.output
+
+
+def test_list_prints_only_model_ids():
+	result = _invoke("--list")
+
+	assert result.exit_code == 0
+	assert "model-a" in result.output
+	assert "model-b" in result.output
+	assert "Provider:" not in result.output
+	assert "Auth status:" not in result.output
+	assert "Timeout:" not in result.output
+
+
+def test_list_marks_the_current_defaults(monkeypatch):
+	monkeypatch.setattr(
+		cli.llmio,
+		"list_models",
+		lambda: ["model-a", "default-completion", "default-agent"],
+	)
+
+	result = _invoke("--list")
+
+	assert result.exit_code == 0
+	assert "(completion default)" in result.output
+	assert "(agent default)" in result.output
+
+
+def test_list_marks_one_model_for_both_kinds(monkeypatch):
+	monkeypatch.setattr(cli.llmio, "default_model", lambda kind="completion": "shared")
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["model-a", "shared"])
+
+	result = _invoke("--list")
+
+	assert result.exit_code == 0
+	shared_lines = [line for line in result.output.splitlines() if "shared" in line]
+	assert len(shared_lines) == 1
+	assert "completion default" in shared_lines[0]
+	assert "agent default" in shared_lines[0]
+
+
+def test_list_is_fail_open_when_catalog_unavailable(monkeypatch):
+	def fail():
+		raise LLMUnavailable("model list unavailable: 401: token lacks permission")
+
+	monkeypatch.setattr(cli.llmio, "list_models", fail)
+
+	result = _invoke("--list")
+
+	assert result.exit_code == 0
+	assert "model catalog unavailable" in result.output
+	assert "401: token lacks permission" in result.output
+
+
+def test_json_wins_over_list():
+	result = _invoke("--json", "--list")
+
+	assert result.exit_code == 0
+	payload = json.loads(result.output)
+	assert payload["schemaVersion"] == 1

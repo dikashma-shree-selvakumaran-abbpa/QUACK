@@ -796,6 +796,27 @@ def _render_model_diagnostic(cli_model: str | None) -> None:
 					)
 
 
+def _echo_model_list(cli_model: str | None) -> None:
+	"""Print reachable model ids one per line, marking the current defaults."""
+	try:
+		models = llmio.list_models()
+	except Exception as exc:
+		# Read-only convenience: never a failure mode.
+		click.echo(f"model catalog unavailable: {_model_list_failure_reason(exc)}")
+		return
+
+	markers: dict[str, list[str]] = {}
+	for kind, label in (("completion", "completion default"), ("agent", "agent default")):
+		resolved, _ = _diagnostic_model(kind, cli_model)
+		if resolved:
+			markers.setdefault(resolved, []).append(label)
+
+	width = max((len(m) for m in models if m in markers), default=0)
+	for m in models:
+		labels = markers.get(m)
+		click.echo(f"{m.ljust(width)}  ({', '.join(labels)})" if labels else m)
+
+
 @main.command()
 @click.option(
 	"--model",
@@ -809,7 +830,14 @@ def _render_model_diagnostic(cli_model: str | None) -> None:
 	default=False,
 	help="Emit machine-readable model diagnostic payload as JSON and suppress terminal rendering.",
 )
-def model(model: str | None, as_json: bool) -> None:
+@click.option(
+	"--list",
+	"as_list",
+	is_flag=True,
+	default=False,
+	help="List the reachable model ids and exit.",
+)
+def model(model: str | None, as_json: bool, as_list: bool) -> None:
 	"""Report model configuration and connectivity without changing it."""
 	# This command is intentionally read-only; it reports defaults but never sets them.
 	if as_json:
@@ -840,6 +868,10 @@ def model(model: str | None, as_json: bool) -> None:
 			],
 		}
 		click.echo(json.dumps(payload, separators=(",", ":")))
+		return
+
+	if as_list:
+		_echo_model_list(model)
 		return
 
 	try:
