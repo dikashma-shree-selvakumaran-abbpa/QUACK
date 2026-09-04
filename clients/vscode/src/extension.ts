@@ -107,17 +107,19 @@ async function post(path: string, body: unknown): Promise<any> {
 }
 
 async function refreshStatus(): Promise<void> {
+    const chosen = selectedModel();
+    const modelLine = chosen ? `Model: ${chosen}` : "Model: server default";
     try {
         const res = await fetch(`${serverUrl()}/status`);
         const data = (await res.json()) as StatusResponse;
         const build = data.buildCommit ? ` (${data.buildCommit})` : "";
         statusBar.text = `$(check) quack ${data.version}${build}`;
         statusBar.tooltip = data.availabilityError
-            ? `Provider problem: ${data.availabilityError}`
-            : `Connected to ${serverUrl()}`;
+            ? `Provider problem: ${data.availabilityError}\n${modelLine}`
+            : `Connected to ${serverUrl()}\n${modelLine}`;
     } catch {
         statusBar.text = "$(circle-slash) quack offline";
-        statusBar.tooltip = `No quack server at ${serverUrl()} - run 'quack serve'`;
+        statusBar.tooltip = `No quack server at ${serverUrl()} - run 'quack serve'\n${modelLine}`;
     }
     statusBar.show();
 }
