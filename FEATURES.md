@@ -35,8 +35,8 @@ while the developer works or at pre-push via `quack agent`.
 
 - **pre-commit (`quack`)** — local checks only (Tier 1 + gitleaks). No network,
   no code leaves the machine.
-- **pre-push (`quack-agent`)** — AI review, plus the investigative agent where
-  the provider supports tool calling.
+- **pre-push (`quack-agent`)** — AI review, plus the investigative agent, which
+  runs on the Copilot SDK's custom-tool session.
 
 `quack install` writes both entries into `.pre-commit-config.yaml` and installs
 both hook types (the default pre-commit hook and
@@ -55,26 +55,21 @@ already-installed pre-commit checks active.
 
 **Model resolution order:** `--model` flag → `QUACK_MODEL` env var →
 provider-specific default. `copilot_sdk` defaults to `claude-haiku-4.5` for
-single-shot review and `claude-sonnet-4.5` for the agent; `github_models`
-defaults to `openai/gpt-4o-mini` and `openai/gpt-4.1` respectively. `check`
-uses **no model** — it makes no AI calls.
+single-shot review and `claude-sonnet-5` for the agent. `check` uses **no
+model** — it makes no AI calls.
 
 **Relevant env vars:** `QUACK_PROVIDER` (LLM transport — see below),
-`GITHUB_TOKEN` (required by the `github_models` provider), `QUACK_MODEL`
-(model override), `QUACK_DISABLE_GITLEAKS` (skip gitleaks), and `NO_COLOR`
-(plain output). `GITHUB_TOKEN`, `GH_TOKEN`, and `COPILOT_GITHUB_TOKEN` should
-be unset when using `copilot_sdk`, because ambient tokens can shadow the
+`QUACK_MODEL` (model override), `QUACK_DISABLE_GITLEAKS` (skip gitleaks), and
+`NO_COLOR` (plain output). `GITHUB_TOKEN`, `GH_TOKEN`, and
+`COPILOT_GITHUB_TOKEN` should be unset, because ambient tokens can shadow the
 Copilot CLI login.
 
-**LLM provider:** `QUACK_PROVIDER` selects the transport, defaulting to
-**`copilot_sdk`**. The Copilot SDK is the approved transport at ABB; GitHub
-Models via a PAT is not, so the compliant path is the default rather than an
-opt-in. `github_models` remains available via `QUACK_PROVIDER=github_models`
-because it is currently the **only** provider that supports tool calling.
-The default `copilot_sdk` provider uses the Copilot SDK's native custom-tool
-session for the investigation. `github_models` remains selectable and keeps the
-existing OpenAI-style tool-call loop reachable; the provider change does not
-alter the tool contracts or the fail-open command behavior.
+**LLM provider:** `QUACK_PROVIDER` selects the transport, and `copilot_sdk` is
+the only supported value. The Copilot SDK is the approved transport at ABB;
+GitHub Models via a PAT is not, so the compliant path is the only path.
+`copilot_sdk` uses the Copilot SDK's native custom-tool session for the
+investigation, authenticated by the Copilot CLI's stored OAuth login; no
+`GITHUB_TOKEN` is used.
 
 ---
 
@@ -155,9 +150,8 @@ coverage as an optional upgrade.
 - **Privacy:** the diff is **redacted before it leaves the machine.**
   `tier1.redact()` replaces every detected secret with `[REDACTED]`, and Tier 2
   builds its prompt from that redacted delta (`"Staged diff (redacted):"`).
-- **Transport:** `llmio.complete()` selects `copilot_sdk` by default, using the
-  Copilot CLI's stored OAuth login, or `github_models` when explicitly selected
-  with `QUACK_PROVIDER=github_models` and `GITHUB_TOKEN`. All transport failures
+- **Transport:** `llmio.complete()` uses `copilot_sdk`, the only provider, which
+  authenticates with the Copilot CLI's stored OAuth login. All transport failures
   normalize to `LLMUnavailable` — no login, token, network error, or bad
   response ever crashes the hook; Tier 2 reports that review is unavailable.
 - **Project instructions:** repo-local guidance is loaded by
@@ -198,8 +192,7 @@ framework.
 With `copilot_sdk`, the SDK runtime owns turn progression: quack registers
 `read_file`, `list_dir`, and `run_tests` as custom tools and uses
 `on_pre_tool_use` as the authoritative validation and budget gate. The handlers
-still enforce containment and delegate test execution only to `runio.py`. The
-legacy `github_models` provider uses the existing OpenAI-style loop.
+still enforce containment and delegate test execution only to `runio.py`.
 
 The native opening prompt asks the model to investigate first and requests the
 final JSON only after investigation; the budget-exhaustion instruction is not

@@ -35,7 +35,7 @@ quack watch: redacted-diff AI review ────────────── 
 		   │
 quack agent: pre-push AI review ─────────────────── advisory review of unpushed commits
 		   │
-		   └─ optional tool-calling investigation ─ github_models provider only
+		   └─ optional tool-calling investigation ─ Copilot SDK custom-tool session
 ```
 
 | Surface | When | Network | Authority |
@@ -72,13 +72,13 @@ quack agent: pre-push AI review ────────────────
 
 ### Provider and privacy story
 
-- The default provider is `copilot_sdk`, which uses the Copilot CLI's stored
-  OAuth login; no personal access token is needed for default advisory reviews.
+- The only provider is `copilot_sdk`, which uses the Copilot CLI's stored
+  OAuth login; no personal access token is needed for advisory reviews.
 - Ambient `GITHUB_TOKEN`, `GH_TOKEN`, and `COPILOT_GITHUB_TOKEN` values can
   shadow that login and should be unset when using the Copilot SDK.
-- `QUACK_PROVIDER=github_models` plus `GITHUB_TOKEN` enables the optional
-  OpenAI-style tool-calling investigation loop.
-- Detected secrets are redacted before a diff is sent to either AI provider.
+- The optional tool-calling investigation runs on the same provider, through the
+  Copilot SDK's own custom-tool session.
+- Detected secrets are redacted before a diff is sent to the AI provider.
 - Metrics are stored locally as sanitized aggregates; they contain no code,
   paths, repository names, commit messages, or token values.
 
@@ -99,7 +99,7 @@ quack agent: pre-push AI review ────────────────
 | Does it slow down commits? | The commit path is local only; AI runs via watch mode or at pre-push. |
 | Does it block because AI is unavailable? | No. AI, gitleaks, and the agent are advisory and fail open. |
 | Does code leave the machine at commit time? | No. At watch/pre-push, only the redacted diff is sent to the selected provider. |
-| Can the agent run with the default provider? | The default Copilot SDK provides review. The optional tool-calling loop requires `github_models` and `GITHUB_TOKEN`. |
+| Can the agent run with the default provider? | Yes. Both the review and the tool-calling investigation run on the Copilot SDK, authenticated by the Copilot CLI login. |
 | Does it work in an IDE? | Yes. These are Git hooks, so they work with terminal and IDE Git clients. |
 
 ## Adoption
