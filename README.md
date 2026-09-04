@@ -142,8 +142,9 @@ Each tagged release also attaches a frozen `quack.exe` and the matching
 `quack-abb-<version>.vsix`; the release build fails if the extension version and
 the tag disagree.
 
-See [SETUP.md](SETUP.md) for details and troubleshooting and [CURRENT_STATE.md](CURRENT_STATE.md) for the
-code-grounded v0.3.0 architecture snapshot.
+See [SETUP.md](SETUP.md) for installation details and troubleshooting, and
+[FEATURES.md](FEATURES.md) for a code-grounded description of what each feature
+actually does.
 
 ## Status
 

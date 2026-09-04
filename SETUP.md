@@ -110,7 +110,7 @@ GitHub Models PAT, API key, or config file: the Copilot CLI login is sufficient.
 The agent runs on `copilot_sdk` through the Copilot SDK's own session API,
 authenticated by the Copilot CLI's stored OAuth login; no `GITHUB_TOKEN` is used.
 
-For the code-grounded v0.3.0 implementation snapshot, see
-[CURRENT_STATE.md](CURRENT_STATE.md). Keep live recording scripts with the
+For a code-grounded description of what each feature actually does, see
+[FEATURES.md](FEATURES.md). Keep live recording scripts with the
 demo materials so timing-dependent transcripts are not treated as product
 behavior guarantees.

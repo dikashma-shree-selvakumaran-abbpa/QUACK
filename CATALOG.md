@@ -1,4 +1,4 @@
-﻿# QUACK — Capability Catalog & Showcase
+# QUACK — Capability Catalog & Showcase
 
 > An overview of **quack** v0.3.1. For the live,
 
@@ -133,4 +133,4 @@ quack agent: pre-push AI review ────────────────
 6. For editor use, install the release `.vsix` and keep `quack serve` running.
 
 For installation and troubleshooting, see [SETUP.md](SETUP.md). For the
-implementation-verified v0.3.0 details, see [CURRENT_STATE.md](CURRENT_STATE.md).
+implementation-verified feature detail, see [FEATURES.md](FEATURES.md).
