@@ -26,6 +26,37 @@ interface CheckResponse {
     aiError: string | null;
 }
 
+interface AgentStages {
+    tier1: { blocked: boolean; findings: Finding[]; note?: string } | null;
+    tier2: {
+        available: boolean;
+        model?: string;
+        risk?: string;
+        summary?: string;
+        reasons?: string[];
+        testsToRun?: string[];
+        missingTests?: string[];
+        error?: string;
+    } | null;
+    investigation: {
+        summary: string;
+        testsRun: string[];
+        failures: { test: string; diagnosis: string }[];
+        proposedPatch: string | null;
+        proposedNewTests: string | null;
+    } | null;
+}
+
+interface AgentJob {
+    schemaVersion: number;
+    jobId: string;
+    status: "running" | "done" | "error" | "cancelled";
+    repoPath: string;
+    stages: AgentStages;
+    error: string | null;
+}
+
+let output: vscode.OutputChannel;
 let diagnostics: vscode.DiagnosticCollection;
 let statusBar: vscode.StatusBarItem;
 
@@ -144,7 +175,129 @@ async function runCheck(): Promise<void> {
     await refreshStatus();
 }
 
+function renderStages(job: AgentJob, shown: Set<string>): void {
+    const t1 = job.stages.tier1;
+    if (t1 && !shown.has("tier1")) {
+        shown.add("tier1");
+        if (t1.note) {
+            output.appendLine(t1.note);
+        } else if (t1.blocked) {
+            output.appendLine(`BLOCKED by ${t1.findings.length} tier 1 finding(s):`);
+            for (const f of t1.findings) {
+                output.appendLine(`  ${f.file}:${f.line}  ${f.rule}  ${f.message}`);
+            }
+            output.appendLine("No diff was sent to any model.");
+        } else {
+            output.appendLine("Tier 1: clean");
+        }
+    }
+
+    const t2 = job.stages.tier2;
+    if (t2 && !shown.has("tier2")) {
+        shown.add("tier2");
+        output.appendLine("");
+        if (t2.available) {
+            output.appendLine(`AI review (${t2.model}) - risk: ${t2.risk}`);
+            output.appendLine(`  ${t2.summary}`);
+            for (const r of t2.reasons ?? []) {
+                output.appendLine(`  - ${r}`);
+            }
+            for (const m of t2.missingTests ?? []) {
+                output.appendLine(`  no test covers ${m}`);
+            }
+        } else {
+            output.appendLine(`AI review unavailable (${t2.error})`);
+        }
+    }
+
+    const inv = job.stages.investigation;
+    if (inv && !shown.has("investigation")) {
+        shown.add("investigation");
+        output.appendLine("");
+        output.appendLine("Investigation");
+        output.appendLine(`  ${inv.summary}`);
+        for (const test of inv.testsRun) {
+            output.appendLine(`  ran: ${test}`);
+        }
+        for (const f of inv.failures) {
+            output.appendLine(`  FAIL ${f.test}: ${f.diagnosis}`);
+        }
+        if (inv.proposedNewTests) {
+            output.appendLine("");
+            output.appendLine("Proposed tests:");
+            output.appendLine(inv.proposedNewTests);
+        }
+        if (inv.proposedPatch) {
+            output.appendLine("");
+            output.appendLine("Proposed patch (not applied):");
+            output.appendLine(inv.proposedPatch);
+        }
+    }
+}
+
+async function runAgent(): Promise<void> {
+    const root = workspaceRoot();
+    if (!root) {
+        vscode.window.showWarningMessage("quack: open a folder first.");
+        return;
+    }
+
+    let job: AgentJob;
+    try {
+        job = await post("/agent", { repo_path: root });
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`quack: ${message}`);
+        return;
+    }
+
+    output.clear();
+    output.show(true);
+    output.appendLine(`quack agent - ${root}`);
+    output.appendLine("");
+
+    await vscode.window.withProgress(
+        {
+            location: vscode.ProgressLocation.Notification,
+            title: "quack: analyzing",
+            cancellable: true,
+        },
+        async (progress, token) => {
+            const shown = new Set<string>();
+            token.onCancellationRequested(() => {
+                void fetch(`${serverUrl()}/agent/${job.jobId}`, { method: "DELETE" });
+            });
+
+            for (;;) {
+                await new Promise((r) => setTimeout(r, 2000));
+                if (token.isCancellationRequested) {
+                    return;
+                }
+                let current: AgentJob;
+                try {
+                    const res = await fetch(`${serverUrl()}/agent/${job.jobId}`);
+                    current = (await res.json()) as AgentJob;
+                } catch {
+                    output.appendLine("lost contact with the quack server");
+                    return;
+                }
+                renderStages(current, shown);
+                progress.report({
+                    message: current.stages.tier2 ? "investigating" : "reviewing changes",
+                });
+                if (current.status !== "running") {
+                    if (current.status === "error") {
+                        output.appendLine("");
+                        output.appendLine(`error: ${current.error}`);
+                    }
+                    return;
+                }
+            }
+        }
+    );
+}
 export function activate(context: vscode.ExtensionContext): void {
+    output = vscode.window.createOutputChannel("quack");
     diagnostics = vscode.languages.createDiagnosticCollection("quack");
     statusBar = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Left,
@@ -154,7 +307,9 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         diagnostics,
         statusBar,
-        vscode.commands.registerCommand("quack.check", runCheck)
+        vscode.commands.registerCommand("quack.check", runCheck),
+        vscode.commands.registerCommand("quack.agent", runAgent),
+        output
     );
     void refreshStatus();
 }

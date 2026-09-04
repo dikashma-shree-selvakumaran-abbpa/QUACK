@@ -17,6 +17,10 @@
       {
         "command": "quack.check",
         "title": "QUACK: Check staged changes"
+      },
+      {
+        "command": "quack.agent",
+        "title": "QUACK: Run AI review and investigation"
       }
     ],
     "configuration": {
