@@ -4,3 +4,6 @@ src/**
 out/**/*.map
 tsconfig.json
 **/*.ts
+.gitignore
+.vscodeignore
+*.vsix
