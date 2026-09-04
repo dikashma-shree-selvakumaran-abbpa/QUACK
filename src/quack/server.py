@@ -6,12 +6,14 @@ from collections import Counter
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import shutil
 from statistics import median
+import subprocess
 import threading
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 import quack
@@ -47,6 +49,14 @@ class ReviewRequest(BaseModel):
 class AgentRequest(BaseModel):
 	repo_path: str | None = None
 	model: str | None = None
+
+
+class InstallRequest(BaseModel):
+	repo_path: str | None = None
+	use_local: bool = False
+	quack_path: str | None = None
+	install_gitleaks: bool = False
+	consent_husky: bool = False
 
 
 # Agent jobs live only in memory: `quack agent` takes 60-90s, so clients start
@@ -474,6 +484,169 @@ def cancel_agent_job(job_id: str) -> dict:
 			raise HTTPException(status_code=404, detail=f"unknown job: {job_id}")
 		job["status"] = "cancelled"
 	return {"schemaVersion": 1, "jobId": job_id, "status": "cancelled"}
+
+
+def _install_strategy(root: str) -> tuple[str, str | None]:
+	"""Return (strategy, hooksPath) for the repository at ``root``."""
+	hooks_path = cli._hooks_path(root=root)
+	if not hooks_path:
+		return "precommit", None
+	if cli._is_husky(hooks_path):
+		return "husky", hooks_path
+	return "unsupported_hooks_path", hooks_path
+
+
+def _tracked(root: str, relative: str) -> bool:
+	try:
+		result = subprocess.run(
+			["git", "ls-files", "--error-unmatch", relative],
+			capture_output=True,
+			text=True,
+			check=False,
+			cwd=root,
+		)
+	except OSError:
+		return False
+	return result.returncode == 0
+
+
+@app.get("/install/plan")
+def install_plan(repo_path: str | None = Query(default=None)) -> dict:
+	root, error = _resolve_repo_path(repo_path)
+	if root is None:
+		raise HTTPException(status_code=400, detail=error)
+
+	strategy, hooks_path = _install_strategy(root)
+	husky_tracked = strategy == "husky" and (
+		_tracked(root, ".husky/pre-commit") or _tracked(root, ".husky/pre-push")
+	)
+	return {
+		"schemaVersion": 1,
+		"repository": root,
+		"strategy": strategy,
+		"hooksPath": hooks_path,
+		"huskyFilesTracked": husky_tracked,
+		"preCommitAvailable": shutil.which("pre-commit") is not None,
+		"gitleaksAvailable": gitleaks.available(),
+	}
+
+
+def _step(name: str, ok: bool, detail: str) -> dict:
+	return {"name": name, "ok": ok, "detail": detail}
+
+
+@app.post("/install")
+def install(req: InstallRequest | None = None) -> dict:
+	req = req or InstallRequest()
+	root, error = _resolve_repo_path(req.repo_path)
+	if root is None:
+		raise HTTPException(status_code=400, detail=error)
+
+	strategy, hooks_path = _install_strategy(root)
+	if strategy == "unsupported_hooks_path":
+		raise HTTPException(
+			status_code=409,
+			detail=(
+				f"core.hooksPath is set to {hooks_path}; quack cannot install "
+				f"hooks automatically"
+			),
+		)
+	if strategy == "husky" and req.consent_husky is not True:
+		raise HTTPException(
+			status_code=409,
+			detail=(
+				"husky hooks are tracked in git: installing quack affects everyone "
+				"on this branch, so explicit consent is required"
+			),
+		)
+
+	# Quote: Windows paths have spaces.
+	quack_cmd = f'"{req.quack_path}"' if req.quack_path else "quack"
+	steps: list[dict] = []
+
+	if strategy == "husky":
+		husky_dir = Path(root) / ".husky"
+		husky_dir.mkdir(exist_ok=True)
+		for hook, command in (
+			("pre-commit", f"{quack_cmd} check"),
+			("pre-push", f"{quack_cmd} agent"),
+		):
+			try:
+				action = cli._install_into_husky(husky_dir / hook, command)
+				steps.append(
+					_step(f"husky:{hook}", True, f"{action} quack block in .husky/{hook}")
+				)
+			except OSError as exc:
+				steps.append(_step(f"husky:{hook}", False, _bounded(str(exc))))
+	else:
+		config_path = Path(root) / ".pre-commit-config.yaml"
+		try:
+			if req.use_local:
+				cli._upsert_local_stanza(config_path, req.quack_path)
+			else:
+				cli._upsert_precommit_stanza(config_path)
+			steps.append(_step("config", True, f"updated {config_path}"))
+		except Exception as exc:
+			steps.append(_step("config", False, _bounded(str(exc))))
+
+		if shutil.which("pre-commit"):
+			# Independent runs: a pre-push failure must not undo a successful
+			# pre-commit install.
+			for name, args in (
+				("pre-commit-hook", ["pre-commit", "install"]),
+				(
+					"pre-push-hook",
+					["pre-commit", "install", "--hook-type", "pre-push"],
+				),
+			):
+				try:
+					result = subprocess.run(
+						args,
+						capture_output=True,
+						text=True,
+						check=False,
+						cwd=root,
+					)
+				except OSError as exc:
+					steps.append(_step(name, False, _bounded(str(exc))))
+					continue
+				ok = result.returncode == 0
+				steps.append(
+					_step(
+						name,
+						ok,
+						"installed"
+						if ok
+						else f"`{' '.join(args)}` failed ({result.returncode})",
+					)
+				)
+		else:
+			steps.append(
+				_step(
+					"pre-commit-hook",
+					False,
+					"`pre-commit` not found; install it with: pipx install pre-commit",
+				)
+			)
+
+	if req.install_gitleaks:
+		installed, message = gitleaks.ensure_installed()
+		steps.append(_step("gitleaks", installed, message))
+	else:
+		steps.append(
+			_step(
+				"gitleaks",
+				gitleaks.available(),
+				"gitleaks available" if gitleaks.available() else "gitleaks not installed (skipped)",
+			)
+		)
+
+	return {
+		"schemaVersion": 1,
+		"repository": root,
+		"strategy": strategy,
+		"steps": steps,
+	}
 
 
 @app.get("/status")

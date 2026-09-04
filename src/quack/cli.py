@@ -1002,7 +1002,7 @@ QUACK_HOOK_START = "# >>> quack managed block >>>"
 QUACK_HOOK_END = "# <<< quack managed block <<<"
 
 
-def _hooks_path() -> str | None:
+def _hooks_path(*, root: str | None = None) -> str | None:
 	"""Return git's configured core.hooksPath, or None when unset.
 
 	When this is set, git ignores .git/hooks entirely -- so `pre-commit install`
@@ -1016,6 +1016,7 @@ def _hooks_path() -> str | None:
 			capture_output=True,
 			text=True,
 			check=False,
+			cwd=root,
 		)
 	except OSError:
 		return None
