@@ -326,3 +326,97 @@ def test_metrics_null_when_no_data(monkeypatch):
 	assert data["cacheHitRate"] is None
 
 
+# ---------------------------------------------------------------------------
+# /install/plan and /install
+# ---------------------------------------------------------------------------
+
+
+def _set_hooks_path(repo: str, value: str) -> None:
+	subprocess.run(
+		["git", "config", "core.hooksPath", value],
+		cwd=repo,
+		check=True,
+		capture_output=True,
+	)
+
+
+def _plan(repo: str) -> dict:
+	res = TestClient(server.app).get("/install/plan", params={"repo_path": repo})
+	assert res.status_code == 200
+	return res.json()
+
+
+def test_install_plan_reports_precommit_strategy(git_repo):
+	data = _plan(git_repo)
+	assert data["strategy"] == "precommit"
+	assert data["hooksPath"] is None
+	assert data["huskyFilesTracked"] is False
+	assert "preCommitAvailable" in data
+	assert "gitleaksAvailable" in data
+
+
+def test_install_plan_detects_husky(git_repo):
+	_set_hooks_path(git_repo, ".husky")
+	data = _plan(git_repo)
+	assert data["strategy"] == "husky"
+	assert data["hooksPath"] == ".husky"
+
+
+def test_install_plan_flags_unsupported_hooks_path(git_repo):
+	_set_hooks_path(git_repo, ".myhooks")
+	assert _plan(git_repo)["strategy"] == "unsupported_hooks_path"
+
+
+def test_install_requires_husky_consent(git_repo):
+	_set_hooks_path(git_repo, ".husky")
+	res = TestClient(server.app).post("/install", json={"repo_path": git_repo})
+	assert res.status_code == 409
+	# The refusal must be total: husky hooks are tracked, so touching them
+	# would change the hook for everyone on the branch.
+	assert not (Path(git_repo) / ".husky").exists()
+
+
+def test_install_rejects_unsupported_hooks_path(git_repo):
+	_set_hooks_path(git_repo, ".myhooks")
+	res = TestClient(server.app).post("/install", json={"repo_path": git_repo})
+	assert res.status_code == 409
+
+
+def test_install_writes_local_stanza(monkeypatch, git_repo):
+	monkeypatch.setattr(server.shutil, "which", lambda cmd: None)
+	res = TestClient(server.app).post(
+		"/install",
+		json={"repo_path": git_repo, "use_local": True, "install_gitleaks": False},
+	)
+	assert res.status_code == 200
+	data = res.json()
+	assert data["strategy"] == "precommit"
+
+	config = Path(git_repo) / ".pre-commit-config.yaml"
+	assert config.exists()
+	text = config.read_text(encoding="utf-8")
+	assert "id: quack" in text
+	assert "id: quack-agent" in text
+
+	config_step = next(s for s in data["steps"] if s["name"] == "config")
+	assert config_step["ok"] is True
+
+
+def test_install_does_not_bootstrap_gitleaks_unless_asked(monkeypatch, git_repo):
+	monkeypatch.setattr(server.shutil, "which", lambda cmd: None)
+	monkeypatch.setattr(server.gitleaks, "ensure_installed", _explode)
+	res = TestClient(server.app).post(
+		"/install",
+		json={"repo_path": git_repo, "use_local": True, "install_gitleaks": False},
+	)
+	assert res.status_code == 200
+	assert any(s["name"] == "gitleaks" for s in res.json()["steps"])
+
+
+def test_install_requires_repo_path():
+	client = TestClient(server.app)
+	assert client.post("/install", json={}).status_code == 400
+	assert client.get("/install/plan").status_code in {400, 422}
+
+
+
