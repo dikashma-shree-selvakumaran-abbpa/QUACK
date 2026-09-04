@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import subprocess
+import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from quack import server
+from quack import agent, server
+
+# Assembled from fragments so quack's own secrets check does not fire on this
+# source file. The file written into the temp repo still contains the full
+# key, which is what the test needs tier1 to catch.
+_FAKE_AWS_KEY = "AKIA" + "1234567890ABCDEF"
 
 
 @pytest.fixture
@@ -87,3 +95,141 @@ def test_review_rejects_non_repository(tmp_path):
 		"/review", json={"repo_path": str(tmp_path), "model": "gpt-4"}
 	)
 	assert res.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# /agent
+# ---------------------------------------------------------------------------
+
+
+def _stage(repo: str, name: str, content: str) -> None:
+	(Path(repo) / name).write_text(content, encoding="utf-8")
+	subprocess.run(["git", "add", name], cwd=repo, check=True, capture_output=True)
+
+
+def _settled(client, job_id: str, timeout_s: float = 15.0) -> dict:
+	"""Poll until the job leaves "running" - fail the test if it never does."""
+	deadline = time.monotonic() + timeout_s
+	while time.monotonic() < deadline:
+		res = client.get(f"/agent/{job_id}")
+		assert res.status_code == 200
+		data = res.json()
+		if data["status"] != "running":
+			return data
+		time.sleep(0.02)
+	pytest.fail(f"job {job_id} never settled")
+
+
+def _explode(*args, **kwargs):
+	raise AssertionError("a model boundary was called")
+
+
+def test_agent_tier1_block_never_calls_a_model(monkeypatch, git_repo):
+	_stage(git_repo, "aws.py", f'KEY = "{_FAKE_AWS_KEY}"\n')
+	monkeypatch.setattr(server.llmio, "availability_error", lambda: None)
+	monkeypatch.setattr(server.tier2, "review_with_reason", _explode)
+	monkeypatch.setattr(server.copilot_sdk, "run_agent", _explode)
+
+	client = TestClient(server.app)
+	res = client.post("/agent", json={"repo_path": git_repo, "model": "stub-model"})
+	assert res.status_code == 200
+	job = _settled(client, res.json()["jobId"])
+
+	assert job["status"] == "done"
+	assert job["stages"]["tier1"]["blocked"] is True
+	assert any(f["rule"] == "secrets" for f in job["stages"]["tier1"]["findings"])
+	assert job["stages"]["tier2"] is None
+	assert job["stages"]["investigation"] is None
+
+
+def test_agent_runs_all_stages(monkeypatch, git_repo):
+	_stage(git_repo, "calc.py", "def add(a, b):\n\treturn a + b\n")
+	review = server.tier2.ReviewResult(
+		risk="LOW",
+		reasons=["small change"],
+		tests_to_run=["tests/test_calc.py"],
+		missing_tests=[],
+		one_liner="adds a helper",
+	)
+	result = agent.AgentResult(
+		summary="investigated the change",
+		tests_run=["tests/test_calc.py"],
+		failures=[],
+		proposed_patch="--- a/calc.py\n+++ b/calc.py\n",
+	)
+	monkeypatch.setattr(server.llmio, "availability_error", lambda: None)
+	monkeypatch.setattr(
+		server.tier2, "review_with_reason", lambda *a, **k: (review, None)
+	)
+	monkeypatch.setattr(server.copilot_sdk, "run_agent", lambda *a, **k: result)
+
+	client = TestClient(server.app)
+	res = client.post("/agent", json={"repo_path": git_repo, "model": "stub-model"})
+	job = _settled(client, res.json()["jobId"])
+
+	assert job["status"] == "done"
+	assert job["stages"]["tier1"]["blocked"] is False
+	assert job["stages"]["tier2"]["risk"] == "LOW"
+	assert job["stages"]["tier2"]["summary"] == "adds a helper"
+	investigation = job["stages"]["investigation"]
+	assert investigation["summary"] == "investigated the change"
+	assert investigation["testsRun"] == ["tests/test_calc.py"]
+	assert investigation["failures"] == []
+	assert investigation["proposedPatch"] == "--- a/calc.py\n+++ b/calc.py\n"
+
+
+def test_agent_returns_existing_job_for_same_repo(monkeypatch, git_repo):
+	_stage(git_repo, "calc.py", "def add(a, b):\n\treturn a + b\n")
+	release = threading.Event()
+	monkeypatch.setattr(server.llmio, "availability_error", lambda: None)
+	monkeypatch.setattr(
+		server.tier2, "review_with_reason", lambda *a, **k: (None, "stubbed out")
+	)
+	monkeypatch.setattr(
+		server.copilot_sdk,
+		"run_agent",
+		lambda *a, **k: (release.wait(15), agent.AgentResult(summary="done"))[1],
+	)
+
+	client = TestClient(server.app)
+	body = {"repo_path": git_repo, "model": "stub-model"}
+	try:
+		first = client.post("/agent", json=body).json()
+		second = client.post("/agent", json=body).json()
+		assert first["jobId"] == second["jobId"]
+		assert second["status"] == "running"
+	finally:
+		release.set()
+
+
+def test_agent_unknown_job_is_404():
+	client = TestClient(server.app)
+	assert client.get("/agent/does-not-exist").status_code == 404
+	assert client.delete("/agent/does-not-exist").status_code == 404
+
+
+def test_agent_cancel_marks_job_cancelled(monkeypatch, git_repo):
+	_stage(git_repo, "calc.py", "def add(a, b):\n\treturn a + b\n")
+	release = threading.Event()
+	monkeypatch.setattr(server.llmio, "availability_error", lambda: None)
+	monkeypatch.setattr(
+		server.tier2, "review_with_reason", lambda *a, **k: (None, "stubbed out")
+	)
+	monkeypatch.setattr(
+		server.copilot_sdk,
+		"run_agent",
+		lambda *a, **k: (release.wait(15), agent.AgentResult(summary="done"))[1],
+	)
+
+	client = TestClient(server.app)
+	try:
+		job_id = client.post(
+			"/agent", json={"repo_path": git_repo, "model": "stub-model"}
+		).json()["jobId"]
+		cancelled = client.delete(f"/agent/{job_id}")
+		assert cancelled.status_code == 200
+		assert cancelled.json()["status"] == "cancelled"
+		assert client.get(f"/agent/{job_id}").json()["status"] == "cancelled"
+	finally:
+		release.set()
+
