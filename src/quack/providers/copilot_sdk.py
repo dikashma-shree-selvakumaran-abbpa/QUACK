@@ -439,7 +439,7 @@ async def _run_agent_async(
 		return {"permissionDecision": "allow"}
 
 	def make_handler(name: str):
-		def handler(args):
+		async def handler(args):
 			nonlocal invocations, run_tests_used
 			invocations += 1
 			if invocations > agent.MAX_ITERATIONS:
@@ -455,12 +455,17 @@ async def _run_agent_async(
 					return _tool_result("error: run_tests budget exhausted", failure=True)
 				run_tests_used += 1
 			try:
+				# agent._run_tests shells out synchronously through runio, so it
+				# is awaited on a worker thread: the event loop stays free to
+				# keep the SDK session alive for the length of the test run.
 				if name == "read_file":
-					result = agent._read_file(root, str(args.get("path", "")))
+					result = await asyncio.to_thread(agent._read_file, root, str(call_args.get("path", "")))
 				elif name == "list_dir":
-					result = agent._list_dir(root, str(args.get("path", "")))
+					result = await asyncio.to_thread(agent._list_dir, root, str(call_args.get("path", "")))
 				else:
-					result = agent._run_tests(root, str(args.get("project_or_paths", "")))
+					result = await asyncio.to_thread(
+						agent._run_tests, root, str(call_args.get("project_or_paths", ""))
+					)
 					if result.startswith("exit_code="):
 						test_outputs.append(result)
 				return _tool_result(result, failure=result.startswith("error:"))
