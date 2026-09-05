@@ -415,6 +415,9 @@ async def _run_agent_async(
 	run_tests_used = 0
 	test_outputs: list[str] = []
 
+	# Not invoked: tools are declared with skip_permission=True, so the SDK never
+	# fires on_pre_tool_use. Budget and validation enforcement lives in the tool
+	# handlers below.
 	def pre_tool(input_data):
 		nonlocal invocations, run_tests_used
 		name = str(_value(input_data, "toolName", ""))
@@ -437,6 +440,20 @@ async def _run_agent_async(
 
 	def make_handler(name: str):
 		def handler(args):
+			nonlocal invocations, run_tests_used
+			invocations += 1
+			if invocations > agent.MAX_ITERATIONS:
+				return _tool_result("error: iteration budget exhausted", failure=True)
+			if asyncio.get_running_loop().time() - started >= agent.WALL_CLOCK_S:
+				return _tool_result("error: wall-clock budget exhausted", failure=True)
+			call_args = args if isinstance(args, dict) else {}
+			validation_error = _validate_agent_call(root, name, call_args)
+			if validation_error:
+				return _tool_result(f"error: {validation_error}", failure=True)
+			if name == "run_tests":
+				if run_tests_used >= agent.MAX_RUN_TESTS:
+					return _tool_result("error: run_tests budget exhausted", failure=True)
+				run_tests_used += 1
 			try:
 				if name == "read_file":
 					result = agent._read_file(root, str(args.get("path", "")))
@@ -470,8 +487,8 @@ async def _run_agent_async(
 			client.create_session(
 				model=model,
 				tools=tools,
-				# Permission approval is not the security boundary; pre_tool is
-				# the authoritative validation and budget enforcement point.
+				# Permission approval is not the security boundary; the tool
+				# handlers are the authoritative validation and budget point.
 				on_permission_request=lambda *_args, **_kwargs: {"kind": "approved"},
 				hooks={"on_pre_tool_use": pre_tool},
 			),
