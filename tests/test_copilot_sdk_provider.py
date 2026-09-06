@@ -120,6 +120,20 @@ def _install_client(monkeypatch, client):
 	return client
 
 
+def test_remaining_budget_floors_expired_deadlines():
+	async def check_budget():
+		loop = asyncio.get_running_loop()
+		future = copilot_sdk._remaining_budget(loop.time() + 1.0)
+		past = copilot_sdk._remaining_budget(loop.time() - 1.0)
+		now = copilot_sdk._remaining_budget(loop.time())
+
+		assert 0.9 < future <= 1.0
+		assert past == 0.001
+		assert now == 0.001
+
+	asyncio.run(check_budget())
+
+
 @pytest.fixture(autouse=True)
 def _runtime_is_prepared(monkeypatch):
 	monkeypatch.setattr(copilot_sdk, "_runtime_needs_preparation", lambda: False)
