@@ -31,7 +31,7 @@ class _FakeSession:
 		self._errors = list(errors or [])
 		self.calls = 0
 
-	async def send_and_wait(self, prompt):
+	async def send_and_wait(self, prompt, *args, **kwargs):
 		self.calls += 1
 		if self._delay:
 			await asyncio.sleep(self._delay)
@@ -82,7 +82,7 @@ class _FakeModelClient(_FakeClient):
 
 
 class _LoggingSession:
-	async def send_and_wait(self, prompt):
+	async def send_and_wait(self, prompt, *args, **kwargs):
 		try:
 			raise RuntimeError("session authorization failed")
 		except RuntimeError:

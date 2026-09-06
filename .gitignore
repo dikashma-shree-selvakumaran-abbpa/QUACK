@@ -23,3 +23,6 @@ QUACK_DEMO_SCRIPT_*.md
 clients/vscode/node_modules/
 clients/vscode/out/
 clients/vscode/*.vsix
+
+repro_agent.py
+repro_diff.txt

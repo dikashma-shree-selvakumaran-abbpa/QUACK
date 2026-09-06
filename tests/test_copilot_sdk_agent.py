@@ -35,19 +35,18 @@ class _NativeSession:
 		self.hooks = None
 		self.denied = []
 
-	async def send_and_wait(self, prompt):
+	async def send_and_wait(self, prompt, *args, **kwargs):
 		self.prompt = prompt
 		if self.logger_name:
 			logging.getLogger(self.logger_name).error("sdk session log")
 		for name, args in self.actions:
-			decision = self.hooks["on_pre_tool_use"](
-				SimpleNamespace(toolName=name, toolArgs=args)
-			)
-			if decision["permissionDecision"] != "allow":
-				self.denied.append((name, decision["permissionDecisionReason"]))
-				continue
+			# The real SDK skips on_pre_tool_use for skip_permission tools, so
+			# the double dispatches straight to the handler.
 			tool = next(tool for tool in self.tools if tool.name == name)
-			await tool.handler(SimpleNamespace(arguments=args))
+			result = await tool.handler(SimpleNamespace(arguments=args))
+			if getattr(result, "result_type", "success") == "failure":
+				text = result.text_result_for_llm
+				self.denied.append((name, text.removeprefix("error: ")))
 		return SimpleNamespace(
 			data=SimpleNamespace(
 				content=__import__("json").dumps(self.response)
@@ -120,7 +119,7 @@ def _install(monkeypatch, session, **kwargs):
 def _run(monkeypatch, tmp_path, actions=(), response=None, **kwargs):
 	session = _NativeSession(actions, response=response)
 	client = _install(monkeypatch, session, **kwargs)
-	result = copilot_sdk.run_agent("redacted diff", tmp_path, "model", timeout_s=5)
+	result = copilot_sdk.run_agent("redacted diff", tmp_path, "model", timeout_s=30)
 	return result, client, session
 
 

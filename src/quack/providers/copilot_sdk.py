@@ -160,6 +160,11 @@ async def _within_budget(awaitable, deadline: float, stage: str):
 		raise _CopilotTimeout(stage) from exc
 
 
+def _remaining_budget(deadline: float, floor: float = 0.001) -> float:
+	"""Return seconds remaining until deadline, floored at a small positive value."""
+	return max(floor, deadline - asyncio.get_running_loop().time())
+
+
 def check_availability() -> str | None:
 	"""Return a readable reason this provider cannot run, or None if it can.
 
@@ -286,8 +291,14 @@ async def _complete_async(prompt: str, model: str, timeout_s: float) -> str:
 		)
 		for attempt in range(2):
 			try:
+				# CopilotSession.send_and_wait defaults to timeout=60.0, which
+				# silently overrides the caller's budget unless passed explicitly.
 				resp = await _within_budget(
-					session.send_and_wait(prompt), deadline, "inference"
+					session.send_and_wait(
+						prompt, timeout=_remaining_budget(deadline)
+					),
+					deadline,
+					"inference",
 				)
 				break
 			except Exception as exc:
@@ -508,7 +519,13 @@ async def _run_agent_async(
 			+ _NATIVE_FINAL_INSTRUCTION
 		)
 		try:
-			response = await _within_budget(session.send_and_wait(prompt), deadline, "agent investigation")
+			response = await _within_budget(
+				session.send_and_wait(
+					prompt, timeout=_remaining_budget(deadline)
+				),
+				deadline,
+				"agent investigation",
+			)
 		except _CopilotTimeout as exc:
 			# Zero tool calls means the SDK never got going; several means the
 			# agent was genuinely working and ran out of budget.
@@ -524,7 +541,14 @@ async def _run_agent_async(
 		if result is None:
 			# Native turns have no OpenAI message history to retry; ask the same
 			# session once for schema correction, preserving the one-retry contract.
-			response = await _within_budget(session.send_and_wait(agent._RETRY_MESSAGE), deadline, "agent schema retry")
+			response = await _within_budget(
+				session.send_and_wait(
+					agent._RETRY_MESSAGE,
+					timeout=_remaining_budget(deadline),
+				),
+				deadline,
+				"agent schema retry",
+			)
 			content = _value(_value(response, "data"), "content")
 			result = agent._parse_and_validate(content)
 		return agent._finalize(result, "final JSON schema validation failed", test_outputs)
