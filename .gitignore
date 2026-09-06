@@ -26,3 +26,5 @@ clients/vscode/*.vsix
 
 repro_agent.py
 repro_diff.txt
+
+src/quack/_build_info.py

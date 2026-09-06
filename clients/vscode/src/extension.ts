@@ -560,6 +560,78 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
 }
 
 let panel: QuackProvider;
+import * as cp from "child_process";
+import * as path from "path";
+import * as os from "os";
+
+let serverProcess: cp.ChildProcess | null = null;
+
+function quackExePath(): string {
+return path.join(
+os.homedir(),
+"AppData", "Local", "quack", "quack.exe"
+);
+}
+
+async function ensureServer(): Promise<boolean> {
+// First check if a server is already reachable.
+try {
+const res = await fetch(`${serverUrl()}/status`);
+if (res.ok) {
+return true;
+}
+} catch {
+// Not running — try to start it.
+}
+
+const exe = quackExePath();
+let exeExists = false;
+try {
+await vscode.workspace.fs.stat(vscode.Uri.file(exe));
+exeExists = true;
+} catch {
+exeExists = false;
+}
+
+if (!exeExists) {
+vscode.window.showErrorMessage(
+`quack: no server at ${serverUrl()} and no quack.exe found at ${exe}. ` +
+`Run 'quack install' to set up, or start 'quack serve' manually.`
+);
+return false;
+}
+
+// Spawn the server and wait for it to be ready.
+serverProcess = cp.spawn(exe, ["serve"], {
+detached: false,
+stdio: "ignore",
+windowsHide: true,
+});
+
+serverProcess.on("error", (err) => {
+vscode.window.showErrorMessage(`quack: failed to start server: ${err.message}`);
+serverProcess = null;
+});
+
+// Poll /status up to 10 seconds.
+for (let i = 0; i < 20; i++) {
+await new Promise((r) => setTimeout(r, 500));
+try {
+const res = await fetch(`${serverUrl()}/status`);
+if (res.ok) {
+return true;
+}
+} catch {
+// Still starting.
+}
+}
+
+vscode.window.showErrorMessage(
+`quack: server started but did not respond within 10 seconds. ` +
+`Check that port 8787 is available.`
+);
+return false;
+}
 export function activate(context: vscode.ExtensionContext): void {
     output = vscode.window.createOutputChannel("quack");
     panel = new QuackProvider();
@@ -578,10 +650,14 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.registerTreeDataProvider("quack.panel", panel),
         output
     );
-    void refreshStatus();
+    void ensureServer().then(() => refreshStatus());
 }
 
 export function deactivate(): void {
+if (serverProcess) {
+serverProcess.kill();
+serverProcess = null;
+}
     diagnostics?.dispose();
     statusBar?.dispose();
 }
