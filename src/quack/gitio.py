@@ -113,14 +113,10 @@ def staged_files(*, root: str | None = None) -> list[str]:
 
 	Returns an empty list if git is unavailable or this is not a repo.
 	"""
-	try:
-		result = subprocess.run(
-			["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
-			capture_output=True,
-			text=True,
-			check=True,
-			cwd=root,
-		)
-	except (subprocess.CalledProcessError, FileNotFoundError):
-		return []
-	return [line for line in result.stdout.splitlines() if line.strip()]
+	return [
+		line
+		for line in _run_git(
+			["diff", "--cached", "--name-only", "--diff-filter=ACMR"], cwd=root
+		).splitlines()
+		if line.strip()
+	]

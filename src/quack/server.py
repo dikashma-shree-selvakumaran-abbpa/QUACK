@@ -674,6 +674,9 @@ def status() -> dict:
 	except ImportError:
 		BUILD_COMMIT = None
 		BUILD_DATE = None
+	if BUILD_COMMIT == "source" or BUILD_DATE == "":
+		BUILD_COMMIT = None
+		BUILD_DATE = None
 	return {
 		"schemaVersion": 1,
 		"version": quack.__version__,

@@ -38,6 +38,8 @@ def test_server_endpoints(monkeypatch, git_repo):
 	assert "version" in data
 	assert "availabilityError" in data
 	assert "cachePath" in data
+	assert data["buildCommit"] is None or isinstance(data["buildCommit"], str)
+	assert data["buildDate"] is None or isinstance(data["buildDate"], str)
 
 	# GET /models
 	monkeypatch.setattr(server.llmio, "list_models", lambda: ["model-a", "model-b"])
