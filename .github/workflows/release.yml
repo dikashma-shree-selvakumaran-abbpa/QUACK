@@ -7,8 +7,6 @@ name: release
 
 on:
   push:
-    tags:
-      - "v*"
   # Manual trigger for testing the build without cutting a release.
   workflow_dispatch:
 
@@ -39,6 +37,12 @@ jobs:
 
       - name: Test
         run: python -m pytest -q
+
+      - name: Build VS Code extension (CI check)
+        working-directory: clients/vscode
+        run: |
+          npm ci
+          npx tsc --noEmit -p ./
 
       - name: Build
         run: python -m PyInstaller quack.spec --clean --noconfirm
