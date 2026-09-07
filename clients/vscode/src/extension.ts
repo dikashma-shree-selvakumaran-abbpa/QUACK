@@ -335,6 +335,8 @@ async function openReport(job: AgentJob, model: string): Promise<void> {
     });
     await vscode.window.showTextDocument(doc, { preview: false });
 }
+let installNotificationShown = false;
+
 async function checkInstallPlan(): Promise<void> {
     const root = workspaceRoot();
     if (!root) {
@@ -347,6 +349,17 @@ async function checkInstallPlan(): Promise<void> {
         if (res.ok) {
             const data = (await res.json()) as InstallPlanResponse;
             panel?.setInstallPlan(data);
+            if (!data.hooksInstalled && !installNotificationShown) {
+                installNotificationShown = true;
+                const answer = await vscode.window.showInformationMessage(
+                    "QUACK: hooks are not installed in this repo — commits are not being checked.",
+                    "Set up",
+                    "Dismiss"
+                );
+                if (answer === "Set up") {
+                    void vscode.commands.executeCommand("quack.install");
+                }
+            }
         }
     } catch {
         // Server not reachable — leave plan as null, no warning shown.
