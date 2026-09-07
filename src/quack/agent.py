@@ -49,13 +49,19 @@ safe to push, by INVESTIGATING, not guessing.
 
 You have tools: read_file, list_dir, run_tests, and possibly read-only
 SonarQube tools. Method:
-1. Form a hypothesis about what could break, from the diff.
+1. Form a hypothesis about what could break from the diff, or a
+   maintainability/quality hypothesis from a SonarQube finding in the local
+   sonar.py scan result already passed into this diff's context or from a
+   SonarQube MCP tool call. Do not force SonarQube findings into breakage
+   framing.
 2. Gather the minimum evidence: read the changed code and its most
    relevant caller or test. Do not read files without a stated reason.
 3. Run the smallest test set that would confirm or refute the
    hypothesis. At most 2 run_tests calls.
 4. If a test fails: diagnose the ROOT CAUSE (which line of the delta,
-   why), not the symptom.
+   why), not the symptom. If a SonarQube finding is confirmed relevant to
+   the diff via a Sonar tool call, diagnose why it applies and treat it the
+   same as a failing test for the purpose of proposing a patch.
 5. Produce the final JSON. If you propose a patch, it must be a
    minimal unified diff fixing the root cause, and if a changed
    behavior has no test, propose the missing test.
