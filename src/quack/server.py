@@ -538,12 +538,22 @@ def install_plan(repo_path: str | None = Query(default=None)) -> dict:
 	husky_tracked = strategy == "husky" and (
 		_tracked(root, ".husky/pre-commit") or _tracked(root, ".husky/pre-push")
 	)
+	hooks_installed = False
+	if strategy in {"precommit", "husky"}:
+		hook_file = Path(root) / (
+			".pre-commit-config.yaml" if strategy == "precommit" else ".husky/pre-commit"
+		)
+		try:
+			hooks_installed = "quack" in hook_file.read_text(encoding="utf-8", errors="ignore")
+		except OSError:
+			pass
 	return {
 		"schemaVersion": 1,
 		"repository": root,
 		"strategy": strategy,
 		"hooksPath": hooks_path,
 		"huskyFilesTracked": husky_tracked,
+		"hooksInstalled": hooks_installed,
 		"preCommitAvailable": shutil.which("pre-commit") is not None,
 		"gitleaksAvailable": gitleaks.available(),
 	}

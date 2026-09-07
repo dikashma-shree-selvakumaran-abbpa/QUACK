@@ -357,6 +357,15 @@ def test_install_plan_reports_precommit_strategy(git_repo):
 	assert "gitleaksAvailable" in data
 
 
+def test_install_plan_hooks_installed_when_config_contains_quack(git_repo):
+	(Path(git_repo) / ".pre-commit-config.yaml").write_text("quack\n", encoding="utf-8")
+	assert _plan(git_repo)["hooksInstalled"] is True
+
+
+def test_install_plan_hooks_not_installed_when_no_config(git_repo):
+	assert _plan(git_repo)["hooksInstalled"] is False
+
+
 def test_install_plan_detects_husky(git_repo):
 	_set_hooks_path(git_repo, ".husky")
 	data = _plan(git_repo)
