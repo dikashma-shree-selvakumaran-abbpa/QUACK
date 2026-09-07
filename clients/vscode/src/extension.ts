@@ -179,6 +179,7 @@ async function runCheck(): Promise<void> {
     }
     await refreshStatus();
     void checkInstallPlan();
+    void fetchMetrics();
 }
 
 interface ModelsResponse {
@@ -336,6 +337,17 @@ async function openReport(job: AgentJob, model: string): Promise<void> {
     await vscode.window.showTextDocument(doc, { preview: false });
 }
 let installNotificationShown = false;
+
+async function fetchMetrics(): Promise<void> {
+    try {
+        const res = await fetch(`${serverUrl()}/metrics`);
+        if (res.ok) {
+            panel?.setMetrics((await res.json()) as MetricsResponse);
+        }
+    } catch {
+        // Server not reachable.
+    }
+}
 
 async function checkInstallPlan(): Promise<void> {
     const root = workspaceRoot();
@@ -562,6 +574,7 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
     private blocked = false;
     private checked = false;
     private installPlan: InstallPlanResponse | null = null;
+    private metrics: MetricsResponse | null = null;
 
     refresh(): void {
         this.emitter.fire();
@@ -574,6 +587,11 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
 
     setInstallPlan(plan: InstallPlanResponse | null): void {
         this.installPlan = plan;
+        this.refresh();
+    }
+
+    setMetrics(metrics: MetricsResponse | null): void {
+        this.metrics = metrics;
         this.refresh();
     }
 
@@ -592,7 +610,7 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
         if (node) {
             return node.children ?? [];
         }
-        const nodes = [this.statusNode(), this.actionsNode(), this.findingsNode()];
+        const nodes = [this.statusNode(), this.actionsNode(), this.findingsNode(), this.metricsNode()];
         if (this.installPlan && !this.installPlan.hooksInstalled) {
             nodes.splice(1, 0, this.installPromptNode());
         }
@@ -669,6 +687,40 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
         });
         return node;
     }
+
+    private metricsNode(): QuackNode {
+        const node = new QuackNode("Metrics", vscode.TreeItemCollapsibleState.Collapsed);
+        const m = this.metrics;
+        if (!m || !m.available) {
+            const hint = new QuackNode("No runs recorded yet", vscode.TreeItemCollapsibleState.None);
+            node.children = [hint];
+            return node;
+        }
+        const fmt = (n: number | null, suffix: string) =>
+            n === null ? "—" : `${n}${suffix}`;
+        const children: QuackNode[] = [];
+        const addLine = (label: string, value: string) => {
+            const child = new QuackNode(label, vscode.TreeItemCollapsibleState.None);
+            child.description = value;
+            children.push(child);
+        };
+        addLine("Total runs", String(m.totalRuns));
+        addLine("Blocks", String(m.blocks));
+        if (m.medianDurationMs !== null) {
+            addLine("Median duration", `${Math.round(m.medianDurationMs / 1000)}s`);
+        }
+        if (m.cacheHitRate !== null) {
+            addLine("Cache hit rate", `${Math.round(m.cacheHitRate * 100)}%`);
+        }
+        const topFindings = Object.entries(m.findings ?? {})
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3);
+        for (const [name, count] of topFindings) {
+            addLine(name, String(count));
+        }
+        node.children = children;
+        return node;
+    }
 }
 
 
@@ -682,6 +734,18 @@ interface InstallPlanResponse {
     preCommitAvailable: boolean;
     gitleaksAvailable: boolean;
 }
+
+interface MetricsResponse {
+    schemaVersion: number;
+    available: boolean;
+    totalRuns: number;
+    runsByCommand: Record<string, number>;
+    blocks: number;
+    findings: Record<string, number>;
+    medianDurationMs: number | null;
+    cacheHitRate: number | null;
+}
+
 let panel: QuackProvider;
 import * as cp from "child_process";
 import * as path from "path";
@@ -774,7 +838,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.registerTreeDataProvider("quack.panel", panel),
         output
     );
-    void ensureServer().then(() => { void refreshStatus(); void checkInstallPlan(); });
+    void ensureServer().then(() => { void refreshStatus(); void checkInstallPlan(); void fetchMetrics(); });
 }
 
 export function deactivate(): void {
