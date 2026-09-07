@@ -334,6 +334,14 @@ def _deterministic_risk(
 	This rubric is intentionally model-independent so the same diff yields the
 	same baseline risk label across runs and across model swaps.
 	"""
+	REASON_SCORES = {
+		"changed behavior with no mapped test coverage": 2,
+		"public contract surface changed": 2,
+		"state/concurrency-sensitive logic changed": 2,
+		"large staged delta (200+ changed lines)": 1,
+		"changed paths include behavior-sensitive areas": 1,
+		"boundary/index/limit logic touched": 1,
+	}
 	score = 0
 	reasons: list[str] = []
 	reviewable = [
@@ -374,8 +382,9 @@ def _deterministic_risk(
 		score += 1
 		reasons.append("boundary/index/limit logic touched")
 
+	top_reasons = sorted(reasons, key=lambda r: REASON_SCORES.get(r, 0), reverse=True)
 	if score >= 4:
-		return "high", reasons[:3]
+		return "high", top_reasons[:3]
 	if score >= 2:
-		return "medium", reasons[:3]
-	return "low", reasons[:3]
+		return "medium", top_reasons[:3]
+	return "low", top_reasons[:3]
