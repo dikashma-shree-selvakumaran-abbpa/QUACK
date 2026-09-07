@@ -89,9 +89,10 @@ The repository also includes the generated MCP client configuration at
 `.vscode\mcp.json` and the Python adapter at
 `src\quack\mcp\sonarqube.py`. When Podman and a SonarQube token are available,
 both `quack watch` and the staged `quack check` hook collect a bounded,
-read-only snapshot. The same snapshot is written to the living report at
-`docs\SONARQUBE_REPORT.md`; a report update is atomic and the generated file is
-excluded from watch change detection.
+read-only snapshot. `quack watch` writes the snapshot to the living report at
+`docs\SONARQUBE_REPORT.md`; the pre-commit hook renders its result directly
+without modifying the target repository. Watch report updates are atomic and
+the generated file is excluded from watch change detection.
 
 Each snapshot calls the requested duplication, security-hotspot, open-issue,
 and component-measure operations. Component measures include every metric

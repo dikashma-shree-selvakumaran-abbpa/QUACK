@@ -516,7 +516,9 @@ def _with_report(
 	root: Path,
 	source: str,
 ) -> SonarQubeReportResult:
-	"""Persist a connected attempt without making report I/O a hook failure."""
+	"""Persist watch reports without mutating repositories during pre-commit."""
+	if source == "pre-commit":
+		return result
 	try:
 		path = _write_report(root, result, source)
 	except (OSError, UnicodeError, ValueError):
