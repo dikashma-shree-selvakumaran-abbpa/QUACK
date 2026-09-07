@@ -28,6 +28,7 @@ pipe (or NO_COLOR is set) no ANSI escape codes are emitted, so CI logs and
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -74,8 +75,15 @@ def _console(stderr: bool = False) -> Console:
 	suppress bold/dim attribute escapes).
 	"""
 	no_color = bool(os.environ.get("NO_COLOR"))
+	stream = sys.stderr if stderr else sys.stdout
+	reconfigure = getattr(stream, "reconfigure", None)
+	if callable(reconfigure):
+		try:
+			reconfigure(encoding="utf-8", errors="replace")
+		except (AttributeError, OSError, TypeError, ValueError):
+			pass
 	return Console(
-		stderr=stderr,
+		file=stream,
 		highlight=False,
 		soft_wrap=True,
 		emoji=False,
@@ -183,6 +191,7 @@ def report(
 	plan,
 	ai,
 	sonar=None,
+	sonar_mcp=None,
 	model: str = "",
 	ai_note: str | None = None,
 	blocked: bool = False,
@@ -198,6 +207,8 @@ def report(
 	  ``.dotnet_hint``) or ``None``.
 	* ``sonar``     -- optional SonarQube result (``.status``, ``.reason``,
 	  ``.dashboard_url``).
+	* ``sonar_mcp`` -- optional SonarQube MCP snapshot result (``.status``,
+	  ``.reason``, ``.report_path``).
 	* ``ai``        -- ``None`` (no AI section), ``("skipped", reason)``, or a
 	  review result (``.risk``, ``.one_liner``, ``.reasons``,
 	  ``.tests_to_run``, ``.missing_tests``).
@@ -210,6 +221,7 @@ def report(
 		_quack_alarm(findings, blocked),
 		_guidance_group(plan),
 		_sonar_group(sonar),
+		_sonar_mcp_group(sonar_mcp),
 		_ai_group(ai, model, ai_note),
 	):
 		if section is not None:
@@ -312,6 +324,40 @@ def _sonar_group(result) -> RenderableType | None:
 	if status == "skipped":
 		return Text(f"SonarQube: skipped ({reason})", style=_META)
 	return Text(f"SonarQube: advisory failure ({reason})", style=_WARN)
+
+
+def _sonar_mcp_group(result) -> RenderableType | None:
+	"""Render the MCP snapshot outcome and its living report location."""
+	if result is None:
+		return None
+	status = str(getattr(result, "status", "failed"))
+	reason = str(getattr(result, "reason", "") or "unavailable")
+	report = getattr(result, "report_path", None)
+	message = f"SonarQube MCP: {reason}"
+	if report:
+		message += f" - report: {report}"
+	if status == "passed":
+		violation_count = getattr(result, "violation_count", 0)
+		if violation_count:
+			return Text(
+				f"SonarQube MCP: BLOCKED - {violation_count} "
+				"violation(s) detected"
+				+ (f" - report: {report}" if report else ""),
+				style=_BLOCK,
+				no_wrap=False,
+				overflow="fold",
+			)
+		return Text(message, style=_CLEAN, no_wrap=False, overflow="fold")
+	if status == "skipped":
+		return Text(message, style=_META, no_wrap=False, overflow="fold")
+	return Text(message, style=_WARN, no_wrap=False, overflow="fold")
+
+
+def sonar_mcp(result) -> None:
+	"""Render a standalone SonarQube MCP snapshot outcome."""
+	group = _sonar_mcp_group(result)
+	if group is not None:
+		_console().print(group)
 
 
 def _ai_group(ai, model: str, note: str | None = None) -> RenderableType | None:

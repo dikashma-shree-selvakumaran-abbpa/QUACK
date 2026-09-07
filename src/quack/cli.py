@@ -5,11 +5,12 @@ Subcommands:
 	agent   agentic pre-push loop (stub)
 	model   model/config utilities (stub)
 	install wire quack into .pre-commit-config.yaml and run `pre-commit install`
-	sonar-mcp connect to the configured SonarQube MCP server through Podman
+	sonar-mcp connect to, inspect, and invoke read-only SonarQube MCP tools
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -33,6 +34,7 @@ from . import (
 	render,
 	reviewcache,
 	sonar,
+	sonar_report,
 	testmap,
 	tier2,
 	watch as watch_mod,
@@ -64,8 +66,10 @@ def check() -> None:
 	"""Run the pre-commit quality checks on staged changes.
 
 	Commit time runs local Tier 1 checks (plus gitleaks when installed), test
-	guidance, and an optional local SonarQube analysis. SonarQube is advisory
-	and fail-open; all AI analysis runs at pre-push via ``quack agent``.
+	guidance, an optional local SonarQube analysis, and an optional SonarQube
+	MCP snapshot. A completed MCP snapshot blocks when it reports open SonarQube
+	issues or security hotspots; unavailable SonarQube integrations remain
+	fail-open. All AI analysis runs at pre-push via ``quack agent``.
 	"""
 	# Measures in-process work only, excluding Python interpreter startup.
 	started = time.perf_counter()
@@ -112,6 +116,10 @@ def check() -> None:
 	# SonarQube analyzes a temporary export of the staged index. It is
 	# advisory and returns quickly when the local scanner/server is unavailable.
 	sonar_result = sonar.scan(delta, root)
+	sonar_mcp_result = sonar_report.run(delta, root, source="pre-commit")
+	blocked = blocked or bool(
+		getattr(sonar_mcp_result, "blocks_commit", False)
+	)
 
 	# Test guidance (only worth computing on an unblocked commit).
 	plan = testmap.build_plan(delta)
@@ -146,9 +154,10 @@ def check() -> None:
 		plan=plan,
 		ai=ai,
 		sonar=sonar_result,
+		sonar_mcp=sonar_mcp_result,
 		model=cached_model,
 		ai_note=cache_note,
-		blocked=False,
+		blocked=blocked,
 		duration=time.perf_counter() - started,
 	)
 	_log_check_metrics(
@@ -159,9 +168,11 @@ def check() -> None:
 		cache_hit=cached_review is not None,
 		risk=cached_review.risk if cached_review is not None else None,
 		sonar_result=sonar_result,
-		exit_code=0,
+		sonar_mcp_result=sonar_mcp_result,
+		blocked=blocked,
+		exit_code=1 if blocked else 0,
 	)
-	sys.exit(0)
+	sys.exit(1 if blocked else 0)
 
 
 def _log_check_metrics(
@@ -174,6 +185,7 @@ def _log_check_metrics(
 	cache_hit: bool = False,
 	risk: str | None = None,
 	sonar_result=None,
+	sonar_mcp_result=None,
 	exit_code: int,
 ) -> None:
 	try:
@@ -201,6 +213,17 @@ def _log_check_metrics(
 			)
 			if sonar_result.status != "passed":
 				event["sonar_failure"] = sonar_result.reason
+		if sonar_mcp_result is not None:
+			event.update(
+				{
+					"sonar_mcp_status": sonar_mcp_result.status,
+					"sonar_mcp_duration_ms": int(
+						sonar_mcp_result.duration_s * 1000
+					),
+				}
+			)
+			if sonar_mcp_result.status != "passed":
+				event["sonar_mcp_failure"] = sonar_mcp_result.reason
 		metrics_mod.log(event)
 	except Exception:
 		pass
@@ -259,6 +282,8 @@ def watch(quiet_period: float, once: bool) -> None:
 
 
 def _render_watch_result(result: watch_mod.WatchResult) -> None:
+	if result.sonar_report is not None:
+		render.sonar_mcp(result.sonar_report)
 	if result.risk is not None:
 		render.metadata(f"reviewed {result.files} file(s) - risk: {result.risk}")
 	else:
@@ -717,6 +742,32 @@ def install(use_local: bool) -> None:
 	help="Default SonarQube project key for the MCP server.",
 )
 @click.option(
+	"--toolset",
+	"--toolsets",
+	"toolsets",
+	multiple=True,
+	help="SonarQube MCP toolset to enable; repeat the option or use commas.",
+)
+@click.option(
+	"--tool",
+	"tool_name",
+	default=None,
+	help="Read-only MCP tool to invoke after discovery.",
+)
+@click.option(
+	"--arguments",
+	"tool_arguments",
+	default="{}",
+	show_default=True,
+	help="JSON object passed to --tool.",
+)
+@click.option(
+	"--json",
+	"json_output",
+	is_flag=True,
+	help="Print the complete MCP response as JSON when --tool is used.",
+)
+@click.option(
 	"--ca-dir",
 	type=click.Path(
 		exists=True, file_okay=False, dir_okay=True, path_type=Path
@@ -733,14 +784,24 @@ def install(use_local: bool) -> None:
 def sonar_mcp(
 	project_path: Path | None,
 	project_key: str | None,
+	toolsets: tuple[str, ...],
+	tool_name: str | None,
+	tool_arguments: str,
+	json_output: bool,
 	ca_dir: Path | None,
 	server_url: str | None,
 ) -> None:
-	"""Start the SonarQube MCP server through Podman and list its tools."""
-	render.info("SonarQube MCP: connecting via Podman...")
+	"""Connect to SonarQube MCP, list tools, or invoke one read-only tool."""
+	if json_output and tool_name is None:
+		raise click.UsageError("--json requires --tool")
+	json_tool_mode = json_output and tool_name is not None
+	if not json_tool_mode:
+		render.info("SonarQube MCP: connecting via Podman...")
+	normalised_toolsets = _normalise_cli_toolsets(toolsets)
 	if (
 		project_path is None
 		and project_key is None
+		and not normalised_toolsets
 		and ca_dir is None
 		and server_url is None
 	):
@@ -749,6 +810,7 @@ def sonar_mcp(
 		client, reason = sonarqube_mcp.connection_from_environment(
 			project_path=project_path,
 			project_key=project_key,
+			toolsets=normalised_toolsets or None,
 			ca_dir=ca_dir,
 			server_url=server_url,
 			base_path=Path.cwd(),
@@ -757,16 +819,28 @@ def sonar_mcp(
 		render.warning(f"quack sonar-mcp: {reason or 'unavailable'}")
 		sys.exit(1)
 	try:
-		with render.thinking("SonarQube MCP: discovering available tools"):
+		if json_tool_mode:
 			tools = client.tool_definitions()
+		else:
+			with render.thinking("SonarQube MCP: discovering available tools"):
+				tools = client.tool_definitions()
 	except sonarqube_mcp.SonarQubeMcpUnavailable as exc:
 		render.warning(f"quack sonar-mcp: {exc.reason}")
 		sys.exit(1)
-	render.clean(f"SonarQube MCP connected via podman ({len(tools)} tool(s))")
-	for tool in tools:
-		name = tool.get("function", {}).get("name")
-		if isinstance(name, str):
-			render.metadata(f"  {name}")
+	if not json_tool_mode:
+		render.clean(f"SonarQube MCP connected via podman ({len(tools)} tool(s))")
+		for tool in tools:
+			name = tool.get("function", {}).get("name")
+			if isinstance(name, str):
+				render.metadata(f"  {name}")
+	if tool_name is not None:
+		_invoke_sonar_mcp_tool(
+			client,
+			tool_name,
+			tool_arguments,
+			json_output,
+		)
+		sys.exit(0)
 	issue_tool = next(
 		(
 			name
@@ -838,6 +912,59 @@ def sonar_mcp(
 	if total > len(issues):
 		render.metadata(f"  ...and {total - len(issues)} more")
 	sys.exit(0)
+
+
+def _normalise_cli_toolsets(values: tuple[str, ...]) -> tuple[str, ...]:
+	"""Return repeatable and comma-separated CLI toolsets without duplicates."""
+	normalised: list[str] = []
+	for value in values:
+		for item in value.split(","):
+			item = item.strip()
+			if item and item not in normalised:
+				normalised.append(item)
+	return tuple(normalised)
+
+
+def _invoke_sonar_mcp_tool(
+	client: sonarqube_mcp.SonarQubeMcpClient,
+	tool_name: str,
+	tool_arguments: str,
+	json_output: bool,
+) -> None:
+	"""Invoke one advertised read-only MCP tool from the explicit CLI."""
+	try:
+		arguments = json.loads(tool_arguments)
+	except (TypeError, ValueError) as exc:
+		raise click.UsageError("--arguments must contain valid JSON") from exc
+	if not isinstance(arguments, dict):
+		raise click.UsageError("--arguments must contain a JSON object")
+	resolved_name = client.resolve_tool_name(tool_name)
+	if resolved_name is None:
+		render.warning(
+			f"quack sonar-mcp: unknown or unavailable read-only MCP tool "
+			f"{tool_name!r}"
+		)
+		sys.exit(1)
+	try:
+		if json_output:
+			response = client.call_tool_response(resolved_name, arguments)
+		else:
+			with render.thinking(f"SonarQube MCP: invoking {resolved_name}"):
+				response = client.call_tool_response(resolved_name, arguments)
+	except sonarqube_mcp.SonarQubeMcpUnavailable as exc:
+		render.warning(f"quack sonar-mcp: {exc.reason}")
+		sys.exit(1)
+	if response.get("isError"):
+		render.warning(
+			"quack sonar-mcp: tool returned an error: "
+			+ sonarqube_mcp.format_tool_result(response)
+		)
+		sys.exit(1)
+	if json_output:
+		click.echo(json.dumps(response, indent=2, sort_keys=True))
+	else:
+		render.clean(f"SonarQube MCP tool completed: {resolved_name}")
+		render.metadata(sonarqube_mcp.format_tool_result(response))
 
 
 def _sonar_issue_value(

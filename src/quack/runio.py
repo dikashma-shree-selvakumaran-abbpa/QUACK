@@ -135,7 +135,7 @@ def run_sonarqube_mcp(
 							stdout_closed = True
 						else:
 							stderr_closed = True
-						if process.poll() is not None and stdout_closed and stderr_closed:
+						if stdout_closed and stderr_closed:
 							return False
 						continue
 

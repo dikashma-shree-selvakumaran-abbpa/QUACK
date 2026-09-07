@@ -8,6 +8,8 @@ actually proves something).
 
 from __future__ import annotations
 
+import io
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -108,6 +110,18 @@ def test_primitives_plain_under_no_color(monkeypatch, capsys) -> None:
 	assert ANSI not in out
 	assert "all clean" in out
 	assert "pytest -x" in out
+
+
+def test_console_reconfigures_windows_stream_for_unicode(monkeypatch) -> None:
+	raw = io.BytesIO()
+	stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+	monkeypatch.setattr(sys, "stdout", stream)
+
+	render.warning("⚠ warning from SonarQube")
+	stream.flush()
+
+	output = raw.getvalue().decode("utf-8").replace("\r\n", "\n")
+	assert output == "⚠ warning from SonarQube\n"
 
 
 def test_thinking_yields_and_returns_normally(capsys) -> None:
@@ -273,6 +287,28 @@ def test_sonar_status_is_rendered_as_advisory(capsys) -> None:
 	out = capsys.readouterr().out
 	assert "SonarQube: analysis uploaded" in out
 	assert "dashboard?id=quack-local" in out
+
+
+def test_sonar_mcp_violations_are_rendered_as_blocking(capsys) -> None:
+	render.report(
+		files=1,
+		added=1,
+		removed=0,
+		findings=[],
+		plan=None,
+		sonar_mcp=SimpleNamespace(
+			status="passed",
+			reason="1 SonarQube violation(s) detected",
+			violation_count=1,
+			report_path="docs/SONARQUBE_REPORT.md",
+		),
+		ai=None,
+		blocked=True,
+	)
+
+	out = capsys.readouterr().out
+	assert "BLOCKED - 1 violation(s) detected" in out
+	assert "docs/SONARQUBE_REPORT.md" in out
 
 
 def test_install_banner_prints_wordmark(capsys) -> None:

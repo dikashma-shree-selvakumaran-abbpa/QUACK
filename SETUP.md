@@ -44,11 +44,12 @@ A healthy result includes:
 ## Daily use
 
 - `git commit` runs local checks automatically. It also runs the optional local
-  SonarQube scan when `SONAR_TOKEN`, a reachable SonarQube server, and
-  `sonar-scanner` are available. The scan is advisory and fail-open.
+  SonarQube scan and SonarQube MCP snapshot when their credentials and
+  runtimes are available. Both are advisory and fail-open.
 - `quack watch` is a foreground process you keep running while you work. It
-  reviews after 30 seconds without file changes by default, then caches the
-  result for commit time. Use `quack watch --once` to review immediately.
+  refreshes the SonarQube MCP report and reviews after 30 seconds without file
+  changes by default, then caches the result for commit time. Use
+  `quack watch --once` to review immediately.
 - `git push` runs an advisory AI review on unpushed commits. The default
   `copilot_sdk` provider uses the Copilot CLI's stored OAuth login.
 - The optional tool-calling investigation loop requires
@@ -74,9 +75,10 @@ timeout (maximum 120 seconds).
 
 ## SonarQube MCP server
 
-For the optional pre-push investigation tools, Podman and a SonarQube token are
-required. The repository includes the client configuration in
-`.vscode\mcp.json`; set the token in the shell rather than editing that file:
+For the optional SonarQube MCP snapshot and pre-push investigation tools,
+Podman and a SonarQube token are required. The repository includes the client
+configuration in `.vscode\mcp.json`; set the token in the shell rather than
+editing that file:
 
 ```powershell
 $env:SQ_TOKEN = "<TOKEN>"
@@ -87,7 +89,9 @@ quack agent
 The adapter in `src\quack\mcp\sonarqube.py` starts
 `mcp/sonarqube` over stdio, filters tools explicitly marked as write-capable,
 and bounds each request. It defaults to `https://codescan.abb.com` with IDE
-port `64120`.
+port `64120`. `quack watch` and the staged `quack check` hook use this adapter
+to collect a bounded snapshot and refresh
+`docs\SONARQUBE_REPORT.md`.
 `SONARQUBE_TOKEN` can be used instead of `SQ_TOKEN`. Use a SonarQube user
 token. If the project workspace is outside the repository being reviewed,
 configure it explicitly so Podman can mount it read-only:
@@ -96,7 +100,9 @@ configure it explicitly so Podman can mount it read-only:
 $env:QUACK_SONAR_MCP_PROJECT_PATH = "C:\Dev\Workspace\alarms\main\prestine\Operations.HMI.App.Alarms"
 $env:SONARQUBE_PROJECT_KEY = "Operations.HMI.App.Alarms"
 quack sonar-mcp
-quack agent
+quack watch --once
+git add .
+git commit
 ```
 
 Equivalent one-shot options are
@@ -108,8 +114,27 @@ inspection, place the public `.crt` or `.pem` CA certificate under
 `QUACK_SONAR_MCP_CA_DIR` to select another directory. Set
 `QUACK_SONAR_MCP=off` to disable the optional MCP tools. This MCP path is
 independent of the local scanner used by `quack check`; the staged local
-scanner is the pre-commit check and MCP is an optional pre-push agent
-capability.
+scanner remains an additional pre-commit check. The report is updated only
+after a connected snapshot, and its generated file is ignored by
+`quack watch` change detection so it cannot trigger an endless review loop.
+The optional `quack agent` investigation can use the same read-only MCP
+capability during pre-push analysis.
+
+To enable any SonarQube MCP toolsets, repeat `--toolset` or provide a
+comma-separated value, or set the native `SONARQUBE_TOOLSETS` environment
+variable. Invoke any advertised read-only tool with `--tool` and a JSON object
+in `--arguments`; use the displayed `sonarqube_*` name or the native MCP name:
+
+```powershell
+quack sonar-mcp --toolset coverage --tool search_files_by_coverage `
+  --arguments '{"projectKey":"Operations.HMI.App.Alarms","branch":"main"}'
+quack sonar-mcp --toolset sources,measures --tool get_component_measures `
+  --arguments '{"component":"Operations.HMI.App.Alarms","metricKeys":["ncloc"]}' --json
+```
+
+`--json` emits the complete successful MCP response for scripting. Quack
+always starts the container with `SONARQUBE_READ_ONLY=true`, so write-capable
+tools remain unavailable.
 
 ## Troubleshooting
 
@@ -117,13 +142,13 @@ capability.
 |---|---|---|
 | `Authorization error, you may need to run /login` | The Copilot session expired, or an ambient `GITHUB_TOKEN` shadows the Copilot login. | Run `quack model` to diagnose. Unset `GITHUB_TOKEN`, `GH_TOKEN`, and `COPILOT_GITHUB_TOKEN`; then run `copilot`, enter `/login`, and complete sign-in. |
 | `copilot` exits immediately without opening | An ambient token is present. | Run `quack model` to diagnose. Unset `GITHUB_TOKEN`, `GH_TOKEN`, and `COPILOT_GITHUB_TOKEN`; then run `copilot` and enter `/login`. |
-| Unicode crash in a Windows terminal | The terminal is not using UTF-8 output. | Set `PYTHONIOENCODING=utf-8`. In PowerShell: `$env:PYTHONIOENCODING = "utf-8"`. |
+| `UnicodeEncodeError` or `charmap` failure in a Windows hook | An older published hook writes Rich output through the Windows `cp1252` stream. | Use a hook revision containing the UTF-8-safe renderer, or test the current checkout with `pre-commit try-repo <path-to-quack> quack --all-files`. |
 | `where.exe quack` shows two paths | A stale duplicate installation exists. | Delete the `.local\bin` copy. |
 | The first AI call is slow (about 25 seconds) | Copilot is extracting its runtime once. | Wait for the first call to finish; later calls use the extracted runtime. |
 | `AI review: not reviewed yet` | Watch mode has not reviewed the current diff. | Run `quack watch`. |
 | `AI review unavailable` | The provider could not authenticate or complete the advisory request. | The commit/push still proceeds. Run `quack model`, then sign in with `copilot` and `/login` if needed. |
 | `SSLHandshakeException` or `certificate_unknown` | The corporate proxy/CA is trusted by Windows but not by Java inside the container. | Copy the public CA as `.crt`/`.pem` under `%LOCALAPPDATA%\quack\sonarqube-mcp\certs` or pass `--ca-dir <folder>`, then retry. |
-| `quack sonar-mcp: SonarQube MCP server timed out` | Podman was waiting for a long-lived MCP process to exit, or the server cannot reach/authenticate to SonarQube. | Update Quack with `python -m pip install --editable . --upgrade`, verify `podman image exists mcp/sonarqube`, set a SonarQube user token, and retry `quack sonar-mcp --project-path <folder>`. Increase `QUACK_SONAR_MCP_TIMEOUT_S` only up to 180 seconds. |
+| `quack sonar-mcp: SonarQube MCP server timed out` | Podman was waiting for a long-lived MCP process to exit, or the server cannot reach SonarQube. | If the message says `Not authorized`, create a new SonarQube user token and set `SQ_TOKEN` or `SONARQUBE_TOKEN`. Otherwise update Quack with `python -m pip install --editable . --upgrade`, verify `podman image exists mcp/sonarqube`, and retry `quack sonar-mcp --project-path <folder>`. Increase `QUACK_SONAR_MCP_TIMEOUT_S` only up to 180 seconds. |
 
 ## What quack does NOT need
 

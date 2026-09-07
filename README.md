@@ -54,12 +54,13 @@ No apparent replacement code restoring delegates elsewhere in this path
 
 | Surface | When it runs | What it does | Network |
 |---|---|---|---|
-| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, test guidance, and optional local SonarQube analysis. | SonarQube is local and advisory; Tier 1 remains offline. |
-| `quack watch` | Alongside development | Reviews changes while you work and caches a verdict for commit time. | Yes, when a provider is available. |
+| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, test guidance, optional local SonarQube analysis, and an optional SonarQube MCP snapshot. | Tier 1 remains offline; the local scanner is advisory, while a completed MCP snapshot blocks on open issues or security hotspots and remains fail-open when unavailable. |
+| `quack watch` | Alongside development | Reviews changes while you work, refreshes the SonarQube MCP report, and caches a verdict for commit time. | Yes, when the configured MCP/provider services are available. |
 | `quack agent` | Pre-push | Reviews unpushed commits. Its optional investigative loop can run tests and propose fixes with `QUACK_PROVIDER=github_models`. | Yes, when a provider is available. |
 
-Only secrets and merge markers block. AI and SonarQube are advisory and fail
-open: no token, offline operation, a slow provider, or rate limiting never
+Secrets, merge markers, and completed SonarQube MCP snapshots with open issues
+or security hotspots block. AI and the local scanner remain advisory; missing
+credentials, offline operation, a slow provider, or rate limiting never
 prevents a commit.
 
 ## SonarQube integration
@@ -86,11 +87,20 @@ by `QUACK_SONAR_TIMEOUT_S` and capped at 120 seconds.
 
 The repository also includes the generated MCP client configuration at
 `.vscode\mcp.json` and the Python adapter at
-`src\quack\mcp\sonarqube.py`. This is separate from the local pre-commit
-scanner: when the `github_models` provider, Podman, and a SonarQube token are
-available, `quack agent` can use the server's read-only tools during its
-pre-push investigation. Tools explicitly marked as write-capable by the
-server are not exposed to the agent.
+`src\quack\mcp\sonarqube.py`. When Podman and a SonarQube token are available,
+both `quack watch` and the staged `quack check` hook collect a bounded,
+read-only snapshot. The same snapshot is written to the living report at
+`docs\SONARQUBE_REPORT.md`; a report update is atomic and the generated file is
+excluded from watch change detection.
+
+Each snapshot calls the requested duplication, security-hotspot, open-issue,
+and component-measure operations. Component measures include every metric
+advertised by the server when metric discovery is available, plus the required
+`cognitive_complexity`, `ncloc`, and `reliability_rating` fields. The report and terminal descriptions explain whether duplicate blocks, hotspots,
+open issues, and metric values were found. A completed snapshot with open
+issues or security hotspots blocks `quack check`; missing credentials, Podman,
+unavailable tools, timeouts, and malformed responses are recorded as
+fail-open outcomes and do not block the commit.
 
 ```powershell
 $env:SQ_TOKEN = "<TOKEN>"
@@ -119,8 +129,25 @@ inspection, place the public `.crt` or `.pem` CA certificate under
 `/usr/local/share/ca-certificates`. Use `--ca-dir <folder>` or
 `QUACK_SONAR_MCP_CA_DIR` to select another directory. Run `quack sonar-mcp` to
 start a Podman MCP session and list the available SonarQube tools directly from
-Quack. The MCP path is an optional pre-push agent capability; the staged local
-scanner remains the pre-commit check.
+Quack. Use `--toolset` (repeatable or comma-separated), or set the native
+`SONARQUBE_TOOLSETS` environment variable, to enable any SonarQube MCP
+toolsets. Use `--tool` with a JSON object to invoke any advertised read-only
+tool:
+
+```powershell
+quack sonar-mcp --toolset coverage --tool search_files_by_coverage `
+  --arguments '{"projectKey":"Operations.HMI.App.Alarms","branch":"main"}'
+quack sonar-mcp --toolset sources,measures --tool get_component_measures `
+  --arguments '{"component":"Operations.HMI.App.Alarms","metricKeys":["ncloc"]}' --json
+```
+
+Tool names may be the displayed `sonarqube_*` name or the native MCP name.
+`--json` prints the complete successful MCP response for scripting. Quack
+keeps the container in read-only mode, so write-capable tools are not exposed.
+The MCP snapshot is used by watch and pre-commit; the staged local scanner
+remains an additional pre-commit check. The optional `quack agent`
+investigation can use the same read-only MCP capability during pre-push
+analysis.
 
 ## CLI surface
 
@@ -140,7 +167,7 @@ Commands:
   install  Add the quack stanza to .pre-commit-config.yaml and install...
   metrics  Summarize local metrics without network access.
   model    Report model configuration and connectivity without changing it.
-  sonar-mcp Connect to the SonarQube MCP server through Podman.
+  sonar-mcp Connect to, inspect, and invoke read-only SonarQube MCP tools.
   watch    Review changes in the background and cache the result for...
 ```
 

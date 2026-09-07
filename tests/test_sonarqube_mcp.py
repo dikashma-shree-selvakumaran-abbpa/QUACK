@@ -95,6 +95,23 @@ def test_environment_config_auto_mounts_default_ca_directory(
 	)
 
 
+def test_environment_config_passes_arbitrary_toolsets(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	monkeypatch.setenv("SQ_TOKEN", "secret-token")
+	monkeypatch.setenv("SONARQUBE_TOOLSETS", "issues,quality-gates,issues")
+
+	config = sonarqube.SonarQubeMcpConfig.from_environment()
+
+	assert config is not None
+	assert config.toolsets == ("issues", "quality-gates")
+	assert config.child_environment()["SONARQUBE_TOOLSETS"] == (
+		"issues,quality-gates"
+	)
+	command = config.podman_command()
+	assert command.count("SONARQUBE_TOOLSETS") == 1
+
+
 def test_client_translates_tools_and_calls_original_name(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -135,6 +152,7 @@ def test_client_translates_tools_and_calls_original_name(
 			"arguments": {"projectKey": "quack-local"},
 		},
 	)
+	assert client.resolve_tool_name("issues.search") == tool_name
 
 
 def test_client_uses_initialize_and_request_protocol(
@@ -175,6 +193,35 @@ def test_client_uses_initialize_and_request_protocol(
 	]
 	assert captured["env"]["SONARQUBE_TOKEN"] == "secret-token"
 	assert "secret-token" not in captured["command"]
+
+
+def test_client_surfaces_server_diagnostic_instead_of_timeout(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	config = sonarqube.SonarQubeMcpConfig(token="secret-token")
+	client = sonarqube.SonarQubeMcpClient(config)
+	monkeypatch.setattr(
+		sonarqube.runio,
+		"run_sonarqube_mcp",
+		lambda *args, **kwargs: (
+			-1,
+			(
+				'Exception in thread "main" '
+				"org.sonarsource.UnauthorizedException: "
+				"SonarQube answered with Not authorized. "
+				"Please check server credentials.\n"
+				"\tat server.Main.run(Main.java:1)\n"
+			),
+		),
+	)
+
+	with pytest.raises(sonarqube.SonarQubeMcpUnavailable) as excinfo:
+		client._exchange("tools/list", {}, request_id=2)
+
+	assert excinfo.value.reason == (
+		"SonarQube MCP server failed: SonarQube answered with Not authorized. "
+		"Please check server credentials."
+	)
 
 
 def test_read_only_annotation_filters_write_tool() -> None:

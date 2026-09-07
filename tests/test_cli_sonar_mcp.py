@@ -89,6 +89,136 @@ def test_sonar_mcp_reports_vulnerability_query_failure(monkeypatch) -> None:
 	assert "SonarQube returned HTTP 503" in result.output
 
 
+def test_sonar_mcp_invokes_arbitrary_tool_with_json_arguments(monkeypatch) -> None:
+	captured = {}
+	connection = {}
+
+	class FakeClient:
+		project_key = None
+
+		def tool_definitions(self):
+			return [
+				{
+					"function": {
+						"name": "sonarqube_get_component_measures"
+					}
+				}
+			]
+
+		def resolve_tool_name(self, name):
+			return (
+				"sonarqube_get_component_measures"
+				if name in {
+					"sonarqube_get_component_measures",
+					"get_component_measures",
+				}
+				else None
+			)
+
+		def call_tool_response(self, name, arguments):
+			captured["name"] = name
+			captured["arguments"] = arguments
+			return {
+				"content": [{"type": "text", "text": "measures found"}],
+				"structuredContent": {"component": {"key": "quack-local"}},
+			}
+
+	monkeypatch.setattr(
+		cli.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (connection.update(kwargs) or FakeClient(), None),
+	)
+
+	result = CliRunner().invoke(
+		cli.main,
+		[
+			"sonar-mcp",
+			"--toolset",
+			"measures,coverage",
+			"--tool",
+			"get_component_measures",
+			"--arguments",
+			'{"component":"quack-local","metricKeys":["ncloc"]}',
+		],
+	)
+
+	assert result.exit_code == 0
+	assert connection["toolsets"] == ("measures", "coverage")
+	assert captured == {
+		"name": "sonarqube_get_component_measures",
+		"arguments": {
+			"component": "quack-local",
+			"metricKeys": ["ncloc"],
+		},
+	}
+	assert "SonarQube MCP tool completed: sonarqube_get_component_measures" in (
+		result.output
+	)
+	assert "measures found" in result.output
+
+
+def test_sonar_mcp_json_output_contains_only_tool_response(monkeypatch) -> None:
+	class FakeClient:
+		project_key = None
+
+		def tool_definitions(self):
+			return [{"function": {"name": "sonarqube_search_metrics"}}]
+
+		def resolve_tool_name(self, name):
+			return "sonarqube_search_metrics" if name == "search_metrics" else None
+
+		def call_tool_response(self, name, arguments):
+			return {
+				"content": [{"type": "text", "text": "metrics"}],
+				"structuredContent": {"metrics": []},
+			}
+
+	monkeypatch.setattr(
+		cli.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (FakeClient(), None),
+	)
+
+	result = CliRunner().invoke(
+		cli.main,
+		[
+			"sonar-mcp",
+			"--tool",
+			"search_metrics",
+			"--arguments",
+			"{}",
+			"--json",
+		],
+	)
+
+	assert result.exit_code == 0
+	assert result.output.startswith("{")
+	assert result.output.endswith("}\n")
+	assert '"metrics": []' in result.output
+
+
+def test_sonar_mcp_rejects_non_object_tool_arguments(monkeypatch) -> None:
+	class FakeClient:
+		project_key = None
+
+		def tool_definitions(self):
+			return []
+
+	monkeypatch.setattr(
+		cli.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (FakeClient(), None),
+	)
+
+	result = CliRunner().invoke(
+		cli.main,
+		["sonar-mcp", "--tool", "anything", "--arguments", "[]"],
+	)
+
+	assert result.exit_code == 2
+	assert "--arguments must contain a JSON object" in result.output
+
+
 def test_sonar_mcp_accepts_external_project_options(monkeypatch, tmp_path) -> None:
 	captured = {}
 	ca_dir = tmp_path / "certs"
