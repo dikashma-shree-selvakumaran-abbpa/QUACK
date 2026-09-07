@@ -144,6 +144,7 @@ def test_agent_never_sends_a_secret_to_the_model(monkeypatch) -> None:
 	monkeypatch.setenv("GITHUB_TOKEN", "t")
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr(cli.tier2, "review_with_reason", fake_review)
 	monkeypatch.setattr("quack.cli.agent_mod.run", fake_agent_run)
 
@@ -180,11 +181,12 @@ def _plain_delta(*, root=None):
 
 def _stub_agent_loop(monkeypatch):
 	"""Make the agent loop a no-op success so tests focus on the Tier 2 pre-pass."""
-	from quack import agent as agent_mod
+	from quack import agent as agent_mod, cli
 
 	def fake_run_agent(diff, root, model, timeout_s=None):
 		return agent_mod.AgentResult(summary="ok")
 
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr("quack.providers.copilot_sdk.run_agent", fake_run_agent)
 
 
@@ -230,6 +232,7 @@ def test_agent_renders_nothing_and_still_runs_when_review_returns_none(monkeypat
 	monkeypatch.setenv("GITHUB_TOKEN", "t")
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr(
 		cli.tier2, "review_with_reason", lambda *a, **k: (None, "model unavailable")
 	)
@@ -264,6 +267,7 @@ def test_agent_survives_tier2_exception_without_changing_exit_code(monkeypatch) 
 	monkeypatch.setenv("GITHUB_TOKEN", "t")
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr(cli.tier2, "review_with_reason", boom)
 	monkeypatch.setattr("quack.providers.copilot_sdk.run_agent", fake_run_agent)
 
@@ -406,6 +410,7 @@ def test_agent_renders_dim_reason_when_tier2_raises(monkeypatch) -> None:
 	monkeypatch.setenv("GITHUB_TOKEN", "t")
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr(cli.tier2, "review_with_reason", boom)
 	monkeypatch.setattr("quack.providers.copilot_sdk.run_agent", fake_run_agent)
 
@@ -442,6 +447,7 @@ def test_agent_runs_under_copilot_sdk_without_github_token(monkeypatch) -> None:
 	# copilot_sdk provider reports available regardless of GITHUB_TOKEN.
 	monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 	monkeypatch.setattr(cli.llmio, "availability_error", lambda: None)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
 	monkeypatch.setattr(
@@ -467,6 +473,7 @@ def test_agent_fails_open_with_provider_reason(monkeypatch) -> None:
 		raise AssertionError("agent must not run when provider is unavailable")
 
 	monkeypatch.setattr(cli.llmio, "availability_error", lambda: "no GITHUB_TOKEN")
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
 	monkeypatch.setattr("quack.providers.copilot_sdk.run_agent", fake_run_agent)
@@ -642,6 +649,7 @@ def test_agent_exits_cleanly_when_nothing_staged_or_unpushed(monkeypatch) -> Non
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
 	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: None)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr("quack.cli.agent_mod.run", no_agent)
 
 	result = CliRunner().invoke(cli.main, ["agent"])
@@ -687,6 +695,7 @@ def test_agent_range_path_blocks_a_secret_before_transmission(monkeypatch) -> No
 	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/main")
 	monkeypatch.setattr(cli.gitio, "range_delta", lambda *a, **k: range_delta)
 	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 1)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr(cli.tier2, "review_with_reason", fake_review)
 	monkeypatch.setattr("quack.providers.copilot_sdk.run_agent", fake_run_agent)
 
@@ -724,6 +733,7 @@ def test_agent_blocks_push_when_tier1_finds_a_secret(monkeypatch) -> None:
 	monkeypatch.setenv("GITHUB_TOKEN", "t")
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
 	monkeypatch.setattr(cli.tier2, "review_with_reason", no_model)
 	monkeypatch.setattr("quack.cli.agent_mod.run", no_model)
 

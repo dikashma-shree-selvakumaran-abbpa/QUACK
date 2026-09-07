@@ -434,6 +434,16 @@ def agent(model: str | None, fly: bool) -> None:
 	started = time.perf_counter()
 	resolved_model = _resolve_agent_model(model)
 	provider = os.environ.get("QUACK_PROVIDER") or llmio.DEFAULT_PROVIDER
+	try:
+		models = llmio.list_models()
+	except Exception:
+		pass
+	else:
+		if resolved_model and resolved_model not in models:
+			render.warning(
+				f"Agent model {resolved_model} is not in the provider catalog and "
+				"will fail at runtime. Run `quack model --list` to see available models."
+			)
 	# Whether the agent can authenticate is a PROVIDER concern, not a CLI
 	# one: copilot_sdk authenticates via the Copilot CLI's stored OAuth
 	# login. Ask the selected provider (via llmio) rather than hardcoding
