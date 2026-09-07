@@ -10,6 +10,14 @@ terminal is required.
 The server listens on `http://127.0.0.1:8787` by default. Point the extension
 elsewhere with the `quack.serverUrl` setting.
 
+## Prerequisites
+
+The extension requires `quack.exe` to be installed. If you have the quack CLI,
+run `quack install` in any repo and the binary will be placed automatically.
+If you are starting from the VS Code extension only, download `quack.exe` from
+the GitHub releases page and place it at:
+`%LOCALAPPDATA%\quack\quack.exe`
+
 ## First-time setup
 
 When you open a repo without quack hooks installed, a notification offers to
