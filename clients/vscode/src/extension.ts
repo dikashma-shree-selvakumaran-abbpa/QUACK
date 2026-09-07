@@ -178,6 +178,7 @@ async function runCheck(): Promise<void> {
         vscode.window.showInformationMessage("quack: no findings.");
     }
     await refreshStatus();
+    void checkInstallPlan();
 }
 
 interface ModelsResponse {
@@ -334,6 +335,82 @@ async function openReport(job: AgentJob, model: string): Promise<void> {
     });
     await vscode.window.showTextDocument(doc, { preview: false });
 }
+async function checkInstallPlan(): Promise<void> {
+    const root = workspaceRoot();
+    if (!root) {
+        return;
+    }
+    try {
+        const res = await fetch(
+            `${serverUrl()}/install/plan?repo_path=${encodeURIComponent(root)}`
+        );
+        if (res.ok) {
+            const data = (await res.json()) as InstallPlanResponse;
+            panel?.setInstallPlan(data);
+        }
+    } catch {
+        // Server not reachable — leave plan as null, no warning shown.
+    }
+}
+
+async function runInstall(): Promise<void> {
+    const root = workspaceRoot();
+    if (!root) {
+        return;
+    }
+    const plan = await (async () => {
+        try {
+            const res = await fetch(
+                `${serverUrl()}/install/plan?repo_path=${encodeURIComponent(root)}`
+            );
+            return res.ok ? ((await res.json()) as InstallPlanResponse) : null;
+        } catch {
+            return null;
+        }
+    })();
+
+    if (!plan) {
+        vscode.window.showErrorMessage("quack: could not reach server.");
+        return;
+    }
+    if (plan.strategy === "unsupported_hooks_path") {
+        vscode.window.showErrorMessage(
+            `quack: unsupported hooks path '${plan.hooksPath}'. Run 'quack install' manually.`
+        );
+        return;
+    }
+    if (plan.strategy === "husky" && plan.huskyFilesTracked) {
+        const answer = await vscode.window.showWarningMessage(
+            "quack: husky hooks are tracked in git — installing will affect everyone on this branch.",
+            "Install",
+            "Cancel"
+        );
+        if (answer !== "Install") {
+            return;
+        }
+    }
+    try {
+        const res = await post("/install", {
+            repo_path: root,
+            use_local: true,
+            install_gitleaks: false,
+            consent_husky: plan.strategy === "husky",
+        });
+        const steps = (res.steps as { name: string; ok: boolean; detail: string }[]) ?? [];
+        const failed = steps.filter((s) => !s.ok);
+        if (failed.length > 0) {
+            vscode.window.showErrorMessage(
+                `quack: install partially failed — ${failed.map((s) => s.name).join(", ")}`
+            );
+        } else {
+            vscode.window.showInformationMessage("quack: hooks installed.");
+        }
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(`quack: ${message}`);
+    }
+    await checkInstallPlan();
+}
 function renderStages(job: AgentJob, shown: Set<string>): void {
     const t1 = job.stages.tier1;
     if (t1 && !shown.has("tier1")) {
@@ -471,6 +548,7 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
     private findings: Finding[] = [];
     private blocked = false;
     private checked = false;
+    private installPlan: InstallPlanResponse | null = null;
 
     refresh(): void {
         this.emitter.fire();
@@ -478,6 +556,11 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
 
     setStatus(status: StatusResponse | null): void {
         this.status = status;
+        this.refresh();
+    }
+
+    setInstallPlan(plan: InstallPlanResponse | null): void {
+        this.installPlan = plan;
         this.refresh();
     }
 
@@ -496,7 +579,11 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
         if (node) {
             return node.children ?? [];
         }
-        return [this.statusNode(), this.actionsNode(), this.findingsNode()];
+        const nodes = [this.statusNode(), this.actionsNode(), this.findingsNode()];
+        if (this.installPlan && !this.installPlan.hooksInstalled) {
+            nodes.splice(1, 0, this.installPromptNode());
+        }
+        return nodes;
     }
 
     private statusNode(): QuackNode {
@@ -510,6 +597,18 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
             : "run 'quack serve'";
         item.tooltip = this.status?.availabilityError ?? serverUrl();
         return item;
+    }
+
+    private installPromptNode(): QuackNode {
+        const node = new QuackNode(
+            "Hooks not installed",
+            vscode.TreeItemCollapsibleState.None
+        );
+        node.iconPath = new vscode.ThemeIcon("warning");
+        node.description = "commits are not being checked";
+        node.tooltip = "Click to install quack hooks into this repository";
+        node.command = { command: "quack.install", title: "Set up hooks" };
+        return node;
     }
 
     private actionsNode(): QuackNode {
@@ -559,6 +658,17 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
     }
 }
 
+
+interface InstallPlanResponse {
+    schemaVersion: number;
+    repository: string;
+    strategy: string;
+    hooksPath: string | null;
+    hooksInstalled: boolean;
+    huskyFilesTracked: boolean;
+    preCommitAvailable: boolean;
+    gitleaksAvailable: boolean;
+}
 let panel: QuackProvider;
 import * as cp from "child_process";
 import * as path from "path";
@@ -647,10 +757,11 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand("quack.check", runCheck),
         vscode.commands.registerCommand("quack.agent", runAgent),
         vscode.commands.registerCommand("quack.selectModel", selectModel),
+        vscode.commands.registerCommand("quack.install", runInstall),
         vscode.window.registerTreeDataProvider("quack.panel", panel),
         output
     );
-    void ensureServer().then(() => refreshStatus());
+    void ensureServer().then(() => { void refreshStatus(); void checkInstallPlan(); });
 }
 
 export function deactivate(): void {
