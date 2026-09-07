@@ -21,7 +21,18 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import gitio, instructions, llmio, metrics, render, reviewcache, testmap, tier2
+from . import (
+	gitio,
+	instructions,
+	llmio,
+	metrics,
+	render,
+	reviewcache,
+	sonar_report,
+	testmap,
+	tier2,
+)
+from .sonar_report import SonarQubeReportResult
 from .tier1 import Tier1Config
 from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
@@ -37,6 +48,7 @@ class WatchResult:
 	risk: str | None = None
 	reason: str | None = None
 	diff_hash: str | None = None
+	sonar_report: SonarQubeReportResult | None = None
 
 
 def review_once(
@@ -48,16 +60,29 @@ def review_once(
 	started = time.perf_counter()
 	result = _review_once(repo_root, model, quiet=quiet)
 	try:
-		metrics.log(
-			{
-				"ts": metrics.timestamp(),
-				"command": "watch",
-				"duration_ms": int((time.perf_counter() - started) * 1000),
-				"files": result.files,
-				"risk": result.risk,
-				"failure": result.reason,
-			}
-		)
+		event = {
+			"ts": metrics.timestamp(),
+			"command": "watch",
+			"duration_ms": int((time.perf_counter() - started) * 1000),
+			"files": result.files,
+			"risk": result.risk,
+			"failure": result.reason,
+		}
+		if result.sonar_report is not None:
+			event.update(
+				{
+					"sonar_mcp_status": result.sonar_report.status,
+					"sonar_mcp_duration_ms": int(
+						result.sonar_report.duration_s * 1000
+					),
+					"sonar_mcp_failure": (
+						result.sonar_report.reason
+						if result.sonar_report.status != "passed"
+						else None
+					),
+				}
+			)
+		metrics.log(event)
 	except Exception:
 		pass
 	return result
@@ -69,12 +94,14 @@ def _review_once(
 	quiet: bool = False,
 ) -> WatchResult:
 	root = Path(repo_root)
+	sonar_result: SonarQubeReportResult | None = None
 	delta = gitio.staged_delta(root=str(root))
 	if not delta.files:
 		delta = gitio.working_delta(root=str(root))
 	if not delta.files:
 		return WatchResult(files=0, reason="no changes")
 
+	sonar_result = sonar_report.run(delta, root, source="watch")
 	findings = tier1_run(delta, Tier1Config())
 	redacted = tier1_redact(delta, findings)
 	plan = testmap.build_plan(delta, root=root)
@@ -91,11 +118,20 @@ def _review_once(
 		return WatchResult(
 			files=len(delta.files),
 			reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+			sonar_report=sonar_result,
 		)
 	if not resolved_model:
-		return WatchResult(files=len(delta.files), reason="no model configured")
+		return WatchResult(
+			files=len(delta.files),
+			reason="no model configured",
+			sonar_report=sonar_result,
+		)
 	if availability:
-		return WatchResult(files=len(delta.files), reason=availability)
+		return WatchResult(
+			files=len(delta.files),
+			reason=availability,
+			sonar_report=sonar_result,
+		)
 
 	if quiet:
 		try:
@@ -112,6 +148,7 @@ def _review_once(
 			return WatchResult(
 				files=len(delta.files),
 				reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+				sonar_report=sonar_result,
 			)
 	else:
 		with render.thinking("reviewing changes..."):
@@ -129,22 +166,25 @@ def _review_once(
 				return WatchResult(
 					files=len(delta.files),
 					reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+					sonar_report=sonar_result,
 				)
 	if review is None:
 		return WatchResult(
 			files=len(delta.files),
 			reason=reason or availability or "AI analysis unavailable",
+			sonar_report=sonar_result,
 		)
 
 	payload = asdict(review)
 	payload["model"] = resolved_model
 	d_hash = reviewcache.diff_hash(redacted.raw_diff)
-	reviewcache.write(
-		root,
-		d_hash,
-		payload,
-		)
-	return WatchResult(files=len(delta.files), risk=review.risk, diff_hash=d_hash)
+	reviewcache.write(root, d_hash, payload)
+	return WatchResult(
+		files=len(delta.files),
+		risk=review.risk,
+		diff_hash=d_hash,
+		sonar_report=sonar_result,
+	)
 
 
 def run(
@@ -181,8 +221,11 @@ def snapshot(repo_root: str | Path) -> dict[str, tuple[int, int]]:
 			for filename in filenames:
 				path = Path(dirpath) / filename
 				try:
+					relative = path.relative_to(root).as_posix()
+					if sonar_report.is_report_file(relative):
+						continue
 					stat = path.stat()
-					state[path.relative_to(root).as_posix()] = (
+					state[relative] = (
 						stat.st_mtime_ns,
 						stat.st_size,
 					)

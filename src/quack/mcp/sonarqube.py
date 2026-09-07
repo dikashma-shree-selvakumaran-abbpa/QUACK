@@ -1,10 +1,11 @@
-"""SonarQube MCP client used by the optional pre-push agent integration.
+"""SonarQube MCP client used by Quack's optional advisory integrations.
 
-The regular pre-commit SonarQube path remains in :mod:`quack.sonar` and uses
-the local scanner. This module is a separate, dependency-free MCP client for
-the Podman stdio server described by ``.vscode/mcp.json``. It discovers the
-server's tools and translates them to the OpenAI tool shape used by quack's
-agent without ever placing the token in a command argument or log message.
+The local staged SonarQube path remains in :mod:`quack.sonar` and uses the
+scanner. This module is a separate, dependency-free MCP client for the Podman
+stdio server described by ``.vscode/mcp.json``. It discovers the server's
+tools and translates them to the OpenAI tool shape used by the agent and the
+shared watch/pre-commit report without ever placing the token in a command
+argument or log message.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import urlsplit
 
 from .. import runio
@@ -62,6 +63,7 @@ class SonarQubeMcpConfig:
 	ide_port: int = DEFAULT_IDE_PORT
 	project_path: Path | None = None
 	project_key: str | None = None
+	toolsets: tuple[str, ...] = ()
 	ca_dir: Path | None = None
 	image: str = DEFAULT_IMAGE
 	timeout_s: float = DEFAULT_TIMEOUT_S
@@ -73,6 +75,7 @@ class SonarQubeMcpConfig:
 		*,
 		project_path: str | Path | None = None,
 		project_key: str | None = None,
+		toolsets: Sequence[str] | str | None = None,
 		ca_dir: str | Path | None = None,
 		server_url: str | None = None,
 		base_path: str | Path | None = None,
@@ -104,6 +107,11 @@ class SonarQubeMcpConfig:
 		)
 		if raw_project_key and not _PROJECT_KEY_RE.fullmatch(raw_project_key.strip()):
 			raise SonarQubeMcpUnavailable("invalid SonarQube project key")
+		resolved_toolsets = _normalise_toolsets(
+			toolsets
+			if toolsets is not None
+			else os.environ.get("SONARQUBE_TOOLSETS")
+		)
 		image = os.environ.get("QUACK_SONAR_MCP_IMAGE", DEFAULT_IMAGE).strip()
 		if not _IMAGE_RE.fullmatch(image) or image.startswith("-"):
 			raise SonarQubeMcpUnavailable("invalid SonarQube MCP image")
@@ -113,6 +121,7 @@ class SonarQubeMcpConfig:
 			ide_port=_ide_port(),
 			project_path=resolved_project_path,
 			project_key=raw_project_key.strip() if raw_project_key else None,
+			toolsets=resolved_toolsets,
 			ca_dir=resolved_ca_dir,
 			image=image,
 			timeout_s=_timeout_seconds(),
@@ -141,6 +150,8 @@ class SonarQubeMcpConfig:
 		]
 		if self.project_key:
 			command += ["-e", "SONARQUBE_PROJECT_KEY"]
+		if self.toolsets:
+			command += ["-e", "SONARQUBE_TOOLSETS"]
 		if self.project_path:
 			command += [
 				"-v",
@@ -164,6 +175,8 @@ class SonarQubeMcpConfig:
 		environment["SONARQUBE_READ_ONLY"] = "true"
 		if self.project_key:
 			environment["SONARQUBE_PROJECT_KEY"] = self.project_key
+		if self.toolsets:
+			environment["SONARQUBE_TOOLSETS"] = ",".join(self.toolsets)
 		return environment
 
 
@@ -210,7 +223,20 @@ class SonarQubeMcpClient:
 
 	def has_tool(self, name: str) -> bool:
 		"""Return whether ``name`` is one of this client's advertised tools."""
-		return name in self._name_map
+		return self.resolve_tool_name(name) is not None
+
+	def resolve_tool_name(self, name: str) -> str | None:
+		"""Resolve an OpenAI-prefixed or native MCP name to the advertised name."""
+		if not isinstance(name, str) or not name.strip():
+			return None
+		self.tool_definitions()
+		candidate = name.strip()
+		if candidate in self._name_map:
+			return candidate
+		for openai_name, original_name in self._name_map.items():
+			if original_name == candidate:
+				return openai_name
+		return None
 
 	@property
 	def project_key(self) -> str | None:
@@ -221,6 +247,12 @@ class SonarQubeMcpClient:
 		"""Call an advertised tool and return bounded model-readable content."""
 		result = self._call_tool_result(name, arguments)
 		return _format_tool_result(result)
+
+	def call_tool_response(
+		self, name: str, arguments: dict[str, Any]
+	) -> dict[str, Any]:
+		"""Call an advertised tool and return its complete MCP response."""
+		return self._call_tool_result(name, arguments)
 
 	def call_tool_data(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 		"""Call a tool and return its structured JSON result."""
@@ -252,9 +284,10 @@ class SonarQubeMcpClient:
 	def _call_tool_result(
 		self, name: str, arguments: dict[str, Any]
 	) -> dict[str, Any]:
-		original_name = self._name_map.get(name)
-		if original_name is None:
+		openai_name = self.resolve_tool_name(name)
+		if openai_name is None:
 			raise SonarQubeMcpUnavailable("unknown SonarQube MCP tool")
+		original_name = self._name_map[openai_name]
 		if not isinstance(arguments, dict):
 			raise SonarQubeMcpUnavailable("invalid SonarQube MCP arguments")
 		return self._exchange(
@@ -329,6 +362,11 @@ class SonarQubeMcpClient:
 		)
 		if exit_code != 0:
 			if exit_code == -1:
+				diagnostic = _server_diagnostic(output, self._config.token)
+				if diagnostic:
+					raise SonarQubeMcpUnavailable(
+						f"SonarQube MCP server failed: {diagnostic}"
+					)
 				raise SonarQubeMcpUnavailable("SonarQube MCP server timed out")
 			if exit_code == 127:
 				raise SonarQubeMcpUnavailable("podman not found on PATH")
@@ -360,6 +398,7 @@ def client_from_environment(
 	*,
 	project_path: str | Path | None = None,
 	project_key: str | None = None,
+	toolsets: Sequence[str] | str | None = None,
 	ca_dir: str | Path | None = None,
 	server_url: str | None = None,
 	base_path: str | Path | None = None,
@@ -369,6 +408,7 @@ def client_from_environment(
 		require_provider=True,
 		project_path=project_path,
 		project_key=project_key,
+		toolsets=toolsets,
 		ca_dir=ca_dir,
 		server_url=server_url,
 		base_path=base_path,
@@ -381,6 +421,7 @@ def connection_from_environment(
 	require_provider: bool = False,
 	project_path: str | Path | None = None,
 	project_key: str | None = None,
+	toolsets: Sequence[str] | str | None = None,
 	ca_dir: str | Path | None = None,
 	server_url: str | None = None,
 	base_path: str | Path | None = None,
@@ -400,6 +441,7 @@ def connection_from_environment(
 		config = SonarQubeMcpConfig.from_environment(
 			project_path=project_path,
 			project_key=project_key,
+			toolsets=toolsets,
 			ca_dir=ca_dir,
 			server_url=server_url,
 			base_path=base_path,
@@ -448,6 +490,32 @@ def _token_from_environment() -> str:
 		or os.environ.get("SQ_TOKEN", "").strip()
 		or os.environ.get("SONAR_TOKEN", "").strip()
 	)
+
+
+def _normalise_toolsets(
+	raw_toolsets: Sequence[str] | str | None,
+) -> tuple[str, ...]:
+	"""Validate and de-duplicate arbitrary SonarQube toolset keys."""
+	if raw_toolsets is None:
+		return ()
+	values = (
+		[raw_toolsets]
+		if isinstance(raw_toolsets, str)
+		else list(raw_toolsets)
+	)
+	toolsets: list[str] = []
+	for value in values:
+		if not isinstance(value, str):
+			raise SonarQubeMcpUnavailable("invalid SonarQube MCP toolset")
+		for item in value.split(","):
+			item = item.strip()
+			if not item:
+				continue
+			if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", item):
+				raise SonarQubeMcpUnavailable("invalid SonarQube MCP toolset")
+			if item not in toolsets:
+				toolsets.append(item)
+	return tuple(toolsets)
 
 
 def _resolve_project_path(
@@ -653,6 +721,11 @@ def _format_tool_result(result: dict[str, Any]) -> str:
 	return text
 
 
+def format_tool_result(result: dict[str, Any]) -> str:
+	"""Return bounded display text for a complete MCP tool response."""
+	return _format_tool_result(result)
+
+
 def _is_read_only(tool: dict[str, Any]) -> bool:
 	annotations = tool.get("annotations")
 	if isinstance(annotations, dict) and annotations.get("readOnlyHint") is False:
@@ -674,6 +747,24 @@ def _safe_reason(value: object, token: str) -> str:
 	if token:
 		reason = reason.replace(token, "<redacted>")
 	return _short_reason(reason)
+
+
+def _server_diagnostic(output: str, token: str) -> str | None:
+	"""Extract a useful one-line failure from server startup diagnostics."""
+	for line in reversed(output.splitlines()):
+		line = " ".join(line.split())
+		if not line:
+			continue
+		match = re.search(
+			r"(?:[A-Za-z_][A-Za-z0-9_.$]*)(?:Exception|Error):\s*(.+)$",
+			line,
+		)
+		if match:
+			return _safe_reason(match.group(1), token)
+		lower_line = line.lower()
+		if "not authorized" in lower_line or "unauthorized" in lower_line:
+			return _safe_reason(line, token)
+	return None
 
 
 def _short_reason(value: str) -> str:

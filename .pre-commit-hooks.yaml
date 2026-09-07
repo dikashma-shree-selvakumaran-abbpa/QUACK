@@ -1,7 +1,7 @@
 # See https://pre-commit.com/#creating-new-hooks
 - id: quack
   name: quack
-  description: Deterministic checks with optional local SonarQube analysis.
+  description: Deterministic checks with optional local SonarQube analysis and MCP snapshot.
   entry: quack check
   language: python
   pass_filenames: false

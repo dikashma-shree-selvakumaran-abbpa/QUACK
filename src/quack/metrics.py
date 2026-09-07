@@ -44,6 +44,9 @@ _ALLOWED_KEYS = frozenset(
 		"sonar_status",
 		"sonar_duration_ms",
 		"sonar_failure",
+		"sonar_mcp_status",
+		"sonar_mcp_duration_ms",
+		"sonar_mcp_failure",
 		"failure",
 	}
 )
@@ -58,10 +61,17 @@ _NUMERIC_KEYS = frozenset(
 		"untested_sources",
 		"exit",
 		"sonar_duration_ms",
+		"sonar_mcp_duration_ms",
 	}
 )
 _FAILURE_KEYS = frozenset(
-	{"tier2_failure", "agent_failure", "sonar_failure", "failure"}
+	{
+		"tier2_failure",
+		"agent_failure",
+		"sonar_failure",
+		"sonar_mcp_failure",
+		"failure",
+	}
 )
 _RISKS = frozenset({"low", "medium", "high"})
 _SONAR_STATUSES = frozenset({"passed", "skipped", "failed"})
@@ -116,6 +126,10 @@ def _sanitize_event(event: dict) -> dict[str, Any]:
 				sanitized[key] = value
 			continue
 		if key == "sonar_status":
+			if value in _SONAR_STATUSES:
+				sanitized[key] = value
+			continue
+		if key == "sonar_mcp_status":
 			if value in _SONAR_STATUSES:
 				sanitized[key] = value
 			continue
