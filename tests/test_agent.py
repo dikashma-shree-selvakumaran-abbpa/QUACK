@@ -190,6 +190,29 @@ def _stub_agent_loop(monkeypatch):
 	monkeypatch.setattr("quack.providers.copilot_sdk.run_agent", fake_run_agent)
 
 
+def test_catalog_drift_warning_shown_when_model_not_in_catalog(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["some-other-model"])
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	monkeypatch.setattr(
+		"quack.providers.copilot_sdk.run_agent",
+		lambda *a, **k: agent.AgentResult(summary="ok"),
+	)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "is not in the provider catalog" in result.output
+
+
 def test_agent_renders_tier2_verdict_when_review_returns_result(monkeypatch) -> None:
 	from click.testing import CliRunner
 

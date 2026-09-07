@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from quack import cli, watch
@@ -18,6 +19,16 @@ def _delta() -> StagedDelta:
 		files=[StagedFile("src/app.py", "M", 1, 0, [hunk])],
 		raw_diff=hunk,
 	)
+
+
+def test_review_once_propagates_when_gitio_raises(monkeypatch) -> None:
+	def raise_gitio_error(*, root=None):
+		raise RuntimeError("simulated gitio failure")
+
+	monkeypatch.setattr(watch.gitio, "staged_delta", raise_gitio_error)
+
+	with pytest.raises(RuntimeError, match="simulated gitio failure"):
+		watch.review_once("/repo")
 
 
 def test_watch_once_reviews_and_writes_cache(monkeypatch) -> None:
