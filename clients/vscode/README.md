@@ -4,12 +4,28 @@ AI-assisted code review inside VS Code, backed by the quack engine.
 
 ## Requirements
 
-QUACK talks to a running quack server. Start one first:
-
-    quack serve
+When VS Code opens, the extension starts `quack serve` automatically. No
+terminal is required.
 
 The server listens on `http://127.0.0.1:8787` by default. Point the extension
 elsewhere with the `quack.serverUrl` setting.
+
+## First-time setup
+
+When you open a repo without quack hooks installed, a notification offers to
+set them up. Click **Set up** and the extension installs the pre-commit and
+pre-push hooks automatically.
+
+## The sidebar
+
+The QUACK panel in the Activity Bar shows server status, the selected model,
+actions to check staged changes, run the agent, or select a model, findings from
+the last check, and a warning when hooks are missing.
+
+## The model picker
+
+**QUACK: Select model** opens a list of reachable models. Selecting one
+persists it per workspace. Larger models cost more per run.
 
 ## Commands
 
