@@ -197,6 +197,26 @@ def test_run_is_fail_open_when_required_tools_are_missing(
 	assert "required MCP tool is unavailable" in content
 
 
+def test_precommit_snapshot_does_not_modify_living_report(
+	monkeypatch,
+	tmp_path: Path,
+) -> None:
+	client = _CompleteClient()
+	monkeypatch.setattr(sonar_report.sonarqube_mcp, "enabled", lambda: True)
+	monkeypatch.setattr(
+		sonar_report.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (client, None),
+	)
+
+	result = sonar_report.run(_delta(), tmp_path, source="pre-commit")
+
+	assert result is not None
+	assert result.violation_count == 1
+	assert result.report_path is None
+	assert not (tmp_path / "docs" / "SONARQUBE_REPORT.md").exists()
+
+
 def test_run_honors_external_mcp_project_path(
 	monkeypatch,
 	tmp_path: Path,
