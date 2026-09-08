@@ -4,7 +4,7 @@
 
 
 **quack** `v0.3.1` · Python 3.11+ · Windows / Linux 
-<https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK>
+<https://github.com/ABB-AU-PCP/QUACK>
 
 ---
 

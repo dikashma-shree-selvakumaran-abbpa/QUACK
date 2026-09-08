@@ -134,7 +134,7 @@ adds three commands:
 
 ## Install
 
-1. `pipx install git+https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK`
+1. `pipx install git+https://github.com/ABB-AU-PCP/QUACK`
 2. Run `copilot`, enter `/login`, complete the browser flow, then exit.
 3. In your repository, run `quack install`.
 

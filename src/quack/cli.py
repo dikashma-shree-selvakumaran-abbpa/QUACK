@@ -1,4 +1,4 @@
-﻿"""quack command-line interface.
+"""quack command-line interface.
 
 Subcommands:
 	check   the hook entry (Tier 1 + Tier 2 orchestration)
@@ -43,7 +43,7 @@ from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
 from .tier1 import should_block
 
-QUACK_REPO_URL = "https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK"
+QUACK_REPO_URL = "https://github.com/ABB-AU-PCP/QUACK"
 
 
 def _version_string() -> str:

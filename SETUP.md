@@ -11,7 +11,7 @@
 1. Install quack:
 
    ```shell
-   pipx install git+https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK
+   pipx install git+https://github.com/ABB-AU-PCP/QUACK
    ```
 
 2. Sign in to Copilot. Run `copilot`, enter `/login`, complete the browser flow, then exit the CLI.
