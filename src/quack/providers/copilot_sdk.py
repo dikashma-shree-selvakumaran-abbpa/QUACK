@@ -20,17 +20,22 @@ reason so callers can implement fail-open behaviour.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from pathlib import Path
 
 from .. import render
 from ..llmio import LLMUnavailable
 
 try:  # pragma: no cover - exercised via monkeypatch in tests
-	from copilot import CopilotClient
+	from copilot import CopilotClient, ToolResult, define_tool
 except ImportError:  # pragma: no cover - SDK is an optional runtime dep
 	CopilotClient = None
+	ToolResult = None
+	define_tool = None
 
 # Realistic minimum timeout for this transport. The Copilot SDK must start a
 # local runtime (~9s) before inference, so a short bound guarantees a timeout
@@ -44,7 +49,7 @@ DEFAULT_TIMEOUT_S = 60.0
 # multi-step tool-using investigation needs a stronger one (sonnet) or it
 # loops and fails.
 DEFAULT_COMPLETION_MODEL = "claude-haiku-4.5"
-DEFAULT_AGENT_MODEL = "claude-sonnet-4.5"
+DEFAULT_AGENT_MODEL = "claude-sonnet-5"
 
 _AUTH_MESSAGE = (
 	"Copilot login expired or unavailable — run `copilot` then `/login`. "
@@ -53,6 +58,11 @@ _AUTH_MESSAGE = (
 )
 _COPILOT_REQUESTS_MESSAGE = (
 	"Copilot access denied — your PAT needs the `Copilot Requests` permission."
+)
+_NATIVE_FINAL_INSTRUCTION = (
+	"After investigating the changes and gathering the relevant evidence, "
+	"reply with ONLY the final JSON verdict: "
+	"{summary, tests_run, failures, proposed_patch, proposed_new_tests}."
 )
 
 
@@ -127,7 +137,9 @@ def _error_reason(exc: Exception, *, context: str = "copilot sdk error") -> str:
 	elif _is_auth_error(exc):
 		message = _AUTH_MESSAGE
 	elif isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-		stage = getattr(exc, "stage", "inference")
+		# Our own _CopilotTimeout always names a stage; a missing one means the
+		# SDK gave up before quack's deadline expired.
+		stage = getattr(exc, "stage", "provider")
 		message = f"Copilot {stage} timed out."
 	else:
 		message = context
@@ -146,6 +158,11 @@ async def _within_budget(awaitable, deadline: float, stage: str):
 		return await asyncio.wait_for(awaitable, timeout=remaining)
 	except asyncio.TimeoutError as exc:
 		raise _CopilotTimeout(stage) from exc
+
+
+def _remaining_budget(deadline: float, floor: float = 0.001) -> float:
+	"""Return seconds remaining until deadline, floored at a small positive value."""
+	return max(floor, deadline - asyncio.get_running_loop().time())
 
 
 def check_availability() -> str | None:
@@ -270,12 +287,18 @@ async def _complete_async(prompt: str, model: str, timeout_s: float) -> str:
 		# set or forward GITHUB_TOKEN; an env token shadows that login.
 		await _within_budget(client.start(), deadline, "runtime startup")
 		session = await _within_budget(
-			client.create_session(model=model), deadline, "inference"
+			client.create_session(model=model), deadline, "session setup"
 		)
 		for attempt in range(2):
 			try:
+				# CopilotSession.send_and_wait defaults to timeout=60.0, which
+				# silently overrides the caller's budget unless passed explicitly.
 				resp = await _within_budget(
-					session.send_and_wait(prompt), deadline, "inference"
+					session.send_and_wait(
+						prompt, timeout=_remaining_budget(deadline)
+					),
+					deadline,
+					"inference",
 				)
 				break
 			except Exception as exc:
@@ -315,15 +338,243 @@ def complete(
 		raise LLMUnavailable(_error_reason(exc))
 
 
+def _value(obj, name: str, default=None):
+	"""Read SDK hook/event values across SDK versions and test doubles."""
+	if isinstance(obj, dict):
+		return obj.get(name, default)
+	return getattr(obj, name, default)
+
+
+def _tool_result(text: str, *, failure: bool = False):
+	"""Build an SDK result without allowing handler failures to escape."""
+	if ToolResult is None:
+		return text
+	return ToolResult(
+		text_result_for_llm=text,
+		result_type="failure" if failure else "success",
+		error=text if failure else None,
+	)
+
+
+def _agent_tool_schema(name: str) -> dict:
+	if name in ("read_file", "list_dir"):
+		parameter = "path"
+		description = "Repo-relative path."
+	else:
+		parameter = "project_or_paths"
+		description = "csproj [--filter ...] OR .py paths."
+	return {
+		"type": "object",
+		"properties": {parameter: {"type": "string", "description": description}},
+		"required": [parameter],
+		"additionalProperties": False,
+	}
+
+
+def _agent_args(input_data) -> dict:
+	args = _value(input_data, "toolArgs", {})
+	return args if isinstance(args, dict) else {}
+
+
+def _validate_agent_call(root: Path, name: str, args: dict) -> str | None:
+	"""Validate a native invocation before its handler is allowed to run."""
+	from .. import agent
+
+	if name in ("read_file", "list_dir"):
+		path = args.get("path")
+		if not isinstance(path, str) or agent._safe_path(root, path) is None:
+			return "path is outside the repository or invalid"
+		return None
+	if name != "run_tests":
+		return "unknown tool"
+	spec = args.get("project_or_paths")
+	if not isinstance(spec, str) or not spec.strip():
+		return "no test target provided"
+	tokens = spec.split()
+	if any(token.endswith(".csproj") for token in tokens):
+		if "--filter" in tokens:
+			index = tokens.index("--filter")
+			if len(tokens[:index]) != 1 or not tokens[index + 1 :]:
+				return "expected exactly one .csproj path before --filter"
+			value = " ".join(tokens[index + 1 :]).strip().strip('"')
+			if not re.match(r'^[A-Za-z0-9_.~|&=!"\s-]+$', value):
+				return "filter rejected (illegal characters)"
+		elif len(tokens) != 1:
+			return "expected exactly one .csproj path before --filter"
+		if agent._safe_path(root, tokens[0]) is None:
+			return "project is outside the repository"
+		return None
+	if not all(token.endswith(".py") for token in tokens):
+		return "unrecognized target"
+	if any(agent._safe_path(root, token) is None for token in tokens):
+		return "path is outside the repository"
+	return None
+
+
+async def _run_agent_async(
+	diff: str, repo_root: Path, model: str, timeout_s: float
+) -> object:
+	"""Run the investigation through SDK-native tools and one native turn."""
+	from .. import agent
+
+	if CopilotClient is None or define_tool is None:
+		raise LLMUnavailable("copilot sdk not installed")
+	root = Path(repo_root).resolve()
+	started = asyncio.get_running_loop().time()
+	deadline = started + min(max(timeout_s, 0.0), agent.WALL_CLOCK_S)
+	invocations = 0
+	run_tests_used = 0
+	test_outputs: list[str] = []
+
+	# Not invoked: tools are declared with skip_permission=True, so the SDK never
+	# fires on_pre_tool_use. Budget and validation enforcement lives in the tool
+	# handlers below.
+	def pre_tool(input_data):
+		nonlocal invocations, run_tests_used
+		name = str(_value(input_data, "toolName", ""))
+		args = _agent_args(input_data)
+		# Enforcement moved from loop control to denial because the SDK owns
+		# turn progression; every attempted invocation consumes an iteration.
+		invocations += 1
+		if invocations > agent.MAX_ITERATIONS:
+			return {"permissionDecision": "deny", "permissionDecisionReason": "iteration budget exhausted"}
+		if asyncio.get_running_loop().time() - started >= agent.WALL_CLOCK_S:
+			return {"permissionDecision": "deny", "permissionDecisionReason": "wall-clock budget exhausted"}
+		validation_error = _validate_agent_call(root, name, args)
+		if validation_error:
+			return {"permissionDecision": "deny", "permissionDecisionReason": validation_error}
+		if name == "run_tests" and run_tests_used >= agent.MAX_RUN_TESTS:
+			return {"permissionDecision": "deny", "permissionDecisionReason": "run_tests budget exhausted"}
+		if name == "run_tests":
+			run_tests_used += 1
+		return {"permissionDecision": "allow"}
+
+	def make_handler(name: str):
+		async def handler(args):
+			nonlocal invocations, run_tests_used
+			invocations += 1
+			if invocations > agent.MAX_ITERATIONS:
+				return _tool_result("error: iteration budget exhausted", failure=True)
+			if asyncio.get_running_loop().time() - started >= agent.WALL_CLOCK_S:
+				return _tool_result("error: wall-clock budget exhausted", failure=True)
+			call_args = args if isinstance(args, dict) else {}
+			validation_error = _validate_agent_call(root, name, call_args)
+			if validation_error:
+				return _tool_result(f"error: {validation_error}", failure=True)
+			if name == "run_tests":
+				if run_tests_used >= agent.MAX_RUN_TESTS:
+					return _tool_result("error: run_tests budget exhausted", failure=True)
+				run_tests_used += 1
+			try:
+				# agent._run_tests shells out synchronously through runio, so it
+				# is awaited on a worker thread: the event loop stays free to
+				# keep the SDK session alive for the length of the test run.
+				if name == "read_file":
+					result = await asyncio.to_thread(agent._read_file, root, str(call_args.get("path", "")))
+				elif name == "list_dir":
+					result = await asyncio.to_thread(agent._list_dir, root, str(call_args.get("path", "")))
+				else:
+					result = await asyncio.to_thread(
+						agent._run_tests, root, str(call_args.get("project_or_paths", ""))
+					)
+					if result.startswith("exit_code="):
+						test_outputs.append(result)
+				return _tool_result(result, failure=result.startswith("error:"))
+			except Exception:
+				return _tool_result("error: tool execution failed", failure=True)
+		return handler
+
+	tools = []
+	for name, description in (
+		("read_file", "Return the first 300 lines of a repo file."),
+		("list_dir", "List the entry names of a repo directory."),
+		("run_tests", "Run only the permitted pytest or dotnet test target."),
+	):
+		tool = define_tool(name=name, description=description, handler=make_handler(name), skip_permission=True)
+		tool.parameters = _agent_tool_schema(name)
+		tools.append(tool)
+
+	client = CopilotClient()
+	try:
+		await _within_budget(client.start(), deadline, "runtime startup")
+		# Distinct stages are what let a timeout message identify which SDK
+		# operation ran out of budget.
+		session = await _within_budget(
+			client.create_session(
+				model=model,
+				tools=tools,
+				# Permission approval is not the security boundary; the tool
+				# handlers are the authoritative validation and budget point.
+				on_permission_request=lambda *_args, **_kwargs: {"kind": "approved"},
+				hooks={"on_pre_tool_use": pre_tool},
+			),
+			deadline,
+			"agent session setup",
+		)
+		prompt = (
+			agent.SYSTEM_PROMPT
+			+ "\n\nAccumulated local changes (staged diff):\n\n"
+			+ diff
+			+ "\n\n"
+			+ _NATIVE_FINAL_INSTRUCTION
+		)
+		try:
+			response = await _within_budget(
+				session.send_and_wait(
+					prompt, timeout=_remaining_budget(deadline)
+				),
+				deadline,
+				"agent investigation",
+			)
+		except _CopilotTimeout as exc:
+			# Zero tool calls means the SDK never got going; several means the
+			# agent was genuinely working and ran out of budget.
+			if invocations:
+				progress = f"after {invocations} tool call(s)"
+				if run_tests_used:
+					progress += f", {run_tests_used} test run(s)"
+			else:
+				progress = "with no tool calls"
+			raise _CopilotTimeout(f"agent investigation {progress}") from exc
+		content = _value(_value(response, "data"), "content")
+		result = agent._parse_and_validate(content)
+		if result is None:
+			# Native turns have no OpenAI message history to retry; ask the same
+			# session once for schema correction, preserving the one-retry contract.
+			response = await _within_budget(
+				session.send_and_wait(
+					agent._RETRY_MESSAGE,
+					timeout=_remaining_budget(deadline),
+				),
+				deadline,
+				"agent schema retry",
+			)
+			content = _value(_value(response, "data"), "content")
+			result = agent._parse_and_validate(content)
+		return agent._finalize(result, "final JSON schema validation failed", test_outputs)
+	finally:
+		try:
+			await client.stop()
+		except Exception:
+			pass
+
+
+def run_agent(diff: str, repo_root: Path, model: str, timeout_s: float = DEFAULT_TIMEOUT_S):
+	"""Run the SDK-native agent, normalising every failure to LLMUnavailable."""
+	try:
+		_show_runtime_preparation_notice()
+		with _silence_sdk_logging():
+			return asyncio.run(_run_agent_async(diff, repo_root, model, timeout_s))
+	except LLMUnavailable:
+		raise
+	except Exception as exc:
+		raise LLMUnavailable(_error_reason(exc, context="agent unavailable")) from None
+
+
 def chat(
 	messages: list[dict],
 	model: str,
 	tools: list[dict] | None = None,
 ) -> dict:
-	"""Tool calling is unsupported on this provider.
-
-	The Copilot SDK exposes no OpenAI-style ``tool_calls`` surface, so the
-	agent stays on the ``github_models`` provider. We do NOT emulate tool
-	calling; we fail-open instead.
-	"""
+	"""The SDK intentionally has no OpenAI-style chat tool-call surface."""
 	raise LLMUnavailable("tool calling not supported on copilot_sdk provider")

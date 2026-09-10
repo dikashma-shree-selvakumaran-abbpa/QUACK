@@ -173,6 +173,7 @@ def test_agent_report_default_coaches_and_hides_patch(monkeypatch, capsys) -> No
 	# Understanding is always shown.
 	assert "off-by-one in the boundary check" in out
 	# Coaching hint appears, patch content does not.
+	assert "THE DUCK WAY - coaching over crutches" in out
 	assert "run `quack agent --fly`" in out
 	assert "if x >= n" not in out
 	assert "PROPOSED -- not applied" not in out
@@ -189,6 +190,7 @@ def test_agent_report_fly_reveals_patch(monkeypatch, capsys) -> None:
 	# Understanding still shown in fly mode.
 	assert "off-by-one in the boundary check" in out
 	# Patch and apply hint are revealed; coaching line is not.
+	assert "SKIP AHEAD - the patch, not the lesson" in out
 	assert "if x >= n" in out
 	assert "PROPOSED -- not applied" in out
 	assert "git apply" in out

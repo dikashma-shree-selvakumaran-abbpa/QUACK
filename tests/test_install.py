@@ -28,7 +28,8 @@ def _run_install(monkeypatch, tmp_path, args, run_side_effect):
 		result = run_side_effect(cmd)
 		if result is not None:
 			raise result
-		return subprocess.CompletedProcess(cmd, 0)
+		# stdout="" so the core.hooksPath probe reads as "unset".
+		return subprocess.CompletedProcess(cmd, 0, stdout="")
 
 	monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
@@ -129,3 +130,19 @@ def test_precommit_install_quack_agent_has_verbose_flag(monkeypatch, tmp_path):
 			hooks = {h["id"]: h for h in repo["hooks"]}
 			assert hooks["quack-agent"].get("verbose") is True
 			assert "verbose" not in hooks["quack"]
+
+
+def test_quack_path_is_written_into_local_stanza_entries(monkeypatch, tmp_path):
+	exe = r"C:\Users\dev\AppData\Local\quack\quack.exe"
+	result, config, _ = _run_install(
+		monkeypatch, tmp_path, ["--local", "--quack-path", exe], lambda cmd: None
+	)
+
+	assert result.exit_code == 0
+	entries = {
+		hook["id"]: hook["entry"]
+		for repo in config["repos"]
+		for hook in repo.get("hooks", [])
+	}
+	assert entries["quack"] == f'"{exe}" check'
+	assert entries["quack-agent"] == f'"{exe}" agent'

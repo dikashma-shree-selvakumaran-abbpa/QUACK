@@ -39,6 +39,9 @@ MAX_RUN_TESTS = 2
 WALL_CLOCK_S = 180.0
 READ_FILE_MAX_LINES = 300
 OUTPUT_TAIL_LINES = 80
+# pytest exits 5 when no tests were collected - that is "nothing ran",
+# not "something failed".
+NO_TESTS_COLLECTED_EXIT = 5
 
 # C# --filter values may only contain these characters (no shell metacharacters).
 _FILTER_RE = re.compile(r'^[A-Za-z0-9_.~|&=!"\s-]+$')
@@ -126,14 +129,17 @@ TOOLS = [
 			"description": (
 				"Run tests. For C#: a .csproj path plus optional "
 				'--filter "<value>". For Python: one or more .py test '
-				"file paths."
+				"file paths. For JS/TS: npm test, npm run test, npx jest, "
+				"npx vitest, yarn test, yarn jest, vitest, or jest."
 			),
 			"parameters": {
 				"type": "object",
 				"properties": {
 					"project_or_paths": {
 						"type": "string",
-						"description": "csproj [--filter ...] OR .py paths.",
+						"description": (
+							"csproj [--filter ...], .py paths, or JS/TS test command."
+						),
 					}
 				},
 				"required": ["project_or_paths"],
@@ -249,6 +255,10 @@ _OVERRIDE_DIAGNOSIS = (
 	"Non-zero exit code from run_tests; failure present in tool output but "
 	"absent from the model's self-report."
 )
+_INVALID_FINAL_REPORT_SUMMARY = (
+	"Investigation ran, but the model's final report was invalid; failures "
+	"below are from actual test exit codes."
+)
 
 # Matches ".NET" and pytest failure lines, e.g. "Failed Ns.Class.Method [12 ms]"
 # or "FAILED tests/test_x.py::test_y".
@@ -273,7 +283,7 @@ def _reconcile(result: AgentResult, test_run_outputs: list[str]) -> AgentResult:
 	failing_outputs = [
 		output
 		for output in test_run_outputs
-		if (_tool_exit_code(output) or 0) != 0
+		if (_tool_exit_code(output) or 0) not in (0, NO_TESTS_COLLECTED_EXIT)
 	]
 	if not failing_outputs or result.failures:
 		return result
@@ -284,16 +294,24 @@ def _reconcile(result: AgentResult, test_run_outputs: list[str]) -> AgentResult:
 			if name not in failed_names:
 				failed_names.append(name)
 	if not failed_names:
-		failed_names = ["<unknown test>"]
+		note = (
+			"[verified] A test command exited non-zero but no individual test "
+			"name could be identified from the tool output."
+		)
+		result.summary = f"{note} {result.summary}".strip()
+		return result
 
 	result.failures = [
 		{"test": name, "diagnosis": _OVERRIDE_DIAGNOSIS} for name in failed_names
 	]
-	note = (
-		f"[verified] {len(failed_names)} test(s) failed per tool output, "
-		f"overriding model's self-report."
-	)
-	result.summary = f"{note} {result.summary}".strip()
+	if result.summary.startswith("AI analysis unavailable:"):
+		result.summary = _INVALID_FINAL_REPORT_SUMMARY
+	else:
+		note = (
+			f"[verified] {len(failed_names)} test(s) failed per tool output, "
+			f"overriding model's self-report."
+		)
+		result.summary = f"{note} {result.summary}".strip()
 	return result
 
 
@@ -388,14 +406,34 @@ def _run_tests(root: Path, spec: str) -> str:
 	if not tokens:
 		return "error: no test target provided"
 
+	js_allowed_prefixes = (
+		("npm", "test"),
+		("npm", "run", "test"),
+		("npx", "jest"),
+		("npx", "vitest"),
+		("yarn", "test"),
+		("yarn", "jest"),
+		("vitest",),
+		("jest",),
+	)
+	for prefix in js_allowed_prefixes:
+		if tuple(tokens[: len(prefix)]) == prefix:
+			return _run_js_test(root, tokens)
+
 	if any(token.endswith(".csproj") for token in tokens):
 		return _run_dotnet(root, tokens)
 	if all(token.endswith(".py") for token in tokens):
 		return _run_pytest(root, tokens)
 	return (
 		"error: unrecognized target; expected a .csproj (with optional "
-		"--filter) or .py test file paths"
+		"--filter), .py test file paths, or JS/TS test command"
 	)
+
+
+def _run_js_test(root: Path, tokens: list[str]) -> str:
+	"""Validate and run whitelisted JS/TS test command tokens."""
+	exit_code, output = runio.run_js_test(tokens, cwd=str(root))
+	return _format_test_output(exit_code, output)
 
 
 def _run_dotnet(root: Path, tokens: list[str]) -> str:
@@ -585,4 +623,16 @@ def _unavailable(reason: str) -> AgentResult:
 	return AgentResult(
 		summary=f"AI analysis unavailable: {reason}. "
 		f"Verify the staged changes manually before pushing.",
+	)
+
+
+def _timeout_hint(reason: str, model: str) -> str:
+	"""Append model-choice advice when a reason is a timeout, else return it."""
+	if "timed out" not in reason.lower():
+		return reason
+	named = model or "the selected model"
+	return (
+		f"{reason} - the investigation using {named} did not return in time; "
+		f"the local checks and the AI review above are unaffected, and a "
+		f"different model may complete it"
 	)

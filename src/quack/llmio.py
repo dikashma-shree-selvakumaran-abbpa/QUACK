@@ -1,18 +1,19 @@
 """Provider seam for the LLM transport.
 
 This module is a thin dispatcher: it selects an LLM transport *provider*
-and delegates the two public functions to it. The transport itself lives
+and delegates the public function to it. The transport itself lives
 in :mod:`quack.providers` so it can be swapped without touching any caller.
 
-The two public functions keep their exact contract::
+The public completion function keeps its exact contract::
 
 	complete(messages, model, timeout_s=6.0) -> str
-	chat(messages, model, tools=None) -> dict
+
+The agent's multi-step investigation no longer goes through this seam; it
+uses the Copilot SDK's own session API directly.
 
 Provider selection order:
 
-1. ``QUACK_PROVIDER`` environment variable (``"github_models"`` |
-   ``"copilot_sdk"``)
+1. ``QUACK_PROVIDER`` environment variable (``"copilot_sdk"``)
 2. default ``"copilot_sdk"``
 
 Architectural invariant: every failure mode - a missing token, a transport
@@ -28,12 +29,13 @@ import importlib
 import os
 
 # The Copilot SDK is the approved transport at ABB; GitHub Models via a PAT is
-# not. The compliant path must therefore be the DEFAULT rather than something a
-# developer has to opt into. github_models remains available via
-# QUACK_PROVIDER=github_models because it is currently the only provider that
-# supports tool calling, which the agent's multi-step loop requires.
+# not, and is no longer shipped. It was kept for a while as the only provider
+# with tool calling, but copilot_sdk now drives the agent's investigation
+# through the SDK's own session API -- so the OpenAI-style chat-with-tools
+# abstraction it needed is gone too. QUACK_PROVIDER remains for future
+# transports, but there is currently only one.
 DEFAULT_PROVIDER = "copilot_sdk"
-KNOWN_PROVIDERS = ("github_models", "copilot_sdk")
+KNOWN_PROVIDERS = ("copilot_sdk",)
 
 # Used only when no provider can be selected (unknown name, import failure).
 # A provider that loads always supplies its own ``DEFAULT_TIMEOUT_S``.
@@ -177,27 +179,6 @@ def complete(
 	provider = _select_provider()
 	try:
 		return provider.complete(messages, model, timeout_s=timeout_s)
-	except LLMUnavailable:
-		raise
-	except Exception as exc:
-		msg = str(exc)[:200].replace("\n", " ")
-		raise LLMUnavailable(f"provider error: {type(exc).__name__}: {msg}")
-
-
-def chat(
-	messages: list[dict],
-	model: str,
-	tools: list[dict] | None = None,
-) -> dict:
-	"""Return the first choice's full message via the selected provider.
-
-	Raises :class:`LLMUnavailable` on every failure mode. Any exception the
-	provider raises that is not already :class:`LLMUnavailable` is normalised
-	so callers only ever see this one type.
-	"""
-	provider = _select_provider()
-	try:
-		return provider.chat(messages, model, tools=tools)
 	except LLMUnavailable:
 		raise
 	except Exception as exc:

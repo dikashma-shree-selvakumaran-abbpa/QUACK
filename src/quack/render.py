@@ -399,6 +399,7 @@ def agent_report(result, fly: bool = False) -> None:
 	patch = getattr(result, "proposed_patch", None)
 	if patch:
 		if fly:
+			console.print(Text("SKIP AHEAD - the patch, not the lesson", style=_META))
 			syntax = Syntax(patch, "diff", theme="ansi_dark", word_wrap=True)
 			console.print(
 				Panel(
@@ -411,6 +412,9 @@ def agent_report(result, fly: bool = False) -> None:
 			)
 			console.print(Text("apply with: git apply <<'EOF' ... EOF", style=_META))
 		else:
+			console.print(
+				Text("THE DUCK WAY - coaching over crutches", style=_META)
+			)
 			console.print(
 				Text(
 					"A proposed fix is available. Try fixing it yourself from the "

@@ -31,7 +31,7 @@ class _FakeSession:
 		self._errors = list(errors or [])
 		self.calls = 0
 
-	async def send_and_wait(self, prompt):
+	async def send_and_wait(self, prompt, *args, **kwargs):
 		self.calls += 1
 		if self._delay:
 			await asyncio.sleep(self._delay)
@@ -82,7 +82,7 @@ class _FakeModelClient(_FakeClient):
 
 
 class _LoggingSession:
-	async def send_and_wait(self, prompt):
+	async def send_and_wait(self, prompt, *args, **kwargs):
 		try:
 			raise RuntimeError("session authorization failed")
 		except RuntimeError:
@@ -118,6 +118,20 @@ class _LoggingClient(_FakeClient):
 def _install_client(monkeypatch, client):
 	monkeypatch.setattr(copilot_sdk, "CopilotClient", lambda: client)
 	return client
+
+
+def test_remaining_budget_floors_expired_deadlines():
+	async def check_budget():
+		loop = asyncio.get_running_loop()
+		future = copilot_sdk._remaining_budget(loop.time() + 1.0)
+		past = copilot_sdk._remaining_budget(loop.time() - 1.0)
+		now = copilot_sdk._remaining_budget(loop.time())
+
+		assert 0.9 < future <= 1.0
+		assert past == 0.001
+		assert now == 0.001
+
+	asyncio.run(check_budget())
 
 
 @pytest.fixture(autouse=True)
@@ -374,9 +388,18 @@ def test_declares_slow_default_timeout():
 
 
 def test_declares_copilot_default_models():
-	# The Copilot SDK uses its own model naming, NOT GitHub Models' ids.
-	# Split by use: cheaper haiku for single-shot review, stronger sonnet for
-	# the agent's multi-step tool-using investigation.
-	assert copilot_sdk.DEFAULT_COMPLETION_MODEL == "claude-haiku-4.5"
-	assert copilot_sdk.DEFAULT_AGENT_MODEL == "claude-sonnet-4.5"
+	# The Copilot SDK uses its own model naming, NOT GitHub Models' ids. Split
+	# by use: a cheaper model for single-shot review, a stronger one for the
+	# agent's multi-step tool-using investigation.
+	#
+	# Deliberately not asserting exact ids. The catalog moves -- sonnet-4.5 aged
+	# out and the agent silently stopped investigating -- and a literal here
+	# fails on every legitimate bump while catching none of the real drift.
+	# `quack model` cross-checks the resolved defaults against the live catalog,
+	# which is where staleness actually shows up.
+	assert copilot_sdk.DEFAULT_COMPLETION_MODEL
+	assert copilot_sdk.DEFAULT_AGENT_MODEL
+	assert (
+		copilot_sdk.DEFAULT_COMPLETION_MODEL != copilot_sdk.DEFAULT_AGENT_MODEL
+	), "the two surfaces must resolve to different models"
 

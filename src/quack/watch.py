@@ -36,12 +36,17 @@ class WatchResult:
 	files: int
 	risk: str | None = None
 	reason: str | None = None
+	diff_hash: str | None = None
 
 
-def review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
+def review_once(
+	repo_root: str | Path,
+	model: str | None = None,
+	quiet: bool = False,
+) -> WatchResult:
 	"""Review the staged delta, or tracked working changes when unstaged."""
 	started = time.perf_counter()
-	result = _review_once(repo_root, model)
+	result = _review_once(repo_root, model, quiet=quiet)
 	try:
 		metrics.log(
 			{
@@ -58,31 +63,42 @@ def review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
 	return result
 
 
-def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
+def _review_once(
+	repo_root: str | Path,
+	model: str | None = None,
+	quiet: bool = False,
+) -> WatchResult:
 	root = Path(repo_root)
-	try:
-		delta = gitio.staged_delta()
-		if not delta.files:
-			delta = gitio.working_delta()
-		if not delta.files:
-			return WatchResult(files=0, reason="no changes")
+	delta = gitio.staged_delta(root=str(root))
+	if not delta.files:
+		delta = gitio.working_delta(root=str(root))
+	if not delta.files:
+		return WatchResult(files=0, reason="no changes")
 
-		findings = tier1_run(delta, Tier1Config())
-		redacted = tier1_redact(delta, findings)
-		plan = testmap.build_plan(delta, root=root)
-		project_instructions = instructions.load(root)
+	findings = tier1_run(delta, Tier1Config())
+	redacted = tier1_redact(delta, findings)
+	plan = testmap.build_plan(delta, root=root)
+	project_instructions = instructions.load(root)
+	try:
 		resolved_model = (
 			model
 			or os.environ.get("QUACK_MODEL")
 			or llmio.default_model(kind="completion")
 		)
-		if not resolved_model:
-			return WatchResult(files=len(delta.files), reason="no model configured")
 		availability = llmio.availability_error()
-		if availability:
-			return WatchResult(files=len(delta.files), reason=availability)
+	except Exception as exc:
+		message = str(exc)[:160].replace("\n", " ")
+		return WatchResult(
+			files=len(delta.files),
+			reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+		)
+	if not resolved_model:
+		return WatchResult(files=len(delta.files), reason="no model configured")
+	if availability:
+		return WatchResult(files=len(delta.files), reason=availability)
 
-		with render.thinking("reviewing changes..."):
+	if quiet:
+		try:
 			review, reason = tier2.review_with_reason(
 				delta,
 				findings,
@@ -91,26 +107,44 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 				project_instructions=project_instructions,
 				timeout_s=llmio.default_timeout(),
 			)
-		if review is None:
+		except Exception as exc:
+			message = str(exc)[:160].replace("\n", " ")
 			return WatchResult(
 				files=len(delta.files),
-				reason=reason or llmio.availability_error() or "AI analysis unavailable",
+				reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
 			)
-
-		payload = asdict(review)
-		payload["model"] = resolved_model
-		reviewcache.write(
-			root,
-			reviewcache.diff_hash(redacted.raw_diff),
-			payload,
-		)
-		return WatchResult(files=len(delta.files), risk=review.risk)
-	except Exception as exc:
-		message = str(exc)[:160].replace("\n", " ")
+	else:
+		with render.thinking("reviewing changes..."):
+			try:
+				review, reason = tier2.review_with_reason(
+					delta,
+					findings,
+					plan,
+					model=resolved_model,
+					project_instructions=project_instructions,
+					timeout_s=llmio.default_timeout(),
+				)
+			except Exception as exc:
+				message = str(exc)[:160].replace("\n", " ")
+				return WatchResult(
+					files=len(delta.files),
+					reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+				)
+	if review is None:
 		return WatchResult(
-			files=0,
-			reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+			files=len(delta.files),
+			reason=reason or availability or "AI analysis unavailable",
 		)
+
+	payload = asdict(review)
+	payload["model"] = resolved_model
+	d_hash = reviewcache.diff_hash(redacted.raw_diff)
+	reviewcache.write(
+		root,
+		d_hash,
+		payload,
+		)
+	return WatchResult(files=len(delta.files), risk=review.risk, diff_hash=d_hash)
 
 
 def run(

@@ -54,12 +54,16 @@ _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 _PUBLIC_CONTRACT_RE = re.compile(
 	r"^[+-]\s*(?:public\s+|export\s+)?(?:class|interface|enum|record|def\s+|function\s+)"
 )
+# == and != are equality, not boundary logic; they appear in every assertion
+# and conditional. count/length/size appear in almost every collection op.
 _BOUNDARY_RE = re.compile(
-	r"(?:<=|>=|==|!=|\b(?:boundary|index|offset|limit|range|count|length|size)\b)",
+	r"(?:<=|>=|\b(?:boundary|index|offset|limit|range)\b)",
 	re.IGNORECASE,
 )
+# state/event/callback/delegate are too common in ordinary application code
+# (any UI or component file has all four) to indicate concurrency.
 _STATEFUL_RE = re.compile(
-	r"\b(?:begincapture|endcapture|delegate|event|callback|state|lock|mutex|semaphore|thread|async|await)\b",
+	r"\b(?:begincapture|endcapture|lock|mutex|semaphore|thread|async|await)\b",
 	re.IGNORECASE,
 )
 _PATH_HINTS = (
@@ -80,6 +84,26 @@ _PATH_HINTS = (
 	"state",
 	"transform",
 )
+
+# Generated files are not reviewed line by line, and their contents trip
+# the code-content regexes: package-lock.json contains packages named
+# "async"; any large JSON matches the boundary patterns.
+_GENERATED_NAMES = frozenset({
+	"package-lock.json",
+	"yarn.lock",
+	"pnpm-lock.yaml",
+	"poetry.lock",
+	"cargo.lock",
+	"gemfile.lock",
+	"composer.lock",
+	"go.sum",
+})
+
+
+def _is_generated(path: str) -> bool:
+	"""True for lockfiles and other generated artifacts."""
+	name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+	return name in _GENERATED_NAMES or name.endswith((".min.js", ".min.css"))
 
 
 @dataclass
@@ -136,7 +160,11 @@ def build_messages(
 		"Heuristic test plan — sources with no test found:\n"
 		f"{untested or '(none)'}\n\n"
 		f"{instructions_section}"
-		"Staged diff (redacted):\n"
+		"Staged diff (redacted). Each line is prefixed with its absolute "
+		"line number in the post-change file, followed by ' | '. Removed "
+		"lines have no number because they do not exist in the post-change "
+		"file. Cite these numbers directly; do not compute positions from "
+		"the @@ headers:\n"
 		f"{redacted.raw_diff}"
 	)
 
@@ -306,9 +334,20 @@ def _deterministic_risk(
 	This rubric is intentionally model-independent so the same diff yields the
 	same baseline risk label across runs and across model swaps.
 	"""
+	REASON_SCORES = {
+		"changed behavior with no mapped test coverage": 2,
+		"public contract surface changed": 2,
+		"state/concurrency-sensitive logic changed": 2,
+		"large staged delta (200+ changed lines)": 1,
+		"changed paths include behavior-sensitive areas": 1,
+		"boundary/index/limit logic touched": 1,
+	}
 	score = 0
 	reasons: list[str] = []
-	changed_lines = sum(f.added + f.removed for f in delta.files if not f.binary)
+	reviewable = [
+		f for f in delta.files if not f.binary and not _is_generated(f.path)
+	]
+	changed_lines = sum(f.added + f.removed for f in reviewable)
 
 	if test_plan.untested_sources:
 		score += 2
@@ -324,7 +363,11 @@ def _deterministic_risk(
 		reasons.append("changed paths include behavior-sensitive areas")
 
 	changed_code_lines = [
-		line for line in delta.raw_diff.splitlines() if line.startswith(("+", "-"))
+		line
+		for f in reviewable
+		for hunk in f.hunks
+		for line in hunk.splitlines()
+		if line.startswith(("+", "-"))
 	]
 	if any(_PUBLIC_CONTRACT_RE.match(line) for line in changed_code_lines):
 		score += 2
@@ -339,8 +382,9 @@ def _deterministic_risk(
 		score += 1
 		reasons.append("boundary/index/limit logic touched")
 
+	top_reasons = sorted(reasons, key=lambda r: REASON_SCORES.get(r, 0), reverse=True)
 	if score >= 4:
-		return "high", reasons[:3]
+		return "high", top_reasons[:3]
 	if score >= 2:
-		return "medium", reasons[:3]
-	return "low", reasons[:3]
+		return "medium", top_reasons[:3]
+	return "low", top_reasons[:3]

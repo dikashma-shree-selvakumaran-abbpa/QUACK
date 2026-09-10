@@ -1,0 +1,14 @@
+# Default: normalize line endings to LF in the repo, check out as-is on all platforms.
+* text=auto eol=lf
+
+# Windows-only files that need CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files - never touch line endings
+*.exe binary
+*.vsix binary
+*.png binary
+*.svg binary
+*.ico binary

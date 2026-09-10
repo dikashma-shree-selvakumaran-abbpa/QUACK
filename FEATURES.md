@@ -20,6 +20,7 @@ quack follows a **functional core / imperative shell** design.
 | I/O adapters | `gitio`, `llmio`, `runio`, `gitleaks` | Talk to git, model providers, test runners, and the gitleaks binary. |
 | Orchestration | `cli`, `tier2`, `agent` | Wire the pieces together; own exit codes and UX. |
 | Presentation | `render` | The single module that writes to the terminal. |
+| Service shell | `server` | Exposes the same orchestration over local HTTP for editor clients. |
 
 **Design invariant:** only Tier 1 governs the exit code. gitleaks and the agent
 are advisory / fail-open and can never turn a passing commit into a failing one
@@ -35,8 +36,8 @@ while the developer works or at pre-push via `quack agent`.
 
 - **pre-commit (`quack`)** — local checks only (Tier 1 + gitleaks). No network,
   no code leaves the machine.
-- **pre-push (`quack-agent`)** — AI review, plus the investigative agent where
-  the provider supports tool calling.
+- **pre-push (`quack-agent`)** — AI review, plus the investigative agent, which
+  runs on the Copilot SDK's custom-tool session.
 
 `quack install` writes both entries into `.pre-commit-config.yaml` and installs
 both hook types (the default pre-commit hook and
@@ -50,30 +51,27 @@ already-installed pre-commit checks active.
 | `quack watch [--quiet-period 30] [--once]` | Review staged or tracked working changes and cache an advisory result for commit time. | Advisory (informational) |
 | `quack agent [--fly] [--model M]` | Pre-push Tier 2 review plus an investigative loop over staged changes or, when the index is empty, unpushed commits. `--fly` allows a proposed patch. | Advisory (informational) |
 | `quack install [--local]` | Write `.pre-commit-config.yaml` (both `quack` + `quack-agent` hooks), install both hook types, and best-effort bootstrap gitleaks. `--local` targets any repo without a published remote. | n/a |
-| `quack model [--model M]` | Report provider, availability, model resolution, timeout, and Copilot SDK model discovery. | n/a |
+| `quack model [--model M] [--list] [--json]` | Report provider, availability, model resolution, timeout, and Copilot SDK model discovery. `--list` prints just the reachable model ids, marking the current completion and agent defaults. | n/a |
 | `quack metrics` | Summarize locally recorded aggregate metrics. | n/a |
+| `quack serve [--host H] [--port P]` | Serve the same engine over local HTTP (`127.0.0.1:8787` by default) for editor clients. | n/a |
 
 **Model resolution order:** `--model` flag → `QUACK_MODEL` env var →
 provider-specific default. `copilot_sdk` defaults to `claude-haiku-4.5` for
-single-shot review and `claude-sonnet-4.5` for the agent; `github_models`
-defaults to `openai/gpt-4o-mini` and `openai/gpt-4.1` respectively. `check`
-uses **no model** — it makes no AI calls.
+single-shot review and `claude-sonnet-5` for the agent. `check` uses **no
+model** — it makes no AI calls.
 
 **Relevant env vars:** `QUACK_PROVIDER` (LLM transport — see below),
-`GITHUB_TOKEN` (required by the `github_models` provider), `QUACK_MODEL`
-(model override), `QUACK_DISABLE_GITLEAKS` (skip gitleaks), and `NO_COLOR`
-(plain output). `GITHUB_TOKEN`, `GH_TOKEN`, and `COPILOT_GITHUB_TOKEN` should
-be unset when using `copilot_sdk`, because ambient tokens can shadow the
+`QUACK_MODEL` (model override), `QUACK_DISABLE_GITLEAKS` (skip gitleaks), and
+`NO_COLOR` (plain output). `GITHUB_TOKEN`, `GH_TOKEN`, and
+`COPILOT_GITHUB_TOKEN` should be unset, because ambient tokens can shadow the
 Copilot CLI login.
 
-**LLM provider:** `QUACK_PROVIDER` selects the transport, defaulting to
-**`copilot_sdk`**. The Copilot SDK is the approved transport at ABB; GitHub
-Models via a PAT is not, so the compliant path is the default rather than an
-opt-in. `github_models` remains available via `QUACK_PROVIDER=github_models`
-because it is currently the **only** provider that supports tool calling.
-**The `agent` command therefore requires `QUACK_PROVIDER=github_models` today**
-— the Copilot SDK does not yet implement tool calling, so the agent loop cannot
-run under the default provider until SDK tool calling is implemented.
+**LLM provider:** `QUACK_PROVIDER` selects the transport, and `copilot_sdk` is
+the only supported value. The Copilot SDK is the approved transport at ABB;
+GitHub Models via a PAT is not, so the compliant path is the only path.
+`copilot_sdk` uses the Copilot SDK's native custom-tool session for the
+investigation, authenticated by the Copilot CLI's stored OAuth login; no
+`GITHUB_TOKEN` is used.
 
 ---
 
@@ -145,17 +143,17 @@ coverage as an optional upgrade.
 
 **Modules:** `tier2.py` + `llmio.py` · **Fail-open. Never changes the exit code.**
 
-> **Not run at commit time.** The Copilot/model setup cost (~9–15s cold) and
-> per-call credit cost are incompatible with a <6s commit budget and per-commit
-> team economics, so `quack check` makes **no** Tier 2 call. `quack watch`
-> performs the review after a quiet period and caches it; `quack agent` also
-> runs the same single-shot review at pre-push before any investigation loop.
+> **Not run at commit time.** `quack check` makes **no** Tier 2 call so the
+> commit path remains local and independent of provider availability. It runs
+> deterministic checks, builds test guidance, and performs only a local review
+> cache lookup. `quack watch` performs the review after a quiet period and
+> caches it; `quack agent` also runs the same single-shot review at pre-push
+> before any investigation loop.
 - **Privacy:** the diff is **redacted before it leaves the machine.**
   `tier1.redact()` replaces every detected secret with `[REDACTED]`, and Tier 2
   builds its prompt from that redacted delta (`"Staged diff (redacted):"`).
-- **Transport:** `llmio.complete()` selects `copilot_sdk` by default, using the
-  Copilot CLI's stored OAuth login, or `github_models` when explicitly selected
-  with `QUACK_PROVIDER=github_models` and `GITHUB_TOKEN`. All transport failures
+- **Transport:** `llmio.complete()` uses `copilot_sdk`, the only provider, which
+  authenticates with the Copilot CLI's stored OAuth login. All transport failures
   normalize to `LLMUnavailable` — no login, token, network error, or bad
   response ever crashes the hook; Tier 2 reports that review is unavailable.
 - **Project instructions:** repo-local guidance is loaded by
@@ -190,13 +188,19 @@ framework.
 |---|---|
 | Python | `pytest <paths> -x --tb=short -q` |
 | C# | `dotnet test <project.csproj> --no-build [--filter "…"] -v minimal` |
-| JavaScript / TypeScript | `npx --no-install jest <paths> --silent --runInBand` |
 
-JS/TS targets are recognized by `.test`/`.spec` suffixes across
-`.js/.jsx/.ts/.tsx/.mjs/.cjs`. `--no-install` guarantees jest is never fetched
-from the network; the project's local jest is used.
+### 6.3 Invocation model and method
 
-### 6.3 Method (from the system prompt)
+With `copilot_sdk`, the SDK runtime owns turn progression: quack registers
+`read_file`, `list_dir`, and `run_tests` as custom tools and uses
+`on_pre_tool_use` as the authoritative validation and budget gate. The handlers
+still enforce containment and delegate test execution only to `runio.py`.
+
+The native opening prompt asks the model to investigate first and requests the
+final JSON only after investigation; the budget-exhaustion instruction is not
+sent on the opening turn.
+
+Method:
 1. Form a hypothesis about what could break, from the diff.
 2. Gather **minimum** evidence — read the changed code and its most relevant
    caller/test (no reading without a stated reason).
@@ -216,14 +220,72 @@ from the network; the project's local jest is used.
 | Wall-clock cap | `WALL_CLOCK_S = 180.0` |
 | File read cap | `READ_FILE_MAX_LINES = 300` |
 | Path containment | `_safe_path()` rejects anything outside the repo root |
-| No shell | `subprocess` with `shell=False`; executables resolved via `shutil.which` |
+| No shell | `subprocess` with `shell=False`; execution remains inside `runio.py` |
 | Filter sanitization | C# `--filter` must match `^[A-Za-z0-9_.~|&=!"\s-]+$` (no shell metacharacters) |
 | Ground-truth reconciliation | A non-zero test exit code **overrides** an over-optimistic model self-report |
-| JSON discipline | One retry on malformed JSON, then graceful degradation |
+| JSON discipline | One retry on malformed JSON, then graceful degradation; invalid final JSON plus real test failures is reported as an invalid model report, with test exit codes retained as ground truth |
+
+The agent is fail-open: SDK errors normalize to `LLMUnavailable`, the command
+still exits 0, and a Tier 2 failure does not affect the agent attempt. Tier-1
+redaction is applied before the diff reaches either AI path. The model never
+receives raw SDK output in the terminal.
+
+### 6.5 Duck Way output
+
+By default, `agent_report` shows the diagnosis and labels withheld patches:
+`THE DUCK WAY - coaching over crutches`. With `--fly`, it labels the revealed
+patch `SKIP AHEAD - the patch, not the lesson`, then shows the unapplied unified
+diff. The mode labels do not change what is gated or applied.
 
 ---
 
-## 7. UX / onboarding
+## 7. Service mode and the VS Code client
+
+**Module:** `server.py` (FastAPI) · started by `quack serve`.
+
+The server is a shell over the same orchestration the CLI uses — it adds no
+checks of its own and changes no invariants.
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /check` | Tier 1 + gitleaks, test guidance, and a cached-review lookup. No AI call. |
+| `POST /review` | One Tier 2 review (`watch.review_once`), cached on success. |
+| `POST /agent` | Starts a background job and returns its `jobId`. A repo already running a job returns that job instead of starting a second one. |
+| `GET /agent/{id}` | Poll the job: stages land as `tier1`, `tier2`, then `investigation`. |
+| `DELETE /agent/{id}` | Mark the job cancelled; the worker stops at the next stage boundary. |
+| `GET /models` | Reachable model ids plus the resolved default. |
+| `GET /metrics` | The `quack metrics` aggregate, per user rather than per repo. |
+| `GET /install/plan` | Strategy (`precommit` / `husky` / `unsupported_hooks_path`), hooks path, and tool availability. |
+| `POST /install` | Performs the install and returns per-step results. Tracked husky hooks require explicit consent. |
+| `GET /status` | Version, build commit/date, cache path, and any provider availability error. |
+
+**Invariants specific to service mode:**
+
+- `repo_path` is **required** on every repository-scoped endpoint (`/check`,
+  `/review`, `/agent`, `/install/plan`, `/install`); the server returns 400
+  rather than falling back to its own working directory.
+- Agent jobs live only in memory. Stages carry rendered results, never raw diff
+  text, and finished jobs are swept after `JOB_RETENTION_S` (30 minutes).
+- A Tier 1 block short-circuits the job before any model call, exactly as at the
+  command line.
+- Errors are normalized to one bounded line — never a stack trace.
+
+**VS Code extension** (`clients/vscode`, packaged as `quack-abb-<version>.vsix`)
+talks to that server over HTTP and contributes three commands: *Check staged
+changes* (findings become Problems-panel diagnostics; blocking findings are
+errors, everything else warnings), *Run AI review and investigation* (polls the
+agent job and streams each stage into an output channel, cancellable), and
+*Select model* (picks from `/models` and stores `quack.model` in workspace
+settings). `quack.serverUrl` points it at the server; the status bar reports the
+connected version or `quack offline`.
+
+The release workflow builds and attaches both `quack.exe` and the vsix to a
+tagged GitHub release, and fails if the extension version does not match the
+tag.
+
+---
+
+## 8. UX / onboarding
 
 - **Install banner:** yellow ASCII duck + `QUACK` wordmark on `quack install`.
 - **Blocked-line alarm:** loud `QUACK!!!! check line #…` callout with exact
@@ -235,7 +297,7 @@ from the network; the project's local jest is used.
 
 ---
 
-## 8. How quack differs from a "code review agent"
+## 9. How quack differs from a "code review agent"
 
 quack is **not** a general LLM code reviewer. The distinction is architectural,
 not cosmetic.
@@ -260,7 +322,7 @@ by actually running your tests_. The LLM assists; it never holds the gate.
 
 ---
 
-## 9. Guarantees summary
+## 10. Guarantees summary
 
 - [x] Secrets and merge markers are caught **offline and deterministically**.
 - [x] Detected secrets are **redacted** before any AI call.

@@ -1,4 +1,4 @@
-"""Thin test-runner subprocess adapter.
+﻿"""Thin test-runner subprocess adapter.
 
 This is one of the few modules permitted to call subprocess directly. It knows
 how to invoke exactly four whitelisted command shapes and nothing else:
@@ -335,8 +335,15 @@ def _cleanup_mcp_container(command: list[str]) -> None:
 		pass
 
 
+def run_js_test(
+	args: list[str], cwd: str | None = None, timeout_s: int = DEFAULT_TIMEOUT_S
+) -> tuple[int, str]:
+	"""Run a whitelisted JS/TS test command list."""
+	return _run(args, timeout_s, cwd=cwd)
+
+
 def _run(
-	args: list[str], timeout_s: int, *, cwd: str | None = None
+	args: list[str], timeout_s: int, cwd: str | None = None
 ) -> tuple[int, str]:
 	"""Execute a fixed argument list without a shell. Never raises."""
 	try:

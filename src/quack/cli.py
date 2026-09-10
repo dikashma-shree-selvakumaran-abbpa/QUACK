@@ -10,12 +10,14 @@ Subcommands:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 
@@ -44,23 +46,36 @@ from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
 from .tier1 import should_block
 
-QUACK_REPO_URL = "https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK"
+QUACK_REPO_URL = "https://github.com/ABB-AU-PCP/QUACK"
 
-# Last-resort agent model, used ONLY when no provider resolves (e.g. an
-# unknown QUACK_PROVIDER) so llmio.default_model("agent") returns None. In the
-# normal path each provider supplies its own split defaults. Kept because that
-# genuine no-provider case still needs a non-None model to hand the agent.
-DEFAULT_AGENT_MODEL = "openai/gpt-4.1"
+
+def _version_string() -> str:
+	"""Version plus build provenance, so a stale frozen exe is identifiable."""
+	try:
+		from ._build_info import BUILD_COMMIT, BUILD_DATE
+	except ImportError:
+		return __version__
+	if BUILD_COMMIT == "source":
+		return f"{__version__} (source)"
+	date = BUILD_DATE.split("T")[0] if BUILD_DATE else "unknown"
+	return f"{__version__} (build {BUILD_COMMIT}, {date})"
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(__version__, prog_name="quack")
+@click.version_option(_version_string(), prog_name="quack")
 def main() -> None:
 	"""quack: an AI-assisted pre-commit quality hook."""
 
 
 @main.command()
-def check() -> None:
+@click.option(
+	"--json",
+	"as_json",
+	is_flag=True,
+	default=False,
+	help="Emit machine-readable verdict as JSON and suppress terminal rendering.",
+)
+def check(as_json: bool) -> None:
 	"""Run the pre-commit quality checks on staged changes.
 
 	Commit time runs local Tier 1 checks (plus gitleaks when installed), test
@@ -70,8 +85,21 @@ def check() -> None:
 	# Measures in-process work only, excluding Python interpreter startup.
 	started = time.perf_counter()
 	delta = gitio.staged_delta()
+	root = gitio.repo_root() or os.getcwd()
 	if not delta.files:
-		render.clean("nothing staged")
+		if as_json:
+			payload = {
+				"schemaVersion": 1,
+				"repository": root,
+				"blocked": False,
+				"findings": [],
+				"testGuidance": [],
+				"aiReview": None,
+				"aiError": None,
+			}
+			click.echo(json.dumps(payload, separators=(",", ":")))
+		else:
+			render.clean("nothing staged")
 		_log_check_metrics(started, delta, exit_code=0)
 		sys.exit(0)
 
@@ -92,18 +120,42 @@ def check() -> None:
 
 	blocked = should_block(findings, block_on=("secrets", "merge_markers"))
 
+	json_findings = [
+		{
+			"severity": f.severity,
+			"source": "gitleaks" if f.message.startswith("gitleaks:") else getattr(f, "source", "quack"),
+			"rule": f.message.removeprefix("gitleaks: ") if f.message.startswith("gitleaks:") else f.check,
+			"file": f.path,
+			"line": f.line,
+			"message": f.message,
+		}
+		for f in findings
+	]
+
 	if blocked:
 		# Only Tier 1 governs the exit code. Show findings + BLOCKED banner.
-		render.report(
-			files=len(delta.files),
-			added=delta.total_added,
-			removed=delta.total_removed,
-			findings=findings,
-			plan=None,
-			ai=None,
-			blocked=True,
-			duration=time.perf_counter() - started,
-		)
+		if as_json:
+			payload = {
+				"schemaVersion": 1,
+				"repository": root,
+				"blocked": True,
+				"findings": json_findings,
+				"testGuidance": [],
+				"aiReview": None,
+				"aiError": None,
+			}
+			click.echo(json.dumps(payload, separators=(",", ":")))
+		else:
+			render.report(
+				files=len(delta.files),
+				added=delta.total_added,
+				removed=delta.total_removed,
+				findings=findings,
+				plan=None,
+				ai=None,
+				blocked=True,
+				duration=time.perf_counter() - started,
+			)
 		_log_check_metrics(started, delta, findings=findings, blocked=True, exit_code=1)
 		sys.exit(1)
 
@@ -115,6 +167,27 @@ def check() -> None:
 
 	# Test guidance (only worth computing on an unblocked commit).
 	plan = testmap.build_plan(delta)
+	json_test_guidance = []
+	if plan is not None:
+		for mapping in getattr(plan, "mappings", []):
+			if mapping.tests:
+				json_test_guidance.append(
+					{
+						"sourceFile": mapping.source,
+						"testOrCommand": ", ".join(mapping.tests),
+						"status": "mapped",
+						"recommendation": "run mapped tests",
+					}
+				)
+		for source in getattr(plan, "untested_sources", []):
+			json_test_guidance.append(
+				{
+					"sourceFile": source,
+					"testOrCommand": "",
+					"status": "untested",
+					"recommendation": "no tests found",
+				}
+			)
 
 	# Commit time is fully local: hash the same deterministically redacted diff
 	# used by watch mode and perform one fail-open cache-file lookup. A miss must
@@ -138,19 +211,46 @@ def check() -> None:
 	else:
 		ai = cached_review
 
-	render.report(
-		files=len(delta.files),
-		added=delta.total_added,
-		removed=delta.total_removed,
-		findings=findings,
-		plan=plan,
-		ai=ai,
-		sonar=sonar_result,
-		model=cached_model,
-		ai_note=cache_note,
-		blocked=False,
-		duration=time.perf_counter() - started,
-	)
+	if as_json:
+		ai_review = None
+		ai_error = None
+		if cached_review is not None and entry is not None:
+			ai_review = {
+				"available": True,
+				"model": cached_model,
+				"risk": cached_review.risk,
+				"summary": cached_review.one_liner,
+				"reasons": cached_review.reasons,
+				"testsToRun": cached_review.tests_to_run,
+				"missingTests": cached_review.missing_tests,
+				"reviewedAtUtc": datetime.fromtimestamp(entry.timestamp, tz=timezone.utc).isoformat(),
+			}
+		else:
+			ai_error = ai[1] if isinstance(ai, tuple) and len(ai) > 1 else "AI analysis unavailable"
+
+		payload = {
+			"schemaVersion": 1,
+			"repository": root,
+			"blocked": False,
+			"findings": json_findings,
+			"testGuidance": json_test_guidance,
+			"aiReview": ai_review,
+			"aiError": ai_error,
+		}
+		click.echo(json.dumps(payload, separators=(",", ":")))
+	else:
+		render.report(
+			files=len(delta.files),
+			added=delta.total_added,
+			removed=delta.total_removed,
+			findings=findings,
+			plan=plan,
+			ai=ai,
+			model=cached_model,
+			ai_note=cache_note,
+			blocked=False,
+			duration=time.perf_counter() - started,
+		)
 	_log_check_metrics(
 		started,
 		delta,
@@ -243,14 +343,33 @@ def _format_age(timestamp: float) -> str:
 	help="Seconds without file changes before reviewing.",
 )
 @click.option("--once", is_flag=True, help="Run one review immediately and exit.")
-def watch(quiet_period: float, once: bool) -> None:
+@click.option(
+	"--json",
+	"as_json",
+	is_flag=True,
+	default=False,
+	help="Emit machine-readable review result as JSON (requires --once).",
+)
+def watch(quiet_period: float, once: bool, as_json: bool) -> None:
 	"""Review changes in the background and cache the result for commits."""
 	root = gitio.repo_root()
 	if not root:
+		if once and as_json:
+			click.echo(
+				json.dumps(
+					{"schemaVersion": 1, "status": "error", "reason": "not a git repository"},
+					separators=(",", ":"),
+				)
+			)
+			return
 		render.metadata("quack watch: not a git repository")
 		return
 	if once:
-		_render_watch_result(watch_mod.review_once(root))
+		res = watch_mod.review_once(root, quiet=as_json)
+		if as_json:
+			_emit_watch_json(res)
+		else:
+			_render_watch_result(res)
 		return
 	try:
 		watch_mod.run(root, quiet_period, _render_watch_result)
@@ -265,6 +384,28 @@ def _render_watch_result(result: watch_mod.WatchResult) -> None:
 		render.metadata(f"review unavailable ({result.reason or 'unknown reason'})")
 
 
+def _emit_watch_json(result: watch_mod.WatchResult) -> None:
+	if result.diff_hash:
+		payload = {
+			"schemaVersion": 1,
+			"status": "reviewed",
+			"diffHash": result.diff_hash,
+		}
+	elif result.reason == "no changes":
+		payload = {
+			"schemaVersion": 1,
+			"status": "skipped",
+			"reason": "nothing to review",
+		}
+	else:
+		payload = {
+			"schemaVersion": 1,
+			"status": "error",
+			"reason": result.reason or "unknown error",
+		}
+	click.echo(json.dumps(payload, separators=(",", ":")))
+
+
 def _resolve_agent_model(cli_model: str | None) -> str:
 	"""--model option > QUACK_MODEL env var > provider AGENT default.
 
@@ -272,13 +413,11 @@ def _resolve_agent_model(cli_model: str | None) -> str:
 	the selected provider's *agent* default (via llmio). The agent runs a
 	multi-step tool-using investigation that needs a stronger model than Tier
 	2's single-shot review. An explicit --model or QUACK_MODEL always wins.
-	DEFAULT_AGENT_MODEL is only a last resort if no provider resolves.
 	"""
 	return (
 		cli_model
 		or os.environ.get("QUACK_MODEL")
 		or llmio.default_model(kind="agent")
-		or DEFAULT_AGENT_MODEL
 	)
 
 
@@ -314,10 +453,20 @@ def agent(model: str | None, fly: bool) -> None:
 	started = time.perf_counter()
 	resolved_model = _resolve_agent_model(model)
 	provider = os.environ.get("QUACK_PROVIDER") or llmio.DEFAULT_PROVIDER
+	try:
+		models = llmio.list_models()
+	except Exception:
+		pass
+	else:
+		if resolved_model and resolved_model not in models:
+			render.warning(
+				f"Agent model {resolved_model} is not in the provider catalog and "
+				"will fail at runtime. Run `quack model --list` to see available models."
+			)
 	# Whether the agent can authenticate is a PROVIDER concern, not a CLI
-	# one: github_models needs GITHUB_TOKEN, but copilot_sdk authenticates
-	# via the Copilot CLI's stored OAuth login and never reads it. Ask the
-	# selected provider (via llmio) rather than hardcoding a token check.
+	# one: copilot_sdk authenticates via the Copilot CLI's stored OAuth
+	# login. Ask the selected provider (via llmio) rather than hardcoding
+	# a token check.
 	reason = llmio.availability_error()
 	if reason:
 		render.metadata(f"quack agent: {reason}")
@@ -378,6 +527,30 @@ def agent(model: str | None, fly: bool) -> None:
 	findings = tier1_run(delta, Tier1Config())
 	redacted = tier1_redact(delta, findings)
 
+	# Tier 1 gates; the AI advises. These checks are deterministic pattern
+	# matches, so a hit is a fact rather than a judgement -- unlike the model's
+	# verdict. A range diff compares endpoints, so a secret added and then
+	# removed within the pushed range never appears here.
+	if should_block(findings, block_on=("secrets", "merge_markers")):
+		render.report(
+			files=len(delta.files),
+			added=delta.total_added,
+			removed=delta.total_removed,
+			findings=findings,
+			plan=None,
+			ai=None,
+			blocked=True,
+			duration=time.perf_counter() - started,
+		)
+		_log_agent_metrics(
+			started,
+			provider,
+			resolved_model,
+			target=target,
+			agent_failure="tier1 blocked",
+		)
+		sys.exit(1)
+
 	# Tier 2's single-shot review tolerates a cheaper model than the agent's
 	# multi-step investigation, so it uses the provider's COMPLETION default
 	# (an explicit --model/QUACK_MODEL still overrides both surfaces).
@@ -435,7 +608,20 @@ def agent(model: str | None, fly: bool) -> None:
 		render.metadata(f"AI review unavailable ({tier2_failure})")
 
 	with render.thinking("investigating changes..."):
-		result = agent_mod.run(redacted.raw_diff, Path(root), resolved_model)
+		try:
+			from .providers import copilot_sdk
+
+			result = copilot_sdk.run_agent(
+				redacted.raw_diff,
+				Path(root),
+				resolved_model,
+				timeout_s=agent_mod.WALL_CLOCK_S,
+			)
+		except llmio.LLMUnavailable as exc:
+			# The pre-push agent is advisory and must never change hook success.
+			result = agent_mod._unavailable(
+				agent_mod._timeout_hint(exc.reason, resolved_model)
+			)
 	render.agent_report(result, fly=fly)
 	_log_agent_metrics(
 		started,
@@ -542,8 +728,6 @@ def _diagnostic_model(kind: str, cli_model: str | None) -> tuple[str | None, str
 	provider_default = llmio.default_model(kind=kind)
 	if provider_default:
 		return provider_default, "provider default"
-	if kind == "agent":
-		return DEFAULT_AGENT_MODEL, "fallback (provider unresolved)"
 	return None, "unresolved"
 
 
@@ -553,7 +737,7 @@ def _availability_hint(reason: str) -> str:
 	if "not installed" in reason:
 		return "install the selected provider runtime"
 	if "unknown provider" in reason:
-		return "set QUACK_PROVIDER to github_models or copilot_sdk"
+		return "set QUACK_PROVIDER to copilot_sdk"
 	return "verify the selected provider's credentials and runtime"
 
 
@@ -630,6 +814,38 @@ def _render_model_diagnostic(cli_model: str | None) -> None:
 			)
 			if len(models) > len(visible):
 				render.metadata(f"Showing first {len(visible)} of {len(models)} models")
+			# A default that has aged out of the provider's catalog fails only
+			# at runtime, inside a fail-open path: the agent stops investigating
+			# and nothing says why. claude-sonnet-4.5 did exactly this. Compare
+			# here, where both the defaults and the catalog are already known.
+			for kind, label in (("completion", "Completion"), ("agent", "Agent")):
+				resolved, _ = _diagnostic_model(kind, cli_model)
+				if resolved and models and resolved not in models:
+					render.warning(
+						f"{label} model {resolved} is NOT in the provider's "
+						f"reachable list - it will fail at runtime"
+					)
+
+
+def _echo_model_list(cli_model: str | None) -> None:
+	"""Print reachable model ids one per line, marking the current defaults."""
+	try:
+		models = llmio.list_models()
+	except Exception as exc:
+		# Read-only convenience: never a failure mode.
+		click.echo(f"model catalog unavailable: {_model_list_failure_reason(exc)}")
+		return
+
+	markers: dict[str, list[str]] = {}
+	for kind, label in (("completion", "completion default"), ("agent", "agent default")):
+		resolved, _ = _diagnostic_model(kind, cli_model)
+		if resolved:
+			markers.setdefault(resolved, []).append(label)
+
+	width = max((len(m) for m in models if m in markers), default=0)
+	for m in models:
+		labels = markers.get(m)
+		click.echo(f"{m.ljust(width)}  ({', '.join(labels)})" if labels else m)
 
 
 @main.command()
@@ -638,14 +854,74 @@ def _render_model_diagnostic(cli_model: str | None) -> None:
 	default=None,
 	help="Model id to diagnose (overrides QUACK_MODEL and provider defaults).",
 )
-def model(model: str | None) -> None:
+@click.option(
+	"--json",
+	"as_json",
+	is_flag=True,
+	default=False,
+	help="Emit machine-readable model diagnostic payload as JSON and suppress terminal rendering.",
+)
+@click.option(
+	"--list",
+	"as_list",
+	is_flag=True,
+	default=False,
+	help="List the reachable model ids and exit.",
+)
+def model(model: str | None, as_json: bool, as_list: bool) -> None:
 	"""Report model configuration and connectivity without changing it."""
 	# This command is intentionally read-only; it reports defaults but never sets them.
+	if as_json:
+		current_model = (
+			model
+			or os.environ.get("QUACK_MODEL")
+			or llmio.default_model(kind="completion")
+			or ""
+		)
+		default_mod = llmio.default_model(kind="completion") or ""
+		provider = os.environ.get("QUACK_PROVIDER") or llmio.DEFAULT_PROVIDER
+		try:
+			discovered = llmio.list_models()
+		except Exception:
+			discovered = []
+		payload = {
+			"schemaVersion": 1,
+			"currentModel": current_model,
+			"defaultModel": default_mod,
+			"models": [
+				{
+					"id": m,
+					"displayName": m,
+					"provider": provider,
+					"available": True,
+				}
+				for m in discovered
+			],
+		}
+		click.echo(json.dumps(payload, separators=(",", ":")))
+		return
+
+	if as_list:
+		_echo_model_list(model)
+		return
+
 	try:
 		_render_model_diagnostic(model)
 	except Exception as exc:
 		# Diagnostics must never become a new failure mode or expose exception data.
 		render.warning(f"quack model: diagnostic unavailable ({type(exc).__name__})")
+
+
+@main.command()
+@click.option("--port", default=8787)
+@click.option("--host", default="127.0.0.1")
+def serve(port: int, host: str) -> None:
+	"""Start the quack FastAPI server."""
+	import uvicorn
+
+	from . import server
+
+	uvicorn.run(server.app, host=host, port=port)
 
 
 @main.command()
@@ -657,12 +933,73 @@ def model(model: str | None) -> None:
 	help="Wire quack via a `repo: local` stanza using the installed `quack` "
 	"command (works without a published quack repo).",
 )
-def install(use_local: bool) -> None:
+@click.option(
+	"--yes",
+	"assume_yes",
+	is_flag=True,
+	default=False,
+	help="Answer yes to prompts (for non-interactive callers such as the IDE "
+	"extension).",
+)
+@click.option(
+	"--quack-path",
+	"quack_path",
+	default=None,
+	help="Absolute path to the quack executable to write into hooks. Used by "
+	"IDE extensions, where quack is not on PATH.",
+)
+def install(use_local: bool, assume_yes: bool, quack_path: str | None) -> None:
 	"""Add the quack stanza to .pre-commit-config.yaml and install the hook."""
-	render.install_banner()
+	# Quote: Windows paths have spaces.
+	quack_cmd = f'"{quack_path}"' if quack_path else "quack"
+	# Detect husky (or any core.hooksPath) BEFORE writing config: when git reads
+	# hooks from elsewhere, `pre-commit install` cannot work and writing a config
+	# file that nothing executes would leave a misleading artifact behind.
+	hooks_path = _hooks_path()
+	if hooks_path:
+		if not _is_husky(hooks_path):
+			render.warning(
+				f"quack: core.hooksPath is set to {hooks_path}; quack cannot "
+				f"install hooks automatically"
+			)
+			render.metadata("  add this line to your pre-commit hook:")
+			render.metadata(f"    {quack_cmd} check")
+			render.metadata("  and this to your pre-push hook:")
+			render.metadata(f"    {quack_cmd} agent")
+			sys.exit(1)
+
+		husky_dir = Path(".husky")
+		render.metadata(f"quack: husky detected (core.hooksPath = {hooks_path})")
+		render.metadata(
+			"  quack can add itself to .husky/pre-commit and .husky/pre-push"
+		)
+		render.warning(
+			"  these files are tracked in git: this affects everyone on this branch"
+		)
+
+		if not assume_yes and not click.confirm("  add quack to the husky hooks?"):
+			render.metadata("quack: nothing changed. To wire quack up manually, add:")
+			render.metadata(f"    {quack_cmd} check      # to .husky/pre-commit")
+			render.metadata(f"    {quack_cmd} agent      # to .husky/pre-push")
+			sys.exit(1)
+
+		husky_dir.mkdir(exist_ok=True)
+		render.install_banner()
+		commit_action = _install_into_husky(
+			husky_dir / "pre-commit", f"{quack_cmd} check"
+		)
+		push_action = _install_into_husky(
+			husky_dir / "pre-push", f"{quack_cmd} agent"
+		)
+		render.clean(f"quack: {commit_action} quack check in .husky/pre-commit")
+		render.clean(f"quack: {push_action} quack agent in .husky/pre-push")
+		render.metadata("  commit these files so your team gets the same hooks")
+		sys.exit(0)
+
 	config_path = Path(".pre-commit-config.yaml")
+	render.install_banner()
 	if use_local:
-		_upsert_local_stanza(config_path)
+		_upsert_local_stanza(config_path, quack_path)
 	else:
 		_upsert_precommit_stanza(config_path)
 	render.clean(f"quack: updated {config_path}")
@@ -694,11 +1031,30 @@ def install(use_local: bool) -> None:
 
 	# One-time power-mode bootstrap: get gitleaks on this machine so every
 	# later commit benefits automatically. Best-effort and never fatal.
+	# gitleaks is optional -- the built-in Tier 1 patterns still cover the
+	# blocking checks on their own, so a failed bootstrap here is a benign
+	# notice, not an error. Only surface the underlying reason when it is
+	# actionable (i.e. not the generic "no supported package manager" case);
+	# the raw exit code is dropped from the user-facing line and kept in
+	# metrics instead.
 	installed, message = gitleaks.ensure_installed()
 	if installed:
 		render.clean(f"quack: {message}")
 	else:
-		render.warning(f"quack: gitleaks power mode unavailable - {message}")
+		render.warning(
+			"quack: gitleaks not installed (optional - built-in secret "
+			"patterns still active)"
+		)
+		if "no supported package manager" not in message:
+			render.metadata(f"  reason: {message}")
+		render.metadata("  set QUACK_DISABLE_GITLEAKS=1 to silence this check")
+		metrics_mod.log(
+			{
+				"ts": metrics_mod.timestamp(),
+				"command": "install",
+				"failure": f"gitleaks bootstrap: {message}",
+			}
+		)
 	sys.exit(0)
 
 
@@ -850,7 +1206,77 @@ def _sonar_issue_value(
 	return value[:240] or default
 
 
-def _upsert_local_stanza(config_path: Path) -> None:
+# Marker pair for quack's block inside a husky hook. String search rather than
+# parsing: append, update and remove all stay deterministic even if a developer
+# edits around the block.
+QUACK_HOOK_START = "# >>> quack managed block >>>"
+QUACK_HOOK_END = "# <<< quack managed block <<<"
+
+
+def _hooks_path(*, root: str | None = None) -> str | None:
+	"""Return git's configured core.hooksPath, or None when unset.
+
+	When this is set, git ignores .git/hooks entirely -- so `pre-commit install`
+	writes a hook that git will never execute. pre-commit knows this and refuses
+	outright, which is why quack must detect the case rather than treating the
+	failure as incidental.
+	"""
+	try:
+		result = subprocess.run(
+			["git", "config", "core.hooksPath"],
+			capture_output=True,
+			text=True,
+			check=False,
+			cwd=root,
+		)
+	except OSError:
+		return None
+	value = result.stdout.strip()
+	return value or None
+
+
+def _is_husky(hooks_path: str) -> bool:
+	"""True when core.hooksPath looks like husky's generated hook directory."""
+	return "husky" in hooks_path.replace("\\", "/").lower()
+
+
+def _husky_hook_block(command: str) -> str:
+	return (
+		f"\n{QUACK_HOOK_START}\n"
+		f"# Added by `quack install`. Remove this block to disable quack.\n"
+		f"{command} || exit $?\n"
+		f"{QUACK_HOOK_END}\n"
+	)
+
+
+def _install_into_husky(hook_file: Path, command: str) -> str:
+	"""Append (or refresh) quack's block in a husky hook. Returns what happened.
+
+	The hook file is tracked in git, so this is only ever called after explicit
+	consent: appending here changes the hook for everyone on the branch, not
+	just the developer who ran install.
+	"""
+	if hook_file.exists():
+		existing = hook_file.read_text(encoding="utf-8")
+	else:
+		existing = "#!/usr/bin/env sh\n"
+
+	block = _husky_hook_block(command)
+
+	if QUACK_HOOK_START in existing:
+		start = existing.index(QUACK_HOOK_START)
+		end = existing.index(QUACK_HOOK_END) + len(QUACK_HOOK_END)
+		updated = existing[:start].rstrip("\n") + block + existing[end:].lstrip("\n")
+		action = "updated"
+	else:
+		updated = existing.rstrip("\n") + "\n" + block
+		action = "added"
+
+	hook_file.write_text(updated, encoding="utf-8")
+	return action
+
+
+def _upsert_local_stanza(config_path: Path, quack_path: str | None = None) -> None:
 	"""Insert or update a `repo: local` quack stanza.
 
 	Uses the `quack` command already on PATH (``language: system``), so no
@@ -863,13 +1289,15 @@ def _upsert_local_stanza(config_path: Path) -> None:
 		data = {}
 
 	repos = data.setdefault("repos", [])
+	# Quote: Windows paths have spaces.
+	quack_cmd = f'"{quack_path}"' if quack_path else "quack"
 	# Two surfaces: pre-commit runs local checks only; pre-push runs AI review
 	# (and the agent where the provider supports tool calling).
 	hooks_to_add = [
 		{
 			"id": "quack",
 			"name": "quack",
-			"entry": "quack check",
+			"entry": f"{quack_cmd} check",
 			"language": "system",
 			"pass_filenames": False,
 			"stages": ["pre-commit"],
@@ -877,7 +1305,7 @@ def _upsert_local_stanza(config_path: Path) -> None:
 		{
 			"id": "quack-agent",
 			"name": "quack-agent",
-			"entry": "quack agent",
+			"entry": f"{quack_cmd} agent",
 			"language": "system",
 			"pass_filenames": False,
 			"stages": ["pre-push"],

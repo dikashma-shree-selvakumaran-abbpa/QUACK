@@ -273,3 +273,109 @@ def test_malicious_instructions_cannot_lower_risk(
 	assert result is not None
 	assert result.model_risk == "low"
 	assert result.risk == "high"  # rubric floor overrides the injected verdict
+
+
+_REGEX_BAIT_LINES = [
+	'+    "node_modules/async": {',
+	'+      "count": 3,',
+	'+      "resolved": "https://registry.npmjs.org/async/-/async-3.2.4.tgz"',
+	'+      "integrity": "sha512-abc==",',
+]
+
+
+def _bait_hunk(lines: int) -> str:
+	body = [_REGEX_BAIT_LINES[i % len(_REGEX_BAIT_LINES)] for i in range(lines)]
+	return "@@ -1,1 +1,%d @@\n" % lines + "\n".join(body)
+
+
+def test_generated_files_do_not_trip_code_heuristics() -> None:
+	file = StagedFile(
+		path="package-lock.json",
+		status="M",
+		added=250,
+		removed=0,
+		hunks=[_bait_hunk(250)],
+	)
+	delta = StagedDelta(files=[file], raw_diff="")
+
+	risk, reasons = tier2._deterministic_risk(delta, testmap.TestPlan())
+
+	assert risk == "low"
+	assert "state/concurrency-sensitive logic changed" not in reasons
+	assert "boundary/index/limit logic touched" not in reasons
+	assert "large staged delta (200+ changed lines)" not in reasons
+
+
+def test_source_files_still_trip_code_heuristics() -> None:
+	file = StagedFile(
+		path="src/widget.py",
+		status="M",
+		added=250,
+		removed=0,
+		hunks=[_bait_hunk(250)],
+	)
+	delta = StagedDelta(files=[file], raw_diff="")
+
+	_, reasons = tier2._deterministic_risk(delta, testmap.TestPlan())
+
+	assert "state/concurrency-sensitive logic changed" in reasons
+
+
+def _reasons_for(path: str, body: list[str]) -> list[str]:
+	hunk = "@@ -1,1 +1,%d @@\n" % len(body) + "\n".join(body)
+	file = StagedFile(
+		path=path, status="M", added=len(body), removed=0, hunks=[hunk]
+	)
+	delta = StagedDelta(files=[file], raw_diff="")
+	_, reasons = tier2._deterministic_risk(delta, testmap.TestPlan())
+	return reasons
+
+
+def test_equality_operators_do_not_trip_boundary_reason() -> None:
+	reasons = _reasons_for(
+		"src/widget.py",
+		[
+			"+    assert result.count == 3",
+			"+    assert other != expected",
+			"+    total = size + length_of(name)",
+		],
+	)
+
+	assert "boundary/index/limit logic touched" not in reasons
+
+
+def test_real_boundary_logic_still_trips() -> None:
+	reasons = _reasons_for(
+		"src/widget.py",
+		[
+			"+    if position <= maximum:",
+			"+        position = position + offset",
+		],
+	)
+
+	assert "boundary/index/limit logic touched" in reasons
+
+
+def test_common_words_do_not_trip_stateful_reason() -> None:
+	reasons = _reasons_for(
+		"src/panel.tsx",
+		[
+			"+    this.state = { event: null };",
+			"+    const callback = props.delegate;",
+			"+    setState(nextState);",
+		],
+	)
+
+	assert "state/concurrency-sensitive logic changed" not in reasons
+
+
+def test_real_concurrency_still_trips() -> None:
+	reasons = _reasons_for(
+		"src/panel.tsx",
+		[
+			"+    await lock.acquire();",
+			"+    this.state = { event: null };",
+		],
+	)
+
+	assert "state/concurrency-sensitive logic changed" in reasons

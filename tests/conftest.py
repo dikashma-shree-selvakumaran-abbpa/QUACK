@@ -32,9 +32,5 @@ def _block_unmocked_provider_calls(request, monkeypatch, tmp_path):
 	def fail_complete(*args, **kwargs):
 		raise AssertionError(_PROVIDER_CALL_ERROR)
 
-	def fail_chat(*args, **kwargs):
-		raise AssertionError(_PROVIDER_CALL_ERROR)
-
 	monkeypatch.setattr(llmio, "complete", fail_complete)
-	monkeypatch.setattr(llmio, "chat", fail_chat)
 	yield
