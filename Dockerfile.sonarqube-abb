@@ -1,0 +1,10 @@
+﻿FROM mcp/sonarqube
+COPY abb-rsa-root.cer /tmp/abb-rsa-root.cer
+COPY abb-l2-ca.cer /tmp/abb-l2-ca.cer
+USER root
+RUN keytool -importcert -noprompt -trustcacerts \
+    -alias abb-rsa-root -file /tmp/abb-rsa-root.cer \
+    -keystore /opt/jdk/jdk-21/lib/security/cacerts -storepass changeit && \
+    keytool -importcert -noprompt -trustcacerts \
+    -alias abb-l2-ca -file /tmp/abb-l2-ca.cer \
+    -keystore /opt/jdk/jdk-21/lib/security/cacerts -storepass changeit
