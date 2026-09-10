@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import threading
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -64,6 +65,7 @@ _NATIVE_FINAL_INSTRUCTION = (
 	"reply with ONLY the final JSON verdict: "
 	"{summary, tests_run, failures, proposed_patch, proposed_new_tests}."
 )
+_SDK_IO_LOCK = threading.RLock()
 
 
 class _CopilotTimeout(TimeoutError):
@@ -77,31 +79,37 @@ class _CopilotTimeout(TimeoutError):
 @contextmanager
 def _silence_sdk_logging():
 	"""Suppress all Copilot SDK terminal output for one adapter operation."""
-	parent = logging.getLogger("copilot")
-	parent_state = (
-		list(parent.handlers),
-		parent.level,
-		parent.propagate,
-		parent.disabled,
-	)
-	children = [
-		(logger, logger.disabled)
-		for name, logger in logging.Logger.manager.loggerDict.items()
-		if name.startswith("copilot.") and isinstance(logger, logging.Logger)
-	]
-	parent.handlers = [logging.NullHandler()]
-	parent.propagate = False
-	parent.disabled = False
-	for logger, _ in children:
-		logger.disabled = True
-	try:
-		with open(os.devnull, "w", encoding="utf-8") as sink:
-			with redirect_stdout(sink), redirect_stderr(sink):
-				yield
-	finally:
-		parent.handlers, parent.level, parent.propagate, parent.disabled = parent_state
-		for logger, disabled in children:
-			logger.disabled = disabled
+	# stdout/stderr redirection is process-wide. FastAPI may run model discovery
+	# and review requests concurrently, so overlapping contexts can restore a
+	# sink that another request has already closed.
+	with _SDK_IO_LOCK:
+		parent = logging.getLogger("copilot")
+		parent_state = (
+			list(parent.handlers),
+			parent.level,
+			parent.propagate,
+			parent.disabled,
+		)
+		children = [
+			(logger, logger.disabled)
+			for name, logger in logging.Logger.manager.loggerDict.items()
+			if name.startswith("copilot.") and isinstance(logger, logging.Logger)
+		]
+		parent.handlers = [logging.NullHandler()]
+		parent.propagate = False
+		parent.disabled = False
+		for logger, _ in children:
+			logger.disabled = True
+		try:
+			with open(os.devnull, "w", encoding="utf-8") as sink:
+				with redirect_stdout(sink), redirect_stderr(sink):
+					yield
+		finally:
+			parent.handlers, parent.level, parent.propagate, parent.disabled = (
+				parent_state
+			)
+			for logger, disabled in children:
+				logger.disabled = disabled
 
 
 def _short_error(exc: Exception, limit: int = 160) -> str:

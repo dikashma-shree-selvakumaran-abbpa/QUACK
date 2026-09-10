@@ -10,6 +10,7 @@ import asyncio
 import io
 import logging
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -342,6 +343,48 @@ def test_sdk_stdout_and_stderr_are_suppressed_during_start_and_stop(
 	assert client.stopped is True
 
 
+def test_sdk_output_suppression_is_serialized_across_threads():
+	first_entered = threading.Event()
+	release_first = threading.Event()
+	second_entered = threading.Event()
+	errors = []
+	original_stdout = sys.stdout
+	original_stderr = sys.stderr
+
+	def first():
+		try:
+			with copilot_sdk._silence_sdk_logging():
+				first_entered.set()
+				release_first.wait()
+		except Exception as exc:
+			errors.append(exc)
+
+	def second():
+		try:
+			first_entered.wait(2)
+			with copilot_sdk._silence_sdk_logging():
+				second_entered.set()
+		except Exception as exc:
+			errors.append(exc)
+
+	first_thread = threading.Thread(target=first)
+	second_thread = threading.Thread(target=second)
+	first_thread.start()
+	assert first_entered.wait(2)
+	second_thread.start()
+	try:
+		assert not second_entered.wait(0.05)
+	finally:
+		release_first.set()
+	first_thread.join(2)
+	second_thread.join(2)
+
+	assert second_entered.is_set()
+	assert errors == []
+	assert sys.stdout is original_stdout
+	assert sys.stderr is original_stderr
+
+
 def test_first_run_notice_uses_render_path(monkeypatch):
 	messages = []
 	monkeypatch.setattr(copilot_sdk, "_runtime_needs_preparation", lambda: True)
@@ -402,4 +445,3 @@ def test_declares_copilot_default_models():
 	assert (
 		copilot_sdk.DEFAULT_COMPLETION_MODEL != copilot_sdk.DEFAULT_AGENT_MODEL
 	), "the two surfaces must resolve to different models"
-
