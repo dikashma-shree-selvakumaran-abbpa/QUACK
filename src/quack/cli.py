@@ -246,6 +246,7 @@ def check(as_json: bool) -> None:
 			findings=findings,
 			plan=plan,
 			ai=ai,
+			sonar=sonar_result,
 			model=cached_model,
 			ai_note=cache_note,
 			blocked=False,
