@@ -257,3 +257,101 @@ def test_fly_reveals_patch_but_default_hides_it(monkeypatch, tmp_path, capsys):
 	output = capsys.readouterr().out
 	assert "--- a/x.py" in output
 	assert "+++ b/x.py" in output
+
+
+class _MockSonarClient:
+	def __init__(self, tools=None, call_result="success sonar result", call_error=False):
+		self.tools = tools or [
+			{
+				"type": "function",
+				"function": {
+					"name": "sonarqube_search_issues",
+					"description": "Search SonarQube issues.",
+					"parameters": {"type": "object", "properties": {}},
+				},
+			}
+		]
+		self.call_result = call_result
+		self.call_error = call_error
+		self.called = []
+
+	def tool_definitions(self):
+		return self.tools
+
+	def has_tool(self, name):
+		return any(t.get("function", {}).get("name") == name for t in self.tools)
+
+	def call_tool(self, name, args):
+		self.called.append((name, args))
+		if self.call_error:
+			raise RuntimeError("sonar client error")
+		return self.call_result
+
+
+def test_sonarqube_mcp_tools_registered_and_executable(monkeypatch, tmp_path):
+	mock_client = _MockSonarClient()
+	monkeypatch.setattr(
+		copilot_sdk,
+		"_sonarqube_tool_specs",
+		lambda root: (mock_client, mock_client.tool_definitions()),
+	)
+	actions = [("sonarqube_search_issues", {"query": "bug"})]
+	_, _, session = _run(monkeypatch, tmp_path, actions)
+	assert len(session.tools) == 4
+	assert any(t.name == "sonarqube_search_issues" for t in session.tools)
+	assert mock_client.called == [("sonarqube_search_issues", {"query": "bug"})]
+	assert session.denied == []
+
+
+def test_sonarqube_tool_calls_do_not_consume_run_tests_budget(monkeypatch, tmp_path):
+	(tmp_path / "test_x.py").write_text("", encoding="utf-8")
+	mock_client = _MockSonarClient()
+	monkeypatch.setattr(
+		copilot_sdk,
+		"_sonarqube_tool_specs",
+		lambda root: (mock_client, mock_client.tool_definitions()),
+	)
+	actions = [
+		("run_tests", {"project_or_paths": "test_x.py"}),
+		("run_tests", {"project_or_paths": "test_x.py"}),
+		("sonarqube_search_issues", {}),
+	]
+	_, _, session = _run(monkeypatch, tmp_path, actions)
+	assert mock_client.called == [("sonarqube_search_issues", {})]
+	assert session.denied == []
+
+
+def test_sonarqube_tool_calls_consume_iteration_budget(monkeypatch, tmp_path):
+	mock_client = _MockSonarClient()
+	monkeypatch.setattr(
+		copilot_sdk,
+		"_sonarqube_tool_specs",
+		lambda root: (mock_client, mock_client.tool_definitions()),
+	)
+	actions = [("sonarqube_search_issues", {})] * (agent.MAX_ITERATIONS + 1)
+	_, _, session = _run(monkeypatch, tmp_path, actions)
+	assert len(session.denied) == 1
+	assert "iteration budget" in session.denied[0][1]
+
+
+def test_sonarqube_mcp_unavailable_fails_open(monkeypatch, tmp_path):
+	monkeypatch.setattr(copilot_sdk, "_sonarqube_tool_specs", lambda root: (None, []))
+	_, _, session = _run(monkeypatch, tmp_path)
+	assert len(session.tools) == 3
+	assert not any(t.name.startswith("sonarqube") for t in session.tools)
+
+
+def test_sonarqube_tool_exception_returns_failure_result(monkeypatch, tmp_path):
+	mock_client = _MockSonarClient(call_error=True)
+	monkeypatch.setattr(
+		copilot_sdk,
+		"_sonarqube_tool_specs",
+		lambda root: (mock_client, mock_client.tool_definitions()),
+	)
+	_, _, session = _run(monkeypatch, tmp_path, [("sonarqube_search_issues", {})])
+	sonar_tool = next(t for t in session.tools if t.name == "sonarqube_search_issues")
+	result = asyncio.run(
+		sonar_tool.handler(SimpleNamespace(arguments={}))
+	)
+	assert result.result_type == "failure"
+	assert "tool execution failed" in result.text_result_for_llm
