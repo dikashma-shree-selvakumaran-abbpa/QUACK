@@ -1,4 +1,4 @@
-"""Tests for the optional staged SonarQube integration."""
+﻿"""Tests for the optional staged SonarQube integration."""
 
 from __future__ import annotations
 
@@ -27,6 +27,8 @@ def test_scan_skips_without_token(monkeypatch, tmp_path) -> None:
 	monkeypatch.delenv("QUACK_DISABLE_SONAR", raising=False)
 	monkeypatch.delenv("QUACK_SONAR", raising=False)
 	monkeypatch.delenv("SONAR_TOKEN", raising=False)
+	monkeypatch.delenv("SONARQUBE_TOKEN", raising=False)
+	monkeypatch.delenv("SQ_TOKEN", raising=False)
 	monkeypatch.setattr(sonar, "_discover_scanner", lambda root: "scanner")
 
 	result = sonar.scan(_delta(), tmp_path)

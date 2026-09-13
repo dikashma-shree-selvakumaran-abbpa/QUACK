@@ -1,4 +1,4 @@
-"""Optional local SonarQube analysis for the pre-commit path.
+﻿"""Optional local SonarQube analysis for the pre-commit path.
 
 The integration is advisory and fail-open. It only runs when a scanner,
 ``SONAR_TOKEN``, and a healthy SonarQube server are available. Analysis is
@@ -72,7 +72,7 @@ def scan(delta, root: str | Path) -> ScanResult | None:
 	if scanner is None:
 		return _result("skipped", "scanner not found", started)
 
-	if not os.environ.get("SONAR_TOKEN", "").strip():
+	if not (os.environ.get("SONARQUBE_TOKEN", "").strip() or os.environ.get("SQ_TOKEN", "").strip() or os.environ.get("SONAR_TOKEN", "").strip()):
 		return _result("skipped", "SONAR_TOKEN is not set", started)
 
 	ready, reason = _server_ready(host_url)
@@ -95,6 +95,13 @@ def scan(delta, root: str | Path) -> ScanResult | None:
 			)
 	except OSError:
 		return _result("failed", "temporary analysis directory unavailable", started)
+	except Exception as exc:
+		# Fail-open like every other quack integration: an unexpected error
+		# here must degrade to a reported failure, never escape into the CLI.
+		msg = str(exc)[:200].replace("\n", " ")
+		return _result(
+			"failed", f"unexpected error: {type(exc).__name__}: {msg}", started
+		)
 
 	dashboard = f"{host_url}/dashboard?id={project_key}"
 	if exit_code == 0:
