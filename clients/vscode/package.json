@@ -42,6 +42,10 @@
       {
         "command": "quack.selectModel",
         "title": "QUACK: Select model"
+      },
+      {
+        "command": "quack.install",
+        "title": "QUACK: Set up hooks in this repo"
       }
     ],
     "configuration": {
