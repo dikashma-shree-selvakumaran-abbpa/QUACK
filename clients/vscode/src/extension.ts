@@ -118,6 +118,13 @@ async function refreshStatus(): Promise<void> {
             ? `Provider problem: ${data.availabilityError}\n${modelLine}`
             : `Connected to ${serverUrl()}\n${modelLine}`;
         panel?.setStatus(data);
+        if (data.availabilityError && !copilotAuthNotificationShown) {
+            copilotAuthNotificationShown = true;
+            vscode.window.showWarningMessage(
+                `QUACK: GitHub Copilot is not available — ${data.availabilityError}. ` +
+                `Make sure you are signed into GitHub Copilot.`
+            );
+        }
     } catch {
         statusBar.text = "$(circle-slash) quack offline";
         statusBar.tooltip = `No quack server at ${serverUrl()} - run 'quack serve'\n${modelLine}`;
@@ -337,6 +344,7 @@ async function openReport(job: AgentJob, model: string): Promise<void> {
     await vscode.window.showTextDocument(doc, { preview: false });
 }
 let installNotificationShown = false;
+let copilotAuthNotificationShown = false;
 
 async function fetchMetrics(): Promise<void> {
     try {

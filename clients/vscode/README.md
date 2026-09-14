@@ -22,7 +22,6 @@ PAT or API key.
 5. Choose the downloaded VSIX file.
 6. Confirm that **QUACK** appears under installed extensions.
 
-![QUACK installed in the VS Code Extensions view](media/onboarding/01-install-extension.png)
 
 ## 2. Start QUACK for the first time
 
@@ -33,7 +32,6 @@ download the matching engine from the latest GitHub release. Select
 **Download** and wait for the status to change from `offline` to a QUACK
 version.
 
-![QUACK first-run executable download prompt](media/onboarding/02-download-quack.png)
 
 The extension starts `quack serve` automatically on
 `http://127.0.0.1:8787`. A terminal does not need to remain open. To use an
@@ -68,7 +66,6 @@ The QUACK sidebar contains:
 - findings from the latest check
 - local run metrics
 
-![Connected QUACK sidebar with metrics](media/onboarding/03-quack-sidebar.png)
 
 The status bar also shows the connected version and build commit. If it says
 `quack offline`, see [Troubleshooting](#troubleshooting).
@@ -80,7 +77,6 @@ The status bar also shows the connected version and build commit. If it says
 3. To follow the server configuration instead, choose **Use the server
    default**.
 
-![QUACK reachable-model picker](media/onboarding/04-select-model.png)
 
 The choice is saved as `quack.model` in the current workspace. Larger models
 can take longer and cost more per run.
@@ -111,7 +107,6 @@ Select **Run AI review** to review the staged change and start the read-only
 repository investigation. Progress appears in a VS Code notification and
 results stream into the **QUACK** output channel.
 
-![QUACK AI review and investigation in progress](media/onboarding/05-ai-review-progress.png)
 
 The completed report includes:
 
@@ -121,7 +116,6 @@ The completed report includes:
 - tests executed by the agent
 - proposed tests or a proposed patch when applicable
 
-![Completed QUACK AI review and investigation](media/onboarding/06-ai-review-result.png)
 
 Review the evidence before pushing. AI output is advisory and should not
 replace normal code review.
