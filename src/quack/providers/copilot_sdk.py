@@ -27,6 +27,7 @@ import re
 import threading
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Container
 
 from .. import render
 from ..llmio import LLMUnavailable
@@ -384,7 +385,29 @@ def _agent_args(input_data) -> dict:
 	return args if isinstance(args, dict) else {}
 
 
-def _validate_agent_call(root: Path, name: str, args: dict) -> str | None:
+def _sonarqube_tool_specs(
+	root: Path,
+) -> tuple[object | None, list[dict]]:
+	"""Discover available SonarQube MCP tools for this repo, failing open."""
+	from ..mcp import sonarqube as sonarqube_mcp
+
+	try:
+		client, _reason = sonarqube_mcp.connection_from_environment(
+			project_path=root
+		)
+		if client is None:
+			return None, []
+		return client, client.tool_definitions()
+	except Exception:
+		return None, []
+
+
+def _validate_agent_call(
+	root: Path,
+	name: str,
+	args: dict,
+	sonar_tools: Container[str] | None = None,
+) -> str | None:
 	"""Validate a native invocation before its handler is allowed to run."""
 	from .. import agent
 
@@ -392,6 +415,8 @@ def _validate_agent_call(root: Path, name: str, args: dict) -> str | None:
 		path = args.get("path")
 		if not isinstance(path, str) or agent._safe_path(root, path) is None:
 			return "path is outside the repository or invalid"
+		return None
+	if sonar_tools is not None and name in sonar_tools:
 		return None
 	if name != "run_tests":
 		return "unknown tool"
@@ -428,6 +453,13 @@ async def _run_agent_async(
 	if CopilotClient is None or define_tool is None:
 		raise LLMUnavailable("copilot sdk not installed")
 	root = Path(repo_root).resolve()
+	mcp_client, mcp_tools = _sonarqube_tool_specs(root)
+	sonar_tool_names = {
+		fn["name"]
+		for tool_def in mcp_tools
+		if isinstance(fn := tool_def.get("function"), dict)
+		and isinstance(fn.get("name"), str)
+	}
 	started = asyncio.get_running_loop().time()
 	deadline = started + min(max(timeout_s, 0.0), agent.WALL_CLOCK_S)
 	invocations = 0
@@ -448,7 +480,7 @@ async def _run_agent_async(
 			return {"permissionDecision": "deny", "permissionDecisionReason": "iteration budget exhausted"}
 		if asyncio.get_running_loop().time() - started >= agent.WALL_CLOCK_S:
 			return {"permissionDecision": "deny", "permissionDecisionReason": "wall-clock budget exhausted"}
-		validation_error = _validate_agent_call(root, name, args)
+		validation_error = _validate_agent_call(root, name, args, sonar_tools=sonar_tool_names)
 		if validation_error:
 			return {"permissionDecision": "deny", "permissionDecisionReason": validation_error}
 		if name == "run_tests" and run_tests_used >= agent.MAX_RUN_TESTS:
@@ -466,7 +498,7 @@ async def _run_agent_async(
 			if asyncio.get_running_loop().time() - started >= agent.WALL_CLOCK_S:
 				return _tool_result("error: wall-clock budget exhausted", failure=True)
 			call_args = args if isinstance(args, dict) else {}
-			validation_error = _validate_agent_call(root, name, call_args)
+			validation_error = _validate_agent_call(root, name, call_args, sonar_tools=sonar_tool_names)
 			if validation_error:
 				return _tool_result(f"error: {validation_error}", failure=True)
 			if name == "run_tests":
@@ -481,12 +513,16 @@ async def _run_agent_async(
 					result = await asyncio.to_thread(agent._read_file, root, str(call_args.get("path", "")))
 				elif name == "list_dir":
 					result = await asyncio.to_thread(agent._list_dir, root, str(call_args.get("path", "")))
-				else:
+				elif name == "run_tests":
 					result = await asyncio.to_thread(
 						agent._run_tests, root, str(call_args.get("project_or_paths", ""))
 					)
 					if result.startswith("exit_code="):
 						test_outputs.append(result)
+				elif mcp_client is not None and name in sonar_tool_names:
+					result = await asyncio.to_thread(mcp_client.call_tool, name, call_args)
+				else:
+					result = "error: unknown tool"
 				return _tool_result(result, failure=result.startswith("error:"))
 			except Exception:
 				return _tool_result("error: tool execution failed", failure=True)
@@ -501,6 +537,21 @@ async def _run_agent_async(
 		tool = define_tool(name=name, description=description, handler=make_handler(name), skip_permission=True)
 		tool.parameters = _agent_tool_schema(name)
 		tools.append(tool)
+
+	for tool_def in mcp_tools:
+		fn = tool_def.get("function", {})
+		s_name = fn.get("name")
+		if isinstance(s_name, str) and s_name:
+			s_desc = fn.get("description", "")
+			s_params = fn.get("parameters", {"type": "object", "properties": {}})
+			tool = define_tool(
+				name=s_name,
+				description=s_desc,
+				handler=make_handler(s_name),
+				skip_permission=True,
+			)
+			tool.parameters = s_params if isinstance(s_params, dict) else {"type": "object", "properties": {}}
+			tools.append(tool)
 
 	client = CopilotClient()
 	try:

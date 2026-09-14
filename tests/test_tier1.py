@@ -49,6 +49,14 @@ def test_secrets_azure_devops_pat() -> None:
 	assert findings[0].message == "Azure DevOps PAT"
 
 
+def test_project_key_is_not_treated_as_a_credential() -> None:
+	delta = _delta(
+		"README.md",
+		_hunk('$env:SONARQUBE_PROJECT_KEY = "Operations.HMI.App.Alarms"'),
+	)
+	assert tier1.run(delta) == []
+
+
 def test_inline_allowlist_suppresses_findings() -> None:
 	# A real secret on a line carrying the allowlist marker is skipped.
 	delta = _delta(

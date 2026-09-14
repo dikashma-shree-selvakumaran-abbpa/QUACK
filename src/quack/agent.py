@@ -1,8 +1,9 @@
 """The ``quack agent`` pre-push loop.
 
 A plain, inspectable tool-calling loop -- no agent frameworks. The model is
-given three read-only tools (``read_file``, ``list_dir``, ``run_tests``) and
-must INVESTIGATE the staged delta, then emit a single JSON verdict.
+given three local read-only tools (``read_file``, ``list_dir``, ``run_tests``)
+and optional read-only SonarQube MCP tools, then must INVESTIGATE the staged
+delta and emit a single JSON verdict.
 
 Safety invariants enforced here, not by the model:
 
@@ -30,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import jsonparse, llmio, render, runio
+from .mcp import sonarqube as sonarqube_mcp
 from .llmio import LLMUnavailable
 
 MAX_ITERATIONS = 8
@@ -48,14 +50,21 @@ SYSTEM_PROMPT = """You are a pre-push test agent operating in a developer's
 repository. Goal: determine whether the accumulated local changes are
 safe to push, by INVESTIGATING, not guessing.
 
-You have tools: read_file, list_dir, run_tests. Method:
-1. Form a hypothesis about what could break, from the diff.
+You have tools: read_file, list_dir, run_tests, and possibly read-only
+SonarQube tools. Method:
+1. Form a hypothesis about what could break from the diff, or a
+   maintainability/quality hypothesis from a SonarQube finding in the local
+   sonar.py scan result already passed into this diff's context or from a
+   SonarQube MCP tool call. Do not force SonarQube findings into breakage
+   framing.
 2. Gather the minimum evidence: read the changed code and its most
    relevant caller or test. Do not read files without a stated reason.
 3. Run the smallest test set that would confirm or refute the
    hypothesis. At most 2 run_tests calls.
 4. If a test fails: diagnose the ROOT CAUSE (which line of the delta,
-   why), not the symptom.
+   why), not the symptom. If a SonarQube finding is confirmed relevant to
+   the diff via a Sonar tool call, diagnose why it applies and treat it the
+   same as a failing test for the purpose of proposing a patch.
 5. Produce the final JSON. If you propose a patch, it must be a
    minimal unified diff fixing the root cause, and if a changed
    behavior has no test, propose the missing test.
@@ -170,6 +179,8 @@ def run(
 	Never raises; on any model failure it degrades to a clear message.
 	"""
 	root = Path(repo_root).resolve()
+	mcp_client, mcp_tools = _sonarqube_tools(root)
+	available_tools = [*TOOLS, *mcp_tools]
 	messages: list[dict] = [
 		{"role": "system", "content": SYSTEM_PROMPT},
 		{
@@ -186,7 +197,7 @@ def run(
 		if time.monotonic() - start > wall_clock_s:
 			break
 		try:
-			message = llmio.chat(messages, model=model, tools=TOOLS)
+			message = llmio.chat(messages, model=model, tools=available_tools)
 		except LLMUnavailable as exc:
 			return _unavailable(exc.reason)
 
@@ -200,7 +211,9 @@ def run(
 		for call in tool_calls:
 			name, args = _parse_call(call)
 			budget_left = max_run_tests - run_tests_used
-			result_text, consumed = _dispatch(root, name, args, budget_left)
+			result_text, consumed = _dispatch(
+				root, name, args, budget_left, mcp_client
+			)
 			run_tests_used += consumed
 			if consumed:
 				# Capture the tool's ground-truth output for later cross-check.
@@ -221,6 +234,21 @@ def run(
 		return _unavailable(exc.reason)
 	result = _validate_with_retry(messages, message, model)
 	return _finalize(result, "no conclusion reached", test_run_outputs)
+
+
+def _sonarqube_tools(
+	project_path: Path | None = None,
+) -> tuple[
+	sonarqube_mcp.SonarQubeMcpClient | None, list[dict]
+]:
+	"""Load optional SonarQube MCP tools only for the tool-capable provider."""
+	client = sonarqube_mcp.client_from_environment(project_path=project_path)
+	if client is None:
+		return None, []
+	try:
+		return client, client.tool_definitions()
+	except sonarqube_mcp.SonarQubeMcpUnavailable:
+		return None, []
 
 
 _OVERRIDE_DIAGNOSIS = (
@@ -295,7 +323,11 @@ def _tool_exit_code(output: str) -> int | None:
 
 
 def _dispatch(
-	root: Path, name: str, args: dict, run_tests_budget: int
+	root: Path,
+	name: str,
+	args: dict,
+	run_tests_budget: int,
+	mcp_client: sonarqube_mcp.SonarQubeMcpClient | None = None,
 ) -> tuple[str, int]:
 	"""Execute one tool call. Returns (result_text, run_tests_consumed)."""
 	if name == "read_file":
@@ -312,6 +344,12 @@ def _dispatch(
 		if run_tests_budget <= 0:
 			return "error: run_tests budget exhausted (max 2 calls)", 0
 		return _run_tests(root, spec), 1
+	if mcp_client is not None and mcp_client.has_tool(name):
+		render.metadata(f"-> {name}")
+		try:
+			return mcp_client.call_tool(name, args), 0
+		except sonarqube_mcp.SonarQubeMcpUnavailable as exc:
+			return f"error: SonarQube MCP unavailable ({exc.reason})", 0
 	render.metadata(f"-> {name} (unknown)")
 	return f"error: unknown tool {name!r}", 0
 

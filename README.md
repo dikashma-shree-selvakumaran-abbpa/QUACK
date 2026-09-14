@@ -1,39 +1,39 @@
-# QUACK 
+﻿# QUACK 
 
 Catch problems before they reach CI : a pre-commit quality hook with AI review at pre-push.
 
 ## The problem
 
-For most teams, the first real quality gate is CI. You push, wait 15–20 minutes, and learn that a secret was committed, debug code was left in, or a test was broken , after you have context-switched and after teammates are blocked. The cost of a defect grows with the distance from the keystroke that made it. quack moves the first check back to the commit and push that introduced the change.
+For most teams, the first real quality gate is CI. You push, wait 15ΓÇô20 minutes, and learn that a secret was committed, debug code was left in, or a test was broken , after you have context-switched and after teammates are blocked. The cost of a defect grows with the distance from the keystroke that made it. quack moves the first check back to the commit and push that introduced the change.
 
 ## What it looks like
 
 A staged Azure DevOps PAT blocks the commit; quack exits 1 and Git does not commit it.
 
 ```text
-╭─ quack - 2 file(s) - +2/-1 - 0.8s ───────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ✗  secrets  demo_secret.cs:1  Azure DevOps PAT                                                                                       │
-│ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
-│ 🐤 QUACK!!!! check line #1                                                                                                           │
-╰─ 🐤 BLOCKED - fix and re-stage ──────────────────────────────────────────────────────────────────────────────────────────────────────╯
+Γò¡ΓöÇ quack - 2 file(s) - +2/-1 - 0.8s ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓò«
+Γöé Γ£ù  secrets  demo_secret.cs:1  Azure DevOps PAT                                                                                       Γöé
+Γöé ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ Γöé
+Γöé ≡ƒÉñ QUACK!!!! check line #1                                                                                                           Γöé
+Γò░ΓöÇ ≡ƒÉñ BLOCKED - fix and re-stage ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓò»
 exit code: 1
 ```
 
 A normal commit gives an exact test command and shows the cached review from `quack watch`.
 
 ```text
-╭─ quack - 1 file(s) - +1/-1 - 1.9s ──────────────────────────────────────────────╮
-│ Test guidance                                                                   │
-│ dotnet test packages/GraphicsModelEditor/GfxKernel.Tests/GfxKernel.Tests.csproj │
-│ (first run: build once with dotnet build)                                       │
-│ ─────────────────────────────────────────────────────────────────────────────── │
-│ AI - claude-haiku-4.5 - risk: MEDIUM                                            │
-│ Validation relaxed from exact to minimum length; confirm downstream array index │
-│ Validation boundary changed: from exact length equality (!=) to minimum length  │
-│ Relaxed constraint permits cases previously rejected; downstream BeginMove logi │
-│ boundary/index/limit logic touched                                              │
-│ (reviewed 2 min ago by quack watch)                                             │
-╰─ advisory: commit allowed ──────────────────────────────────────────────────────╯
+Γò¡ΓöÇ quack - 1 file(s) - +1/-1 - 1.9s ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓò«
+Γöé Test guidance                                                                   Γöé
+Γöé dotnet test packages/GraphicsModelEditor/GfxKernel.Tests/GfxKernel.Tests.csproj Γöé
+Γöé (first run: build once with dotnet build)                                       Γöé
+Γöé ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ Γöé
+Γöé AI - claude-haiku-4.5 - risk: MEDIUM                                            Γöé
+Γöé Validation relaxed from exact to minimum length; confirm downstream array index Γöé
+Γöé Validation boundary changed: from exact length equality (!=) to minimum length  Γöé
+Γöé Relaxed constraint permits cases previously rejected; downstream BeginMove logi Γöé
+Γöé boundary/index/limit logic touched                                              Γöé
+Γöé (reviewed 2 min ago by quack watch)                                             Γöé
+Γò░ΓöÇ advisory: commit allowed ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓò»
 ```
 
 On push, the pre-push hook reviews unpushed commits before the push completes.
@@ -54,7 +54,7 @@ No apparent replacement code restoring delegates elsewhere in this path
 
 | Surface | When it runs | What it does | Network |
 |---|---|---|---|
-| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, and test guidance, then performs only a local review-cache lookup. It never calls AI. | No; no token required. |
+| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, test guidance, and an optional local SonarQube analysis. It never calls AI. | No; no token required. SonarQube is local and advisory. |
 | `quack watch` | Alongside development | Reviews changes while you work and caches a verdict for commit time. | Yes, when a provider is available. |
 | `quack agent` | Pre-push | Reviews unpushed commits, then runs the provider's read-only investigation tools and can propose fixes. | Yes, when a provider is available. |
 | `quack serve` | On demand | Serves the same checks over local HTTP so editors can drive them. | Only when the endpoint it is asked for uses AI. |
@@ -62,6 +62,54 @@ No apparent replacement code restoring delegates elsewhere in this path
 
 Only secrets and merge markers block. AI is advisory and fails open: no token, offline operation, a slow provider, or rate limiting never prevents a commit. A pre-push range review requires an upstream branch; without one, `quack agent` can still analyze staged changes but has no unpushed range to inspect.
 
+
+## SonarQube integration
+
+When the local SonarQube server and scanner are available, `quack check` exports
+the staged Git index to a temporary directory and submits a scan to
+SonarQube. Unstaged edits are not scanned, scanner output is not printed, and
+SonarQube failures never block a commit.
+
+Set a local analysis token before using the integration:
+
+```powershell
+$env:SONAR_TOKEN = "<TOKEN>"
+```
+
+Quack discovers `sonar-scanner` on `PATH` or under `tools\sonar-scanner-*\bin`.
+Set `QUACK_DISABLE_SONAR=1` to disable the advisory scan.
+
+### SonarQube MCP server
+
+The repository also includes the generated MCP client configuration at
+`.vscode\mcp.json` and the Python adapter at `src\quack\mcp\sonarqube.py`.
+This is separate from the local pre-commit scanner: when Podman and a
+SonarQube token are available, `quack agent` uses the server's read-only
+tools natively through the Copilot SDK's tool-calling session during its
+pre-push investigation. Tools explicitly marked as write-capable by the
+server are not exposed to the agent.
+
+```powershell
+$env:SQ_TOKEN = "<TOKEN>"
+quack agent
+```
+
+The adapter connects to `SONARQUBE_URL` (e.g. `https://codescan.abb.com`),
+accepts `SONARQUBE_TOKEN` or `SQ_TOKEN`, and never stores the token in
+source control. Use a SonarQube user token (not a project key or global
+token). If the SonarQube project is outside the repository being reviewed,
+provide its workspace and project key explicitly with
+`quack sonar-mcp --project-path <folder>` or `--project-key <key>`.
+
+For corporate TLS inspection, the SonarQube MCP container image needs your
+organization's CA certificate imported into its Java trust store (the
+container's own OS trust store is not sufficient for the JVM). See
+`Dockerfile.sonarqube-abb` for a reference build that layers ABB's root and
+intermediate CA certificates into the image.
+
+Run `quack sonar-mcp` to start a Podman MCP session and list the available
+SonarQube tools directly from Quack. The MCP path is an optional pre-push
+agent capability; the staged local scanner remains the pre-commit check.
 ## CLI surface
 
 ```text
