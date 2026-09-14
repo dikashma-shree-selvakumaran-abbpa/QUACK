@@ -748,16 +748,69 @@ interface MetricsResponse {
 
 let panel: QuackProvider;
 import * as cp from "child_process";
+import * as fs from "fs";
+import * as https from "https";
 import * as path from "path";
 import * as os from "os";
 
 let serverProcess: cp.ChildProcess | null = null;
 
+const QUACK_RELEASES_API =
+    "https://api.github.com/repos/dikashma-shree-selvakumaran-abbpa/QUACK/releases/latest";
+
 function quackExePath(): string {
-return path.join(
-os.homedir(),
-"AppData", "Local", "quack", "quack.exe"
-);
+    return path.join(
+        os.homedir(),
+        "AppData", "Local", "quack", "quack.exe"
+    );
+}
+
+async function downloadQuackExe(): Promise<boolean> {
+    return new Promise((resolve) => {
+        const options = {
+            hostname: "api.github.com",
+            path: "/repos/dikashma-shree-selvakumaran-abbpa/QUACK/releases/latest",
+            headers: { "User-Agent": "quack-vscode" },
+        };
+        https.get(options, (res) => {
+            let data = "";
+            res.on("data", (chunk) => (data += chunk));
+            res.on("end", () => {
+                try {
+                    const release = JSON.parse(data);
+                    const asset = (release.assets as { name: string; browser_download_url: string }[])
+                        ?.find((a) => a.name === "quack.exe");
+                    if (!asset) {
+                        resolve(false);
+                        return;
+                    }
+                    const dest = quackExePath();
+                    fs.mkdirSync(path.dirname(dest), { recursive: true });
+                    const file = fs.createWriteStream(dest);
+                    https.get(asset.browser_download_url, (fileRes) => {
+                        if (fileRes.statusCode === 302 || fileRes.statusCode === 301) {
+                            const redirectUrl = new URL(fileRes.headers.location!);
+                            https.get({
+                                hostname: redirectUrl.hostname,
+                                path: redirectUrl.pathname + redirectUrl.search,
+                                headers: { "User-Agent": "quack-vscode" },
+                            }, (redirectRes) => {
+                                redirectRes.pipe(file);
+                                file.on("finish", () => { file.close(); resolve(true); });
+                                file.on("error", () => resolve(false));
+                            }).on("error", () => resolve(false));
+                        } else {
+                            fileRes.pipe(file);
+                            file.on("finish", () => { file.close(); resolve(true); });
+                            file.on("error", () => resolve(false));
+                        }
+                    }).on("error", () => resolve(false));
+                } catch {
+                    resolve(false);
+                }
+            });
+        }).on("error", () => resolve(false));
+    });
 }
 
 async function ensureServer(): Promise<boolean> {
@@ -781,11 +834,30 @@ exeExists = false;
 }
 
 if (!exeExists) {
-vscode.window.showErrorMessage(
-`quack: no server at ${serverUrl()} and no quack.exe found at ${exe}. ` +
-`Run 'quack install' to set up, or start 'quack serve' manually.`
+const answer = await vscode.window.showInformationMessage(
+"QUACK needs quack.exe to get started. Download it now? (~20MB)",
+"Download",
+"Not now"
 );
+if (answer !== "Download") {
 return false;
+}
+await vscode.window.withProgress(
+{ location: vscode.ProgressLocation.Notification, title: "QUACK: downloading quack.exe..." },
+async () => {
+const ok = await downloadQuackExe();
+if (!ok) {
+vscode.window.showErrorMessage(
+"quack: download failed. Place quack.exe manually at " + exe
+);
+}
+}
+);
+try {
+await vscode.workspace.fs.stat(vscode.Uri.file(exe));
+} catch {
+return false;
+}
 }
 
 // Spawn the server and wait for it to be ready.
