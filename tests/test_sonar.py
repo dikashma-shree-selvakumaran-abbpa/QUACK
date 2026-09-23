@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import URLError
@@ -137,6 +138,118 @@ def test_scan_exports_index_and_runs_bounded_scanner(monkeypatch, tmp_path) -> N
 		property.startswith("-Dsonar.scanner.metadataFilePath=")
 		for property in captured["properties"]
 	)
+
+
+def test_scan_replaces_empty_sonar_token_with_configured_token(
+	monkeypatch, tmp_path
+) -> None:
+	monkeypatch.setenv("SONAR_TOKEN", "")
+	monkeypatch.setenv("SQ_TOKEN", "configured-token")
+	monkeypatch.setattr(sonar, "_discover_scanner", lambda root: "scanner")
+	monkeypatch.setattr(sonar, "_server_ready", lambda host: (True, ""))
+	monkeypatch.setattr(
+		sonar.gitio, "export_staged_snapshot", lambda destination, root: True
+	)
+	captured: dict = {}
+
+	def run(scanner, properties, cwd, timeout_s):
+		captured["token"] = os.environ.get("SONAR_TOKEN")
+		metadata = Path(cwd, ".scannerwork")
+		metadata.mkdir()
+		(metadata / "report-task.txt").write_text(
+			"ceTaskId=task-token\n", encoding="utf-8"
+		)
+		return 0, ""
+
+	monkeypatch.setattr(sonar.runio, "run_sonar_scanner", run)
+	monkeypatch.setattr(
+		sonar,
+		"_wait_for_analysis",
+		lambda host, token, task, timeout: (True, "analysis completed", None),
+	)
+
+	result = sonar.scan(_delta(), tmp_path)
+
+	assert result is not None
+	assert result.status == "passed"
+	assert captured["token"] == "configured-token"
+	assert os.environ.get("SONAR_TOKEN") == ""
+
+
+def test_scan_working_scope_exports_worktree_instead_of_index(
+	monkeypatch, tmp_path
+) -> None:
+	monkeypatch.setenv("SONAR_TOKEN", "local-token")
+	monkeypatch.setattr(sonar, "_discover_scanner", lambda root: "scanner")
+	monkeypatch.setattr(sonar, "_server_ready", lambda host: (True, ""))
+	captured: dict = {}
+
+	def export(destination, root):
+		captured["root"] = root
+		Path(destination, "src").mkdir()
+		Path(destination, "src", "new.py").write_text(
+			"new = True\n", encoding="utf-8"
+		)
+		return True
+
+	def run(scanner, properties, cwd, timeout_s):
+		captured["snapshot"] = Path(cwd, "src", "new.py").read_text(
+			encoding="utf-8"
+		)
+		metadata = Path(cwd, ".scannerwork")
+		metadata.mkdir()
+		(metadata / "report-task.txt").write_text(
+			"ceTaskId=task-working\n", encoding="utf-8"
+		)
+		return 0, ""
+
+	monkeypatch.setattr(sonar.gitio, "export_working_snapshot", export)
+	monkeypatch.setattr(sonar.runio, "run_sonar_scanner", run)
+	monkeypatch.setattr(
+		sonar,
+		"_wait_for_analysis",
+		lambda host, token, task, timeout: (
+			True,
+			"analysis completed",
+			"analysis-working",
+		),
+	)
+
+	result = sonar.scan(_delta(), tmp_path, snapshot_scope="working")
+
+	assert result is not None
+	assert result.status == "passed"
+	assert result.analysis_id == "analysis-working"
+	assert captured["root"] == tmp_path.resolve()
+	assert captured["snapshot"] == "new = True\n"
+
+
+def test_scan_surfaces_bounded_redacted_scanner_error(
+	monkeypatch, tmp_path
+) -> None:
+	monkeypatch.setenv("SONAR_TOKEN", "secret-token")
+	monkeypatch.setattr(sonar, "_discover_scanner", lambda root: "scanner")
+	monkeypatch.setattr(sonar, "_server_ready", lambda host: (True, ""))
+	monkeypatch.setattr(
+		sonar.gitio, "export_staged_snapshot", lambda destination, root: True
+	)
+	monkeypatch.setattr(
+		sonar.runio,
+		"run_sonar_scanner",
+		lambda scanner, properties, cwd, timeout_s: (
+			1,
+			"INFO scanner\nERROR authorization failed for secret-token\n"
+			+ ("x" * 1000),
+		),
+	)
+
+	result = sonar.scan(_delta(), tmp_path)
+
+	assert result is not None
+	assert result.status == "failed"
+	assert "authorization failed" in result.reason
+	assert "secret-token" not in result.reason
+	assert len(result.reason) <= 320
 
 
 def test_scan_fails_open_on_timeout(monkeypatch, tmp_path) -> None:

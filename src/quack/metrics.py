@@ -74,7 +74,7 @@ _FAILURE_KEYS = frozenset(
 	}
 )
 _RISKS = frozenset({"low", "medium", "high"})
-_SONAR_STATUSES = frozenset({"passed", "skipped", "failed"})
+_SONAR_STATUSES = frozenset({"passed", "pending", "skipped", "failed"})
 _PATH_RE = re.compile(
 	r"(?:\b[A-Za-z]:[\\/][^\s]*|\\\\[^\s\\]+\\[^\s\\]+(?:\\[^\s]*)?|(?<![\w:/])\/[^\s]+)"
 )

@@ -359,6 +359,13 @@ def sonar_mcp(result) -> None:
 		_console().print(group)
 
 
+def sonar(result) -> None:
+	"""Render a standalone local SonarQube scanner outcome."""
+	group = _sonar_group(result)
+	if group is not None:
+		_console().print(group)
+
+
 def _ai_group(ai, model: str, note: str | None = None) -> RenderableType | None:
 	"""Render an AI verdict, cache-miss message, and optional provenance note."""
 	if ai is None:

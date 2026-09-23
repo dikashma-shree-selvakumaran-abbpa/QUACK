@@ -267,20 +267,29 @@ def scan(
 	root: str | Path,
 	*,
 	config: ScanConfig | None = None,
+	snapshot_scope: str = "staged",
 ) -> ScanResult | None:
-	"""Run one bounded staged snapshot analysis, or return ``None`` if disabled."""
+	"""Run one bounded staged or working-tree analysis.
+
+	Staged scans export only the Git index for pre-commit. Working scans copy
+	the complete current project, including non-ignored new files, for watch.
+	"""
 	started = time.perf_counter()
 	if _disabled():
 		return None
 	if not getattr(delta, "files", None):
 		return None
+	if snapshot_scope not in {"staged", "working"}:
+		return _result("failed", "invalid snapshot scope", started)
 
 	try:
 		root_path = Path(root).resolve()
 	except OSError:
 		return _result("failed", "repository path unavailable", started)
 
-	settings = config or configuration(root_path, staged=True)
+	settings = config or configuration(
+		root_path, staged=snapshot_scope == "staged"
+	)
 	if not settings.valid:
 		return _result(
 			"skipped",
@@ -307,12 +316,15 @@ def scan(
 
 	if _contains_backend_changes(delta):
 		mixed = _contains_frontend_changes(delta)
+		scope_label = "staged" if snapshot_scope == "staged" else "working-tree"
 		reason = (
-			"mixed FrontEnd/BackEnd staged changes are unverified; generic "
+			f"mixed FrontEnd/BackEnd {scope_label} changes are unverified; generic "
 			"sonar-scanner does not analyze Backend content"
 			if mixed
-			else "BackEnd staged changes are unverified; generic sonar-scanner "
-			"requires dotnet-sonarscanner and a build"
+			else (
+				f"BackEnd {scope_label} changes are unverified; generic "
+				"sonar-scanner requires dotnet-sonarscanner and a build"
+			)
 		)
 		return _result(
 			"skipped",
@@ -330,25 +342,35 @@ def scan(
 	try:
 		with tempfile.TemporaryDirectory(prefix="quack-sonar-") as temp:
 			snapshot = Path(temp)
-			if not gitio.export_staged_snapshot(snapshot, root_path):
-				return _result("failed", "staged snapshot unavailable", started)
+			exporter = (
+				gitio.export_staged_snapshot
+				if snapshot_scope == "staged"
+				else gitio.export_working_snapshot
+			)
+			if not exporter(snapshot, root_path):
+				return _result(
+					"failed",
+					f"{snapshot_scope} snapshot unavailable",
+					started,
+				)
 
 			properties = _scanner_properties(settings, snapshot)
+			had_sonar_token = "SONAR_TOKEN" in os.environ
 			previous_token = os.environ.get("SONAR_TOKEN")
-			if previous_token is None:
+			if not previous_token:
 				os.environ["SONAR_TOKEN"] = token
 			try:
-				exit_code, _output = runio.run_sonar_scanner(
+				exit_code, scanner_output = runio.run_sonar_scanner(
 					scanner,
 					properties,
 					snapshot,
 					timeout_s=timeout_s,
 				)
 			finally:
-				if previous_token is None:
-					os.environ.pop("SONAR_TOKEN", None)
+				if had_sonar_token:
+					os.environ["SONAR_TOKEN"] = previous_token or ""
 				else:
-					os.environ["SONAR_TOKEN"] = previous_token
+					os.environ.pop("SONAR_TOKEN", None)
 			task_id, analysis_id = _analysis_metadata(snapshot)
 	except OSError:
 		return _result(
@@ -428,12 +450,27 @@ def scan(
 		)
 	return _result(
 		"failed",
-		f"scanner exited with code {exit_code}",
+		_scanner_failure_reason(exit_code, scanner_output),
 		started,
 		dashboard,
 		project_key=project_key,
 		branch=settings.branch,
 	)
+
+
+def _scanner_failure_reason(exit_code: int, output: str) -> str:
+	"""Return a bounded scanner error without leaking credentials."""
+	detail = ""
+	for line in reversed((output or "").splitlines()):
+		if "error" in line.casefold() or "failure" in line.casefold():
+			detail = " ".join(line.split())
+			break
+	if not detail:
+		detail = "scanner returned no diagnostic output"
+	for secret in (_token(),):
+		if secret:
+			detail = detail.replace(secret, "<redacted>")
+	return f"scanner exited with code {exit_code}: {detail[:240]}"
 
 
 def _disabled() -> bool:
