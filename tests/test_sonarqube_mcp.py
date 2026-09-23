@@ -393,6 +393,7 @@ def test_debug_prints_redacted_mcp_request_and_response(
 	output = capsys.readouterr().err
 	assert "[debug] SonarQube MCP request" in output
 	assert "[debug] SonarQube MCP response" in output
+	assert "duration_ms=" in output
 	assert "tools/list" in output
 	assert "Operations.HMI.App.Alarms" in output
 	assert "secret-token" not in output

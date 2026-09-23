@@ -228,6 +228,16 @@ def run(
 	)
 	if source != "pre-commit":
 		result = _with_report(result, root, source)
+	sonar_debug.emit(
+		"SonarQube CLI API timing",
+		{
+			"source": source,
+			"total_api_ms": int(result.duration_s * 1000),
+			"outcome": result.status,
+			"violations": result.violation_count,
+		},
+		secrets=(token,),
+	)
 	return result
 
 
@@ -295,6 +305,7 @@ def _get_json(
 	*,
 	required: bool = True,
 ) -> SonarApiOutcome:
+	started = perf_counter()
 	query = urlencode(params, doseq=True)
 	url = f"{host}{path}?{query}"
 	sonar_debug.emit(
@@ -318,7 +329,12 @@ def _get_json(
 			raise ValueError("response was not a JSON object")
 		sonar_debug.emit(
 			"SonarQube CLI API output",
-			{"operation": name, "status_code": status_code, "response": payload},
+			{
+				"operation": name,
+				"status_code": status_code,
+				"duration_ms": int((perf_counter() - started) * 1000),
+				"response": payload,
+			},
 			secrets=(token,),
 		)
 		return SonarApiOutcome(name, "passed", f"{name} query completed", payload)
@@ -329,7 +345,12 @@ def _get_json(
 			body = ""
 		sonar_debug.emit(
 			"SonarQube CLI API output",
-			{"operation": name, "status_code": exc.code, "response": body},
+			{
+				"operation": name,
+				"status_code": exc.code,
+				"duration_ms": int((perf_counter() - started) * 1000),
+				"response": body,
+			},
 			secrets=(token,),
 		)
 		status = "failed" if required else "unavailable"
@@ -337,7 +358,11 @@ def _get_json(
 	except (URLError, HTTPException, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
 		sonar_debug.emit(
 			"SonarQube CLI API output",
-			{"operation": name, "error": _safe_text(str(exc), 300)},
+			{
+				"operation": name,
+				"duration_ms": int((perf_counter() - started) * 1000),
+				"error": _safe_text(str(exc), 300),
+			},
 			secrets=(token,),
 		)
 		status = "failed" if required else "unavailable"

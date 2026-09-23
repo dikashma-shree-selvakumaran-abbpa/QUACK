@@ -252,6 +252,7 @@ def test_sonar_mcp_debug_prints_resolved_request_and_response(
 	assert result.exit_code == 0
 	assert "[debug] SonarQube MCP invocation" in result.output
 	assert "tool=sonarqube_search_metrics" in result.output
+	assert "duration_ms=" in result.output
 	assert 'invocation_argv=["podman","run","mcp/sonarqube"]' in result.output
 	assert 'request_arguments={"metricKeys":["ncloc"]}' in result.output
 	assert '"structuredContent"' in result.output

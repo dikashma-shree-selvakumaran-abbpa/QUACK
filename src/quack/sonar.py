@@ -339,6 +339,8 @@ def scan(
 		return _result("skipped", reason, started)
 
 	timeout_s = _timeout_seconds()
+	snapshot_export_ms = 0
+	scanner_process_ms = 0
 	try:
 		with tempfile.TemporaryDirectory(prefix="quack-sonar-") as temp:
 			snapshot = Path(temp)
@@ -347,7 +349,10 @@ def scan(
 				if snapshot_scope == "staged"
 				else gitio.export_working_snapshot
 			)
-			if not exporter(snapshot, root_path):
+			export_started = time.perf_counter()
+			exported = exporter(snapshot, root_path)
+			snapshot_export_ms = int((time.perf_counter() - export_started) * 1000)
+			if not exported:
 				return _result(
 					"failed",
 					f"{snapshot_scope} snapshot unavailable",
@@ -369,6 +374,7 @@ def scan(
 						for item in getattr(delta, "files", [])
 					],
 					"timeout_s": timeout_s,
+					"snapshot_export_ms": snapshot_export_ms,
 				},
 				secrets=(token,),
 			)
@@ -377,11 +383,15 @@ def scan(
 			if not previous_token:
 				os.environ["SONAR_TOKEN"] = token
 			try:
+				scanner_started = time.perf_counter()
 				exit_code, scanner_output = runio.run_sonar_scanner(
 					scanner,
 					properties,
 					snapshot,
 					timeout_s=timeout_s,
+				)
+				scanner_process_ms = int(
+					(time.perf_counter() - scanner_started) * 1000
 				)
 			finally:
 				if had_sonar_token:
@@ -396,6 +406,9 @@ def scan(
 					"output": scanner_output,
 					"task_id": task_id,
 					"analysis_id": analysis_id,
+					"snapshot_export_ms": snapshot_export_ms,
+					"scanner_process_ms": scanner_process_ms,
+					"elapsed_ms": int((time.perf_counter() - started) * 1000),
 				},
 				secrets=(token,),
 			)
@@ -419,12 +432,14 @@ def scan(
 				project_key=project_key,
 				branch=settings.branch,
 			)
+		wait_started = time.perf_counter()
 		completed, completion_reason, completed_analysis_id = _wait_for_analysis(
 			host_url,
 			token,
 			task_id,
 			timeout_s,
 		)
+		analysis_wait_ms = int((time.perf_counter() - wait_started) * 1000)
 		analysis_id = completed_analysis_id or analysis_id
 		sonar_debug.emit(
 			"SonarQube CLI analysis output",
@@ -436,6 +451,10 @@ def scan(
 				"analysis_id": analysis_id,
 				"completion_reason": completion_reason,
 				"dashboard_url": dashboard,
+				"snapshot_export_ms": snapshot_export_ms,
+				"scanner_process_ms": scanner_process_ms,
+				"analysis_wait_ms": analysis_wait_ms,
+				"total_scan_ms": int((time.perf_counter() - started) * 1000),
 			},
 			secrets=(token,),
 		)

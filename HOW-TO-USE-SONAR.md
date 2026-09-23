@@ -238,6 +238,64 @@ followed by each direct Sonar API input and complete bounded JSON output,
 including the selected analysis/task result. Tokens and known token-shaped
 values are redacted; normal Watch output does not print these payloads.
 
+### Sonar timing and performance
+
+`quack watch --once --debug` now prints integer-millisecond timings for the
+snapshot export, scanner process, server analysis wait, every direct API
+request, the total API phase, and the total Watch call. A validation run of
+the Alarms violation worktree measured:
+
+| Phase | Time | Share of 146.5 s Watch total |
+|---|---:|---:|
+| Working snapshot export | 1.9 s | 1.3% |
+| `sonar-scanner` process | 88.4 s | 60.3% |
+| Compute Engine analysis wait | 48.0 s | 32.7% |
+| Four direct Web API reads | 6.1 s | 4.2% |
+| Other Watch/report work | 1.0 s | 0.7% |
+
+The scanner plus server analysis accounts for about 93% of the runtime. The
+direct Web API integration is not the main bottleneck. Exact times vary with
+Codescan queue load, network/proxy latency, analyzer cache warmth, and project
+size.
+
+The staged pre-commit cache has the largest safe impact. In the same worktree,
+a changed/stale staged result required a new scan and took 118.9 s; the next
+unchanged `quack check` reused that completed analysis, re-queried current
+findings for safety, and took 6.4 s (about 95% faster). Changing the index,
+scanner configuration, project, host, or branch intentionally invalidates the
+cache.
+
+To reduce elapsed time without weakening correctness:
+
+1. Use continuous `quack watch` while editing. It waits for a filesystem
+   change instead of repeatedly rescanning an unchanged tree. Every separate
+   `quack watch --once` invocation intentionally performs a fresh working
+   snapshot scan.
+2. Leave the staged index unchanged when rerunning pre-commit so Quack can use
+   its scope-specific staged cache. Do not clear Quack's Git-local state
+   between runs.
+3. Keep the scanner/analyzer download caches warm and use a stable scanner
+   installation. A clean machine or newly downloaded analyzer is slower.
+4. Set `QUACK_PROVIDER=disabled` when measuring Sonar alone. This removes the
+   optional AI review from the remainder, but does not shorten the scanner or
+   Codescan processing time.
+5. Use the direct CLI/API path for Watch and pre-commit. Standalone
+   `quack sonar-mcp` is intended for explicit agent/user queries, not the
+   automatic gate. A measured `list_branches` invocation took 19.4 s wall
+   time: the tool exchange was 9.6 s and the remaining time was primarily the
+   separate safe tool-discovery/container exchange. `--debug` now prints the
+   tool exchange `duration_ms`.
+6. Set `QUACK_SONAR_TIMEOUT_S` high enough for observed server latency (for
+   this project, 300 seconds is safer than 180). Raising it prevents false
+   timeouts; it does not make successful scans faster.
+
+Do not silently restrict `sonar.inclusions` to changed files or reuse a
+working `.scannerwork` directory merely for speed. Those approaches can
+publish a partial branch analysis, distort project measures, or mix snapshot
+state. A future working-snapshot digest cache could safely accelerate repeated
+`--once` calls, but it should be added only with the same freshness and
+configuration identity guarantees as the staged cache.
+
 The separate `AI review (advisory): ... risk: ...` line is a model-dependent
 Tier 2 signal, not a Sonar finding or a commit decision. A `medium` or `high`
 AI label can appear even when Sonar reports no open issues. To exercise only
