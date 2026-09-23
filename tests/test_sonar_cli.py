@@ -157,3 +157,29 @@ def test_debug_prints_cli_and_api_inputs_outputs_without_token(
 	assert "[debug] SonarQube CLI API output" in output
 	assert '"issues":[]' in output
 	assert "secret-token" not in output
+
+
+def test_failed_scanner_prevents_stale_api_queries(monkeypatch, tmp_path: Path) -> None:
+	monkeypatch.setenv("SQ_TOKEN", "secret-token")
+	monkeypatch.setattr(
+		sonar_cli,
+		"_open_sonar",
+		lambda *args, **kwargs: (_ for _ in ()).throw(
+			AssertionError("API must not run after scanner failure")
+		),
+	)
+
+	result = sonar_cli.run(
+		_delta(),
+		tmp_path,
+		project_key="demo",
+		host_url="https://sonar.example",
+		fresh=False,
+	)
+
+	assert result is not None
+	assert result.status == "failed"
+	assert result.fresh is False
+	assert result.correlated is False
+	assert result.violation_count == 0
+	assert result.reason == "scanner did not complete; Sonar API was not queried"

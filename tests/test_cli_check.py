@@ -233,7 +233,7 @@ def test_check_reuses_matching_completed_sonar_state(monkeypatch, tmp_path) -> N
 
 	assert result.exit_code == 0
 	assert report_calls[0]["expected_analysis_id"] == "analysis-1"
-	assert report_calls[0]["host_url"] == "http://127.0.0.1:9002"
+	assert report_calls[0]["host_url"] == "https://codescan.abb.com"
 
 
 def test_check_ignores_mcp_url_and_uses_scanner_host(
@@ -276,7 +276,7 @@ def test_check_ignores_mcp_url_and_uses_scanner_host(
 	result = CliRunner().invoke(cli.main, ["check"])
 
 	assert result.exit_code == 0
-	assert report_calls[0]["host_url"] == "http://127.0.0.1:9002"
+	assert report_calls[0]["host_url"] == "https://codescan.abb.com"
 
 
 def test_check_uses_custom_scanner_url_for_direct_api(
@@ -494,4 +494,5 @@ def test_check_does_not_block_on_unverified_sonar_cli_result(
 
 	assert result.exit_code == 0
 	assert captured["blocked"] is False
+
 

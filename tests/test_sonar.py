@@ -130,13 +130,13 @@ def test_scan_exports_index_and_runs_bounded_scanner(
 	assert result.confirmed is True
 	assert result.task_id == "task-1"
 	assert result.analysis_id == "analysis-1"
-	assert result.dashboard_url == "http://127.0.0.1:9002/dashboard?id=quack-local"
+	assert result.dashboard_url == "https://codescan.abb.com/dashboard?id=quack-local"
 	assert captured["root"] == tmp_path.resolve()
 	assert captured["scanner"] == "scanner"
 	assert captured["cwd_exists_during_run"] is True
 	assert captured["timeout_s"] == 30
 	assert "-Dsonar.scm.disabled=true" in captured["properties"]
-	assert "-Dsonar.host.url=http://127.0.0.1:9002" in captured["properties"]
+	assert "-Dsonar.host.url=https://codescan.abb.com" in captured["properties"]
 	assert any(
 		property.startswith("-Dsonar.scanner.metadataFilePath=")
 		for property in captured["properties"]
