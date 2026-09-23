@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
 
-from .. import runio
+from .. import runio, sonar_debug
 
 DEFAULT_URL = "https://codescan.abb.com"
 DEFAULT_IMAGE = "mcp/sonarqube"
@@ -420,12 +420,31 @@ class SonarQubeMcpClient:
 		input_data = "\n".join(
 			json.dumps(payload, separators=(",", ":")) for payload in payloads
 		) + "\n"
+		sonar_debug.emit(
+			"SonarQube MCP request",
+			{
+				"server_url": self._config.url,
+				"project_path": self._config.project_path,
+				"project_key": self._config.project_key or "<unset>",
+				"branch": self._config.branch or "<unset>",
+				"invocation_argv": self._config.podman_command(),
+				"request": payloads,
+				"timeout_s": self._config.timeout_s,
+			},
+			secrets=(self._config.token,),
+		)
 		exit_code, output = runio.run_sonarqube_mcp(
 			self._config.podman_command(),
 			input_data,
 			self._config.child_environment(),
 			timeout_s=self._config.timeout_s,
 		)
+		if exit_code != 0:
+			sonar_debug.emit(
+				"SonarQube MCP transport failure",
+				{"exit_code": exit_code, "output": output},
+				secrets=(self._config.token,),
+			)
 		if exit_code != 0:
 			if exit_code == runio.MCP_RESPONSE_TOO_LARGE:
 				raise SonarQubeMcpUnavailable(
@@ -455,7 +474,17 @@ class SonarQubeMcpClient:
 
 		responses = _json_responses(output)
 		_response_result(responses, 1, self._config.token)
-		return _response_result(responses, request_id, self._config.token)
+		result = _response_result(responses, request_id, self._config.token)
+		sonar_debug.emit(
+			"SonarQube MCP response",
+			{
+				"method": method,
+				"responses": responses,
+				"selected_response": result,
+			},
+			secrets=(self._config.token,),
+		)
+		return result
 
 
 def enabled() -> bool:

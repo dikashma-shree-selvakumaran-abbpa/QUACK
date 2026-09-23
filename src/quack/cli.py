@@ -423,17 +423,27 @@ def _format_age(timestamp: float) -> str:
 	help="Seconds without file changes before reviewing.",
 )
 @click.option("--once", is_flag=True, help="Run one review immediately and exit.")
-def watch(quiet_period: float, once: bool) -> None:
+@click.option(
+	"--debug",
+	is_flag=True,
+	help="Print redacted scanner/MCP requests and complete bounded responses.",
+)
+def watch(quiet_period: float, once: bool, debug: bool) -> None:
 	"""Review changes in the background and cache the result for commits."""
 	root = gitio.repo_root()
 	if not root:
 		render.metadata("quack watch: not a git repository")
 		return
 	if once:
-		_render_watch_result(watch_mod.review_once(root))
+		_render_watch_result(watch_mod.review_once(root, debug=debug))
 		return
 	try:
-		watch_mod.run(root, quiet_period, _render_watch_result)
+		watch_mod.run(
+			root,
+			quiet_period,
+			_render_watch_result,
+			debug=debug,
+		)
 	except KeyboardInterrupt:
 		return
 

@@ -25,7 +25,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
-from . import gitio, runio
+from . import gitio, runio, sonar_debug
 
 DEFAULT_HOST_URL = "http://127.0.0.1:9002"
 DEFAULT_PROJECT_KEY = "quack-local"
@@ -355,6 +355,23 @@ def scan(
 				)
 
 			properties = _scanner_properties(settings, snapshot)
+			sonar_debug.emit(
+				"SonarQube scanner request",
+				{
+					"scanner": scanner,
+					"snapshot_scope": snapshot_scope,
+					"snapshot_path": snapshot,
+					"project_key": settings.project_key,
+					"branch": settings.branch or "<unset>",
+					"properties": properties,
+					"changed_files": [
+						getattr(item, "path", "")
+						for item in getattr(delta, "files", [])
+					],
+					"timeout_s": timeout_s,
+				},
+				secrets=(token,),
+			)
 			had_sonar_token = "SONAR_TOKEN" in os.environ
 			previous_token = os.environ.get("SONAR_TOKEN")
 			if not previous_token:
@@ -372,6 +389,16 @@ def scan(
 				else:
 					os.environ.pop("SONAR_TOKEN", None)
 			task_id, analysis_id = _analysis_metadata(snapshot)
+			sonar_debug.emit(
+				"SonarQube scanner response",
+				{
+					"exit_code": exit_code,
+					"output": scanner_output,
+					"task_id": task_id,
+					"analysis_id": analysis_id,
+				},
+				secrets=(token,),
+			)
 	except OSError:
 		return _result(
 			"failed",
@@ -399,6 +426,19 @@ def scan(
 			timeout_s,
 		)
 		analysis_id = completed_analysis_id or analysis_id
+		sonar_debug.emit(
+			"SonarQube analysis result",
+			{
+				"status": "passed" if completed else "pending",
+				"project_key": project_key,
+				"branch": settings.branch or "<unset>",
+				"task_id": task_id,
+				"analysis_id": analysis_id,
+				"completion_reason": completion_reason,
+				"dashboard_url": dashboard,
+			},
+			secrets=(token,),
+		)
 		if not completed:
 			return _result(
 				"pending",
