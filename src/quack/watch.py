@@ -28,6 +28,7 @@ from . import (
 	metrics,
 	render,
 	reviewcache,
+	sonar,
 	sonar_report,
 	testmap,
 	tier2,
@@ -95,13 +96,23 @@ def _review_once(
 ) -> WatchResult:
 	root = Path(repo_root)
 	sonar_result: SonarQubeReportResult | None = None
-	delta = gitio.staged_delta(root=str(root))
+	# Watch represents the working tree developers are looking at. The
+	# pre-commit path remains the only path that uses the exact index.
+	delta = gitio.working_delta(root=str(root))
 	if not delta.files:
-		delta = gitio.working_delta(root=str(root))
+		delta = gitio.staged_delta(root=str(root))
 	if not delta.files:
 		return WatchResult(files=0, reason="no changes")
 
-	sonar_result = sonar_report.run(delta, root, source="watch")
+	sonar_settings = sonar.configuration(root, staged=False)
+	sonar_result = sonar_report.run(
+		delta,
+		root,
+		source="watch",
+		project_path=root,
+		project_key=sonar_settings.project_key,
+		branch=sonar_settings.branch,
+	)
 	findings = tier1_run(delta, Tier1Config())
 	redacted = tier1_redact(delta, findings)
 	plan = testmap.build_plan(delta, root=root)

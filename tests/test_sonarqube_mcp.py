@@ -38,6 +38,32 @@ def test_environment_config_prefers_sonar_token_without_repr_leak(
 	assert config.podman_command()[-1] == "mcp/sonarqube"
 
 
+def test_environment_config_prefers_explicit_mcp_url(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	monkeypatch.setenv("SQ_TOKEN", "secret-token")
+	monkeypatch.setenv("SONARQUBE_URL", "https://scanner.example")
+	monkeypatch.setenv("QUACK_SONAR_MCP_URL", "https://codescan.abb.com")
+
+	config = sonarqube.SonarQubeMcpConfig.from_environment()
+
+	assert config is not None
+	assert config.url == "https://codescan.abb.com"
+
+
+def test_environment_config_prefers_quack_branch_override(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	monkeypatch.setenv("SQ_TOKEN", "secret-token")
+	monkeypatch.setenv("SONARQUBE_BRANCH", "quack-sonar-clean")
+	monkeypatch.setenv("QUACK_SONAR_BRANCH", "quack-sonar-violation")
+
+	config = sonarqube.SonarQubeMcpConfig.from_environment()
+
+	assert config is not None
+	assert config.branch == "quack-sonar-violation"
+
+
 def test_environment_config_discovers_and_mounts_project_workspace(
 	monkeypatch: pytest.MonkeyPatch,
 	tmp_path,
@@ -112,6 +138,19 @@ def test_environment_config_passes_arbitrary_toolsets(
 	assert command.count("SONARQUBE_TOOLSETS") == 1
 
 
+def test_environment_config_forwards_configured_proxy_to_container(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	monkeypatch.setenv("SQ_TOKEN", "secret-token")
+	monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+
+	config = sonarqube.SonarQubeMcpConfig.from_environment()
+
+	assert config is not None
+	assert "HTTPS_PROXY" in config.podman_command()
+	assert config.child_environment()["HTTPS_PROXY"] == "http://proxy.example:8080"
+
+
 def test_client_translates_tools_and_calls_original_name(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -127,6 +166,7 @@ def test_client_translates_tools_and_calls_original_name(
 					{
 						"name": "issues.search",
 						"description": "Search issues",
+						"annotations": {"readOnlyHint": True},
 						"inputSchema": {
 							"type": "object",
 							"properties": {"projectKey": {"type": "string"}},
@@ -195,6 +235,206 @@ def test_client_uses_initialize_and_request_protocol(
 	assert "secret-token" not in captured["command"]
 
 
+def test_client_parses_structured_sonar_issue_response(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	config = sonarqube.SonarQubeMcpConfig(
+		token="secret-token",
+		project_key="Operations.HMI.App.Alarms",
+		branch="quack-sonar-violation",
+	)
+	client = sonarqube.SonarQubeMcpClient(config)
+	requests: list[dict] = []
+	issue_data = {
+		"issues": [
+			{
+				"key": "ISSUE-1",
+				"rule": "typescript:S innerHTML",
+				"severity": "CRITICAL",
+				"status": "OPEN",
+				"component": (
+					"Operations.HMI.App.Alarms:"
+					"FrontEnd/packages/alarms/src/quack-sonar-violation.ts"
+				),
+				"textRange": {"startLine": 2, "endLine": 2},
+			}
+		],
+		"paging": {"pageIndex": 1, "pageSize": 100, "total": 1},
+	}
+
+	def fake_run(command, input_data, env, timeout_s):
+		payloads = [json.loads(line) for line in input_data.splitlines()]
+		request = payloads[-1]
+		requests.append(request)
+		if request["method"] == "tools/list":
+			result = {
+				"tools": [
+					{
+						"name": "search_sonar_issues_in_projects",
+						"annotations": {"readOnlyHint": True},
+						"inputSchema": {
+							"type": "object",
+							"properties": {
+								"projects": {"type": "array"},
+								"branch": {"type": "string"},
+								"issueStatuses": {"type": "array"},
+							},
+						},
+					}
+				]
+			}
+		else:
+			assert request["method"] == "tools/call"
+			assert request["params"] == {
+				"name": "search_sonar_issues_in_projects",
+				"arguments": {
+					"projects": ["Operations.HMI.App.Alarms"],
+					"branch": "quack-sonar-violation",
+					"issueStatuses": ["OPEN"],
+				},
+			}
+			result = {
+				"content": [
+					{"type": "text", "text": json.dumps(issue_data)}
+				],
+				"isError": False,
+				"structuredContent": issue_data,
+			}
+		return (
+			0,
+			"\n".join(
+				[
+					json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
+					json.dumps(
+						{"jsonrpc": "2.0", "id": 2, "result": result}
+					),
+				]
+			),
+		)
+
+	monkeypatch.setattr(sonarqube.runio, "run_sonarqube_mcp", fake_run)
+
+	data = client.call_tool_data(
+		"search_sonar_issues_in_projects",
+		{
+			"projects": ["Operations.HMI.App.Alarms"],
+			"branch": "quack-sonar-violation",
+			"issueStatuses": ["OPEN"],
+		},
+	)
+
+	assert data == issue_data
+	assert requests[0]["method"] == "tools/list"
+	assert requests[-1]["params"]["name"] == (
+		"search_sonar_issues_in_projects"
+	)
+	assert requests[-1]["params"]["arguments"]["branch"] == (
+		"quack-sonar-violation"
+	)
+
+
+def test_zero_process_exit_does_not_hide_mcp_error(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	config = sonarqube.SonarQubeMcpConfig(token="secret-token")
+	client = sonarqube.SonarQubeMcpClient(config)
+
+	def fake_run(command, input_data, env, timeout_s):
+		payloads = [json.loads(line) for line in input_data.splitlines()]
+		result = (
+			{"tools": [{"name": "search_metrics"}]}
+			if payloads[-1]["method"] == "tools/list"
+			else {
+				"content": [{"type": "text", "text": "Sonar rejected request"}],
+				"isError": True,
+				"structuredContent": {"issues": []},
+			}
+		)
+		return (
+			0,
+			"\n".join(
+				[
+					json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
+					json.dumps(
+						{"jsonrpc": "2.0", "id": 2, "result": result}
+					),
+				]
+			),
+		)
+
+	monkeypatch.setattr(sonarqube.runio, "run_sonarqube_mcp", fake_run)
+
+	with pytest.raises(sonarqube.SonarQubeMcpUnavailable) as excinfo:
+		client.call_tool_data("search_metrics", {})
+
+	assert excinfo.value.reason == "Sonar rejected request"
+
+
+def test_malformed_json_rpc_result_is_not_treated_as_sonar_data(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	config = sonarqube.SonarQubeMcpConfig(token="secret-token")
+	client = sonarqube.SonarQubeMcpClient(config)
+
+	def fake_run(command, input_data, env, timeout_s):
+		payloads = [json.loads(line) for line in input_data.splitlines()]
+		result = (
+			{"tools": [{"name": "search_metrics"}]}
+			if payloads[-1]["method"] == "tools/list"
+			else {"structuredContent": []}
+		)
+		return (
+			0,
+			"\n".join(
+				[
+					json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
+					json.dumps(
+						{"jsonrpc": "2.0", "id": 2, "result": result}
+					),
+				]
+			),
+		)
+
+	monkeypatch.setattr(sonarqube.runio, "run_sonarqube_mcp", fake_run)
+
+	with pytest.raises(sonarqube.SonarQubeMcpUnavailable) as excinfo:
+		client.call_tool_data("search_metrics", {})
+
+	assert excinfo.value.reason == "SonarQube MCP returned an unreadable result"
+
+
+@pytest.mark.parametrize(
+	("variable", "value"),
+	[
+		("SONARQUBE_URL", "file://not-sonar"),
+		("SONARQUBE_PROJECT_KEY", "bad project key"),
+		("SONARQUBE_BRANCH", "branch\ninjection"),
+		("SONARQUBE_BRANCH", "x" * 257),
+		("QUACK_SONAR_MCP_IMAGE", "mcp/sonarqube image"),
+	],
+)
+def test_environment_input_validation_rejects_unsafe_values(
+	monkeypatch: pytest.MonkeyPatch,
+	variable: str,
+	value: str,
+) -> None:
+	monkeypatch.setenv("SQ_TOKEN", "secret-token")
+	for name in (
+		"QUACK_SONAR_MCP_URL",
+		"SONARQUBE_URL",
+		"QUACK_SONAR_PROJECT_KEY",
+		"SONARQUBE_PROJECT_KEY",
+		"QUACK_SONAR_BRANCH",
+		"SONARQUBE_BRANCH",
+		"QUACK_SONAR_MCP_IMAGE",
+	):
+		monkeypatch.delenv(name, raising=False)
+	monkeypatch.setenv(variable, value)
+
+	with pytest.raises(sonarqube.SonarQubeMcpUnavailable):
+		sonarqube.SonarQubeMcpConfig.from_environment()
+
+
 def test_client_surfaces_server_diagnostic_instead_of_timeout(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -224,6 +464,28 @@ def test_client_surfaces_server_diagnostic_instead_of_timeout(
 	)
 
 
+def test_client_surfaces_oversized_response_without_fake_sonar_data(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	config = sonarqube.SonarQubeMcpConfig(token="secret-token")
+	client = sonarqube.SonarQubeMcpClient(config)
+	monkeypatch.setattr(
+		sonarqube.runio,
+		"run_sonarqube_mcp",
+		lambda *args, **kwargs: (
+			sonarqube.runio.MCP_RESPONSE_TOO_LARGE,
+			"<MCP response exceeded the bounded output limit>",
+		),
+	)
+
+	with pytest.raises(sonarqube.SonarQubeMcpUnavailable) as excinfo:
+		client._exchange("tools/list", {}, request_id=2)
+
+	assert excinfo.value.reason == (
+		"SonarQube MCP response exceeded the bounded output limit"
+	)
+
+
 def test_read_only_annotation_filters_write_tool() -> None:
 	config = sonarqube.SonarQubeMcpConfig(token="token")
 	client = sonarqube.SonarQubeMcpClient(config)
@@ -241,6 +503,65 @@ def test_read_only_annotation_filters_write_tool() -> None:
 	tools = client.tool_definitions()
 
 	assert [tool["function"]["name"] for tool in tools] == ["sonarqube_safe"]
+
+
+@pytest.mark.parametrize(
+	("tool", "expected"),
+	[
+		(
+			{"name": "unannotated", "annotations": {"readOnlyHint": True}},
+			True,
+		),
+		(
+			{"name": "unannotated", "annotations": {"readOnlyHint": False}},
+			False,
+		),
+		({"name": "unannotated"}, False),
+		({"name": "search_metrics"}, True),
+		({"name": "list_branches"}, True),
+		({"name": "get_component_measures", "annotations": {}}, True),
+	],
+)
+def test_read_only_boundary_requires_annotation_or_known_tool(
+	tool: dict, expected: bool
+) -> None:
+	assert sonarqube._is_read_only(tool) is expected
+
+
+def test_tool_discovery_does_not_expose_write_capable_tools(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	config = sonarqube.SonarQubeMcpConfig(token="token")
+	client = sonarqube.SonarQubeMcpClient(config)
+
+	def fake_exchange(method, params, *, request_id):
+		assert method == "tools/list"
+		return {
+			"tools": [
+				{"name": "search_sonar_issues_in_projects"},
+				{
+					"name": "delete_project",
+					"annotations": {"readOnlyHint": False},
+				},
+				{"name": "create_project"},
+				{
+					"name": "annotated_safe",
+					"annotations": {"readOnlyHint": True},
+				},
+			]
+		}
+
+	monkeypatch.setattr(client, "_exchange", fake_exchange)
+
+	tools = client.tool_definitions()
+	names = [tool["function"]["name"] for tool in tools]
+
+	assert names == [
+		"sonarqube_search_sonar_issues_in_projects",
+		"sonarqube_annotated_safe",
+	]
+	assert client.resolve_tool_name("delete_project") is None
+	assert client.resolve_tool_name("create_project") is None
 
 
 def test_disabled_or_missing_token_does_not_create_config(

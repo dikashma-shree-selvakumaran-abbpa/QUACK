@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 
 from quack import runio
@@ -32,6 +33,30 @@ def test_run_sonar_scanner_builds_non_shell_command(monkeypatch, tmp_path) -> No
 	assert captured["kwargs"]["cwd"] == str(tmp_path)
 	assert captured["kwargs"]["timeout"] == 12
 	assert captured["kwargs"]["capture_output"] is True
+
+
+def test_run_sonar_scanner_rejects_build_integrated_runner(monkeypatch, tmp_path) -> None:
+	monkeypatch.setattr(
+		runio.subprocess,
+		"run",
+		lambda *args, **kwargs: (_ for _ in ()).throw(
+			AssertionError("dotnet scanner must not start")
+		),
+	)
+
+	assert runio.run_sonar_scanner(
+		"dotnet-sonarscanner",
+		["-Dsonar.projectKey=alarms"],
+		tmp_path,
+	) == (126, "<runner unavailable: dotnet-sonarscanner requires a build and is not supported by the staged snapshot runner>")
+
+
+def test_run_sonar_scanner_rejects_unvalidated_properties(tmp_path) -> None:
+	assert runio.run_sonar_scanner(
+		"sonar-scanner",
+		["--not-a-property"],
+		tmp_path,
+	) == (126, "<invalid SonarScanner property>")
 
 
 def test_run_sonarqube_mcp_stops_after_response_and_captures_stderr(
@@ -168,3 +193,129 @@ def test_mcp_output_preserves_responses_when_stderr_is_verbose() -> None:
 
 	assert response in output
 	assert len(output) <= 24000
+
+
+def test_run_sonarqube_mcp_preserves_large_complete_json_response(
+	monkeypatch,
+) -> None:
+	response = json.dumps(
+		{
+			"jsonrpc": "2.0",
+			"id": 2,
+			"result": {"metrics": "x" * 130000},
+		}
+	) + "\n"
+
+	class FakeStream:
+		def __init__(self, lines):
+			self._lines = iter(lines)
+
+		def readline(self):
+			return next(self._lines, "")
+
+		def close(self):
+			pass
+
+	class FakeStdin:
+		def write(self, data):
+			pass
+
+		def flush(self):
+			pass
+
+		def close(self):
+			pass
+
+	class FakeProcess:
+		def __init__(self):
+			self.stdin = FakeStdin()
+			self.stdout = FakeStream([response])
+			self.stderr = FakeStream([])
+			self.returncode = None
+
+		def poll(self):
+			return self.returncode
+
+		def terminate(self):
+			self.returncode = 0
+
+		def wait(self, timeout=None):
+			self.returncode = 0
+			return self.returncode
+
+		def kill(self):
+			self.returncode = -9
+
+	monkeypatch.setattr(runio.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+	exit_code, output = runio.run_sonarqube_mcp(
+		["podman", "run", "mcp/sonarqube"],
+		'{"jsonrpc":"2.0"}\n',
+		{},
+	)
+
+	assert exit_code == 0
+	assert json.loads(output)["result"]["metrics"] == "x" * 130000
+
+
+def test_run_sonarqube_mcp_rejects_oversized_response_without_fabricating(
+	monkeypatch,
+) -> None:
+	response = json.dumps(
+		{
+			"jsonrpc": "2.0",
+			"id": 2,
+			"result": {"metrics": "x" * (runio._MCP_RESPONSE_LIMIT + 1)},
+		}
+	) + "\n"
+
+	class FakeStream:
+		def __init__(self, lines):
+			self._lines = iter(lines)
+
+		def readline(self):
+			return next(self._lines, "")
+
+		def close(self):
+			pass
+
+	class FakeStdin:
+		def write(self, data):
+			pass
+
+		def flush(self):
+			pass
+
+		def close(self):
+			pass
+
+	class FakeProcess:
+		def __init__(self):
+			self.stdin = FakeStdin()
+			self.stdout = FakeStream([response])
+			self.stderr = FakeStream([])
+			self.returncode = None
+
+		def poll(self):
+			return self.returncode
+
+		def terminate(self):
+			self.returncode = 0
+
+		def wait(self, timeout=None):
+			self.returncode = 0
+			return self.returncode
+
+		def kill(self):
+			self.returncode = -9
+
+	monkeypatch.setattr(runio.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+	exit_code, output = runio.run_sonarqube_mcp(
+		["podman", "run", "mcp/sonarqube"],
+		'{"jsonrpc":"2.0"}\n',
+		{},
+	)
+
+	assert exit_code == runio.MCP_RESPONSE_TOO_LARGE
+	assert output == "<MCP response exceeded the bounded output limit>"

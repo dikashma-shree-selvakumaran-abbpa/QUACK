@@ -26,7 +26,9 @@ import time
 from pathlib import Path
 
 DEFAULT_TIMEOUT_S = 180
-SONAR_TIMEOUT_S = 60
+# FrontEnd scanners may download analyzers and embedded runtimes on the first
+# run; keep the default bounded long enough for that startup path.
+SONAR_TIMEOUT_S = 180
 MCP_TIMEOUT_S = 90.0
 _MCP_OUTPUT_LIMIT = 24000
 # Sonar's metrics catalog can exceed 128 KB as one JSON-RPC line. Keep the

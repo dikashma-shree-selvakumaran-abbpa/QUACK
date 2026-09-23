@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -197,6 +198,256 @@ def test_sonar_mcp_json_output_contains_only_tool_response(monkeypatch) -> None:
 	assert '"metrics": []' in result.output
 
 
+def test_sonar_mcp_debug_prints_resolved_request_and_response(
+	monkeypatch,
+) -> None:
+	class FakeClient:
+		project_key = "quack-local"
+		branch = "validation"
+		_config = type(
+			"Config",
+			(),
+			{
+				"url": "https://sonar.example",
+				"project_path": Path("C:/repo"),
+				"podman_command": lambda self: [
+					"podman",
+					"run",
+					"mcp/sonarqube",
+				],
+			},
+		)()
+
+		def tool_definitions(self):
+			return [{"function": {"name": "sonarqube_search_metrics"}}]
+
+		def resolve_tool_name(self, name):
+			return "sonarqube_search_metrics" if name == "search_metrics" else None
+
+		def call_tool_response(self, name, arguments):
+			return {
+				"content": [{"type": "text", "text": "metrics"}],
+				"structuredContent": {"metrics": []},
+			}
+
+	monkeypatch.setattr(
+		cli.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (FakeClient(), None),
+	)
+
+	result = CliRunner().invoke(
+		cli.main,
+		[
+			"sonar-mcp",
+			"--tool",
+			"search_metrics",
+			"--arguments",
+			'{"metricKeys":["ncloc"]}',
+			"--json",
+			"--debug",
+		],
+	)
+
+	assert result.exit_code == 0
+	assert "[debug] SonarQube MCP invocation" in result.output
+	assert "tool=sonarqube_search_metrics" in result.output
+	assert 'invocation_argv=["podman","run","mcp/sonarqube"]' in result.output
+	assert 'request_arguments={"metricKeys":["ncloc"]}' in result.output
+	assert '"structuredContent"' in result.output
+
+
+def test_sonar_mcp_json_output_preserves_tool_error_response(monkeypatch) -> None:
+	class FakeClient:
+		project_key = None
+
+		def tool_definitions(self):
+			return [{"function": {"name": "sonarqube_search_metrics"}}]
+
+		def resolve_tool_name(self, name):
+			return "sonarqube_search_metrics" if name == "search_metrics" else None
+
+		def call_tool_response(self, name, arguments):
+			return {
+				"content": [
+					{
+						"type": "text",
+						"text": "The branch has not been analyzed",
+					}
+				],
+				"isError": True,
+			}
+
+	monkeypatch.setattr(
+		cli.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (FakeClient(), None),
+	)
+
+	result = CliRunner().invoke(
+		cli.main,
+		[
+			"sonar-mcp",
+			"--tool",
+			"search_metrics",
+			"--arguments",
+			"{}",
+			"--json",
+		],
+	)
+
+	assert result.exit_code == 1
+	assert result.output.startswith("{")
+	response = json.loads(result.output)
+	assert response["isError"] is True
+	assert response["content"][0]["text"] == "The branch has not been analyzed"
+
+
+def test_sonar_mcp_parse_failure_prints_received_argument(monkeypatch) -> None:
+	class FakeClient:
+		project_key = "quack-local"
+		branch = None
+		_config = type(
+			"Config",
+			(),
+			{
+				"url": "https://sonar.example",
+				"project_path": None,
+			},
+		)()
+
+		def tool_definitions(self):
+			return [{"function": {"name": "sonarqube_search_metrics"}}]
+
+		def resolve_tool_name(self, name):
+			return "sonarqube_search_metrics"
+
+	monkeypatch.setattr(
+		cli.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (FakeClient(), None),
+	)
+
+	result = CliRunner().invoke(
+		cli.main,
+		[
+			"sonar-mcp",
+			"--tool",
+			"search_metrics",
+			"--arguments",
+			"{metricKeys:[ncloc}",
+		],
+	)
+
+	assert result.exit_code == 2
+	assert "raw_arguments='{metricKeys:[ncloc}'" in result.output
+	assert "request=<not sent; argument parsing failed>" in result.output
+	assert "response=<none>" in result.output
+
+
+def test_sonar_mcp_accepts_shell_quoted_json_and_project_keys_alias(
+	monkeypatch,
+) -> None:
+	captured = {}
+
+	class FakeClient:
+		project_key = "Operations.HMI.App.Alarms"
+
+		def tool_definitions(self):
+			return [
+				{
+					"function": {
+						"name": "sonarqube_search_sonar_issues_in_projects",
+						"parameters": {
+							"type": "object",
+							"properties": {
+								"projects": {"type": "array"},
+								"branch": {"type": "string"},
+								"issueStatuses": {"type": "array"},
+							},
+						},
+					}
+				}
+			]
+
+		def resolve_tool_name(self, name):
+			return (
+				"sonarqube_search_sonar_issues_in_projects"
+				if name == "sonarqube_search_sonar_issues_in_projects"
+				else None
+			)
+
+		def call_tool_response(self, name, arguments):
+			captured["name"] = name
+			captured["arguments"] = arguments
+			return {
+				"structuredContent": {
+					"issues": [
+						{
+							"key": "ISSUE-1",
+							"message": "Use the safer API",
+							"component": (
+								"Operations.HMI.App.Alarms:src/app.ts"
+							),
+						}
+					],
+					"paging": {"total": 1},
+				}
+			}
+
+	monkeypatch.setattr(
+		cli.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (FakeClient(), None),
+	)
+
+	result = CliRunner().invoke(
+		cli.main,
+		[
+			"sonar-mcp",
+			"--tool",
+			"sonarqube_search_sonar_issues_in_projects",
+			"--arguments",
+			'\'{"projectKeys":["Operations.HMI.App.Alarms"],'
+			'"branch":"quack-sonar-violation",'
+			'"issueStatuses":["OPEN"]}\'',
+			"--json",
+		],
+	)
+
+	assert result.exit_code == 0
+	assert captured == {
+		"name": "sonarqube_search_sonar_issues_in_projects",
+		"arguments": {
+			"projects": ["Operations.HMI.App.Alarms"],
+			"branch": "quack-sonar-violation",
+			"issueStatuses": ["OPEN"],
+		},
+	}
+	assert '"ISSUE-1"' in result.output
+	assert "Use the safer API" in result.output
+
+
+def test_parse_sonar_mcp_arguments_accepts_windows_escaped_json() -> None:
+	assert cli._parse_sonar_mcp_arguments(
+		r'{\"projects\":[\"Operations.HMI.App.Alarms\"],'
+		r'\"branch\":\"quack-sonar-violation\",\"issueStatuses\":[\"OPEN\"]}'
+	) == {
+		"projects": ["Operations.HMI.App.Alarms"],
+		"branch": "quack-sonar-violation",
+		"issueStatuses": ["OPEN"],
+	}
+	assert cli._parse_sonar_mcp_arguments(
+		r'"{\"projects\":[\"Operations.HMI.App.Alarms\"]}"'
+	) == {"projects": ["Operations.HMI.App.Alarms"]}
+	assert cli._parse_sonar_mcp_arguments(
+		"{projectKeys:[Operations.HMI.App.Alarms],issueStatuses:[OPEN]}"
+	) == {
+		"projectKeys": ["Operations.HMI.App.Alarms"],
+		"issueStatuses": ["OPEN"],
+	}
+
+
 def test_sonar_mcp_rejects_non_object_tool_arguments(monkeypatch) -> None:
 	class FakeClient:
 		project_key = None
@@ -217,6 +468,35 @@ def test_sonar_mcp_rejects_non_object_tool_arguments(monkeypatch) -> None:
 
 	assert result.exit_code == 2
 	assert "--arguments must contain a JSON object" in result.output
+
+
+def test_sonar_mcp_explains_json_key_syntax(monkeypatch) -> None:
+	class FakeClient:
+		project_key = None
+
+		def tool_definitions(self):
+			return []
+
+	monkeypatch.setattr(
+		cli.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (FakeClient(), None),
+	)
+
+	result = CliRunner().invoke(
+		cli.main,
+		[
+			"sonar-mcp",
+			"--tool",
+			"anything",
+			"--arguments",
+			'{projectKeys:["Operations.HMI.App.Alarms"]',
+		],
+	)
+
+	assert result.exit_code == 2
+	assert "--arguments must contain valid JSON" in result.output
+	assert "quote object keys and string values" in result.output
 
 
 def test_sonar_mcp_accepts_external_project_options(monkeypatch, tmp_path) -> None:
