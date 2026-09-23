@@ -126,9 +126,11 @@ $env:QUACK_PROVIDER = "github_models"
 quack agent
 ```
 
-The adapter defaults to `https://codescan.abb.com` and port `64120`, accepts
+The adapter defaults to `https://codescan.abb.com`, accepts
 `SONARQUBE_TOKEN` or `SQ_TOKEN`, and never stores the token in source control.
-Use a SonarQube user token (not a project key or global token). Set
+It does not use an IDE proxy by default; set `SONARQUBE_IDE_PORT` explicitly
+only for an IDE-connected SonarQube deployment. Use a SonarQube user token
+(not a project key or global token). Set
 `QUACK_SONAR_MCP=off` to disable the optional MCP tools. If the SonarQube
 project is outside the repository being reviewed, provide its workspace and
 project key explicitly:

@@ -108,9 +108,9 @@ quack agent
 
 The adapter in `src\quack\mcp\sonarqube.py` starts
 `mcp/sonarqube` over stdio, filters tools explicitly marked as write-capable,
-and bounds each request. It defaults to `https://codescan.abb.com` with IDE
-port `64120`. `quack watch` and the staged `quack check` hook use this adapter
-to collect a bounded snapshot and refresh
+and bounds each request. It defaults to `https://codescan.abb.com` without an
+IDE proxy. `quack watch` and the staged `quack check` hook use this adapter to
+collect a bounded snapshot and refresh
 `docs\SONARQUBE_REPORT.md`. Issue and hotspot counts are filtered to changed
 components, and branch/project values are forwarded when supported by the
 advertised MCP schema.
@@ -118,7 +118,9 @@ advertised MCP schema.
 token. If the project workspace is outside the repository being reviewed,
 configure it explicitly so Podman can mount it read-only:
 
-The MCP endpoint is independent from the local scanner endpoint. Set
+The MCP endpoint is independent from the local scanner endpoint and does not
+use an IDE proxy by default. Set `SONARQUBE_IDE_PORT` explicitly only when a
+running SonarLint IDE proxy should be used. Set
 `QUACK_SONAR_MCP_URL` for an explicit MCP server; otherwise `SONARQUBE_URL`
 or the adapter default (`https://codescan.abb.com`) is used. A local scanner
 default (`http://127.0.0.1:9002`) is never forwarded to MCP accidentally.
