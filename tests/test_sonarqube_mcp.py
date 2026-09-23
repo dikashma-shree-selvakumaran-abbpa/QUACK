@@ -17,7 +17,6 @@ def test_server_config_matches_generated_contract() -> None:
 	assert config["env"] == {
 		"SONARQUBE_URL": "https://codescan.abb.com",
 		"SONARQUBE_TOKEN": "${SQ_TOKEN}",
-		"SONARQUBE_IDE_PORT": "64120",
 		"SONARQUBE_MCP_IN_CONTAINER": "true",
 		"SONARQUBE_READ_ONLY": "true",
 	}
@@ -33,9 +32,26 @@ def test_environment_config_prefers_sonar_token_without_repr_leak(
 
 	assert config is not None
 	assert config.token == "secret-token"
+	assert config.ide_port is None
 	assert "secret-token" not in repr(config)
 	assert config.child_environment()["SONARQUBE_TOKEN"] == "secret-token"
+	assert "SONARQUBE_IDE_PORT" not in config.child_environment()
+	assert "SONARQUBE_IDE_PORT" not in config.podman_command()
 	assert config.podman_command()[-1] == "mcp/sonarqube"
+
+
+def test_explicit_ide_port_is_forwarded(
+	monkeypatch: pytest.MonkeyPatch,
+) -> None:
+	monkeypatch.setenv("SQ_TOKEN", "secret-token")
+	monkeypatch.setenv("SONARQUBE_IDE_PORT", "64120")
+
+	config = sonarqube.SonarQubeMcpConfig.from_environment()
+
+	assert config is not None
+	assert config.ide_port == 64120
+	assert config.child_environment()["SONARQUBE_IDE_PORT"] == "64120"
+	assert config.podman_command().count("SONARQUBE_IDE_PORT") == 1
 
 
 def test_environment_config_prefers_explicit_mcp_url(
@@ -410,6 +426,7 @@ def test_malformed_json_rpc_result_is_not_treated_as_sonar_data(
 		("SONARQUBE_PROJECT_KEY", "bad project key"),
 		("SONARQUBE_BRANCH", "branch\ninjection"),
 		("SONARQUBE_BRANCH", "x" * 257),
+		("SONARQUBE_IDE_PORT", "not-a-port"),
 		("QUACK_SONAR_MCP_IMAGE", "mcp/sonarqube image"),
 	],
 )

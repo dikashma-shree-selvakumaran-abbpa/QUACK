@@ -25,7 +25,6 @@ from urllib.parse import urlsplit
 from .. import runio
 
 DEFAULT_URL = "https://codescan.abb.com"
-DEFAULT_IDE_PORT = 64120
 DEFAULT_IMAGE = "mcp/sonarqube"
 CONTAINER_RUNTIME = "podman"
 CONTAINER_WORKSPACE = "/app/mcp-workspace"
@@ -92,7 +91,7 @@ class SonarQubeMcpConfig:
 
 	url: str = DEFAULT_URL
 	token: str = field(default="", repr=False)
-	ide_port: int = DEFAULT_IDE_PORT
+	ide_port: int | None = None
 	project_path: Path | None = None
 	project_key: str | None = None
 	toolsets: tuple[str, ...] = ()
@@ -194,12 +193,12 @@ class SonarQubeMcpConfig:
 			"-e",
 			"SONARQUBE_URL",
 			"-e",
-			"SONARQUBE_IDE_PORT",
-			"-e",
 			"SONARQUBE_MCP_IN_CONTAINER",
 			"-e",
 			"SONARQUBE_READ_ONLY",
 		]
+		if self.ide_port is not None:
+			command += ["-e", "SONARQUBE_IDE_PORT"]
 		if self.project_key:
 			command += ["-e", "SONARQUBE_PROJECT_KEY"]
 		if self.toolsets:
@@ -227,7 +226,10 @@ class SonarQubeMcpConfig:
 		environment = os.environ.copy()
 		environment["SONARQUBE_TOKEN"] = self.token
 		environment["SONARQUBE_URL"] = self.url
-		environment["SONARQUBE_IDE_PORT"] = str(self.ide_port)
+		if self.ide_port is not None:
+			environment["SONARQUBE_IDE_PORT"] = str(self.ide_port)
+		else:
+			environment.pop("SONARQUBE_IDE_PORT", None)
 		environment["SONARQUBE_MCP_IN_CONTAINER"] = "true"
 		environment["SONARQUBE_READ_ONLY"] = "true"
 		if self.project_key:
@@ -539,8 +541,6 @@ def server_config() -> dict[str, Any]:
 			"-e",
 			"SONARQUBE_URL",
 			"-e",
-			"SONARQUBE_IDE_PORT",
-			"-e",
 			"SONARQUBE_MCP_IN_CONTAINER",
 			"-e",
 			"SONARQUBE_READ_ONLY",
@@ -549,7 +549,6 @@ def server_config() -> dict[str, Any]:
 		"env": {
 			"SONARQUBE_URL": DEFAULT_URL,
 			"SONARQUBE_TOKEN": "${SQ_TOKEN}",
-			"SONARQUBE_IDE_PORT": str(DEFAULT_IDE_PORT),
 			"SONARQUBE_MCP_IN_CONTAINER": "true",
 			"SONARQUBE_READ_ONLY": "true",
 		},
@@ -732,13 +731,18 @@ def _normalise_url(raw: str) -> str | None:
 	return raw.strip().rstrip("/")
 
 
-def _ide_port() -> int:
-	raw = os.environ.get("SONARQUBE_IDE_PORT", str(DEFAULT_IDE_PORT)).strip()
+def _ide_port() -> int | None:
+	raw = os.environ.get("SONARQUBE_IDE_PORT")
+	if raw is None or not raw.strip():
+		return None
+	raw = raw.strip()
 	try:
 		value = int(raw)
 	except ValueError:
-		return DEFAULT_IDE_PORT
-	return value if 1 <= value <= 65535 else DEFAULT_IDE_PORT
+		raise SonarQubeMcpUnavailable("invalid SONARQUBE_IDE_PORT") from None
+	if not 1 <= value <= 65535:
+		raise SonarQubeMcpUnavailable("invalid SONARQUBE_IDE_PORT")
+	return value
 
 
 def _timeout_seconds() -> float:

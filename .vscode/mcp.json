@@ -12,8 +12,6 @@
         "-e",
         "SONARQUBE_URL",
         "-e",
-        "SONARQUBE_IDE_PORT",
-        "-e",
         "SONARQUBE_MCP_IN_CONTAINER",
         "-e",
         "SONARQUBE_READ_ONLY",
@@ -22,7 +20,6 @@
       "env": {
         "SONARQUBE_URL": "https://codescan.abb.com",
         "SONARQUBE_TOKEN": "${SQ_TOKEN}",
-        "SONARQUBE_IDE_PORT": "64120",
         "SONARQUBE_MCP_IN_CONTAINER": "true",
         "SONARQUBE_READ_ONLY": "true"
       }
