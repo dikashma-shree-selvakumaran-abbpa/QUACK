@@ -29,6 +29,7 @@ from . import (
 	render,
 	reviewcache,
 	sonar,
+	sonar_debug,
 	sonar_report,
 	testmap,
 	tier2,
@@ -57,10 +58,13 @@ def review_once(
 	repo_root: str | Path,
 	model: str | None = None,
 	quiet: bool = False,
+	*,
+	debug: bool = False,
 ) -> WatchResult:
 	"""Review the staged delta, or the complete working delta when changed."""
 	started = time.perf_counter()
-	result = _review_once(repo_root, model, quiet=quiet)
+	with sonar_debug.scope(debug):
+		result = _review_once(repo_root, model, quiet=quiet)
 	try:
 		event = {
 			"ts": metrics.timestamp(),
@@ -252,6 +256,7 @@ def run(
 	on_review: Callable[[WatchResult], None],
 	*,
 	poll_interval_s: float = POLL_INTERVAL_S,
+	debug: bool = False,
 ) -> None:
 	"""Poll until interrupted, reviewing after each filesystem quiet period."""
 	root = Path(repo_root)
@@ -266,7 +271,7 @@ def run(
 			dirty = True
 			last_change = time.monotonic()
 		if dirty and time.monotonic() - last_change >= quiet_period_s:
-			on_review(review_once(root))
+			on_review(review_once(root, debug=debug))
 			dirty = False
 
 

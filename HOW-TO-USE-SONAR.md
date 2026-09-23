@@ -224,6 +224,17 @@ prints each returned violation with its rule, severity, component, line, and
 message. It also refreshes `docs\SONARQUBE_REPORT.md`. The report is generated
 output; review it locally and do not stage it as application source.
 
+For troubleshooting, add `--debug`:
+
+```powershell
+quack watch --once --debug
+```
+
+Debug mode prints the scanner properties, MCP JSON-RPC requests, and complete
+bounded Sonar responses, including the selected analysis/task result. Tokens
+and known token-shaped values are redacted; normal Watch output does not print
+these payloads.
+
 The separate `AI review (advisory): ... risk: ...` line is a model-dependent
 Tier 2 signal, not a Sonar finding or a commit decision. A `medium` or `high`
 AI label can appear even when Sonar reports no open issues. To exercise only

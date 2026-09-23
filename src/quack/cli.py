@@ -533,7 +533,12 @@ def _format_age(timestamp: float) -> str:
 	default=False,
 	help="Emit machine-readable review result as JSON (requires --once).",
 )
-def watch(quiet_period: float, once: bool, as_json: bool) -> None:
+@click.option(
+	"--debug",
+	is_flag=True,
+	help="Print redacted scanner/MCP requests and complete bounded responses.",
+)
+def watch(quiet_period: float, once: bool, as_json: bool, debug: bool) -> None:
 	"""Review changes in the background and cache the result for commits."""
 	root = gitio.repo_root()
 	if not root:
@@ -548,14 +553,19 @@ def watch(quiet_period: float, once: bool, as_json: bool) -> None:
 		render.metadata("quack watch: not a git repository")
 		return
 	if once:
-		res = watch_mod.review_once(root, quiet=as_json)
+		res = watch_mod.review_once(root, quiet=as_json, debug=debug)
 		if as_json:
 			_emit_watch_json(res)
 		else:
 			_render_watch_result(res)
 		return
 	try:
-		watch_mod.run(root, quiet_period, _render_watch_result)
+		watch_mod.run(
+			root,
+			quiet_period,
+			_render_watch_result,
+			debug=debug,
+		)
 	except KeyboardInterrupt:
 		return
 

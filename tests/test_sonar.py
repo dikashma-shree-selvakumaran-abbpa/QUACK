@@ -83,8 +83,11 @@ def test_discover_scanner_falls_back_to_quack_tools_after_stale_override(
 	assert sonar._discover_scanner(tmp_path / "alarms") == str(executable.resolve())
 
 
-def test_scan_exports_index_and_runs_bounded_scanner(monkeypatch, tmp_path) -> None:
+def test_scan_exports_index_and_runs_bounded_scanner(
+	monkeypatch, tmp_path, capsys
+) -> None:
 	monkeypatch.setenv("SONAR_TOKEN", "local-token")
+	monkeypatch.setenv("QUACK_SONAR_DEBUG", "1")
 	monkeypatch.setenv("QUACK_SONAR_TIMEOUT_S", "30")
 	monkeypatch.setattr(sonar, "_discover_scanner", lambda root: "scanner")
 	monkeypatch.setattr(sonar, "_server_ready", lambda host: (True, ""))
@@ -138,6 +141,12 @@ def test_scan_exports_index_and_runs_bounded_scanner(monkeypatch, tmp_path) -> N
 		property.startswith("-Dsonar.scanner.metadataFilePath=")
 		for property in captured["properties"]
 	)
+	debug = capsys.readouterr().err
+	assert "[debug] SonarQube scanner request" in debug
+	assert "[debug] SonarQube scanner response" in debug
+	assert "[debug] SonarQube analysis result" in debug
+	assert "-Dsonar.projectKey=quack-local" in debug
+	assert "local-token" not in debug
 
 
 def test_scan_replaces_empty_sonar_token_with_configured_token(

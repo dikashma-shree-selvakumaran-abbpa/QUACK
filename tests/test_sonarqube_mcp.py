@@ -349,6 +349,56 @@ def test_client_parses_structured_sonar_issue_response(
 	)
 
 
+def test_debug_prints_redacted_mcp_request_and_response(
+	monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+	config = sonarqube.SonarQubeMcpConfig(
+		token="secret-token",
+		project_key="Operations.HMI.App.Alarms",
+		branch="quack-sonar-violation",
+	)
+	client = sonarqube.SonarQubeMcpClient(config)
+	monkeypatch.setenv("QUACK_SONAR_DEBUG", "1")
+
+	def fake_run(command, input_data, env, timeout_s):
+		payloads = [json.loads(line) for line in input_data.splitlines()]
+		if payloads[-1]["method"] == "tools/list":
+			result = {
+				"tools": [
+					{
+						"name": "search_metrics",
+						"description": "secret-token",
+						"annotations": {"readOnlyHint": True},
+					}
+				]
+			}
+		else:
+			result = {"structuredContent": {"metrics": []}}
+		return (
+			0,
+			"\n".join(
+				[
+					json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}),
+					json.dumps(
+						{"jsonrpc": "2.0", "id": 2, "result": result}
+					),
+				]
+			),
+		)
+
+	monkeypatch.setattr(sonarqube.runio, "run_sonarqube_mcp", fake_run)
+
+	client.tool_definitions()
+
+	output = capsys.readouterr().err
+	assert "[debug] SonarQube MCP request" in output
+	assert "[debug] SonarQube MCP response" in output
+	assert "tools/list" in output
+	assert "Operations.HMI.App.Alarms" in output
+	assert "secret-token" not in output
+	assert "<redacted>" in output
+
+
 def test_zero_process_exit_does_not_hide_mcp_error(
 	monkeypatch: pytest.MonkeyPatch,
 ) -> None:

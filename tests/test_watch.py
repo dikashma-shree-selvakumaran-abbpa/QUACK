@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -89,3 +90,26 @@ def test_watch_once_surfaces_actionable_review_failure(monkeypatch) -> None:
 
 	assert result.reason == "some actionable reason"
 	assert result.reason != "AI analysis unavailable"
+
+
+def test_watch_debug_flag_is_forwarded_and_scoped(monkeypatch) -> None:
+	seen: dict[str, object] = {}
+	monkeypatch.delenv("QUACK_SONAR_DEBUG", raising=False)
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: "/repo")
+
+	def fake_review_once(root, model=None, quiet=False, *, debug=False):
+		seen.update(root=root, model=model, quiet=quiet, debug=debug)
+		return watch.WatchResult(files=0, reason="no changes")
+
+	monkeypatch.setattr(cli.watch_mod, "review_once", fake_review_once)
+
+	result = CliRunner().invoke(cli.main, ["watch", "--once", "--debug"])
+
+	assert result.exit_code == 0
+	assert seen == {
+		"root": "/repo",
+		"model": None,
+		"quiet": False,
+		"debug": True,
+	}
+	assert "QUACK_SONAR_DEBUG" not in os.environ
