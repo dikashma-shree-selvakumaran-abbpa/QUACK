@@ -118,6 +118,8 @@ def test_direct_api_collects_and_scopes_every_changed_file_violation(
 	}
 	assert all(query.get("branch") == ["feature"] for _, query in seen)
 	content = (tmp_path / "docs" / "SONARQUBE_REPORT.md").read_text(encoding="utf-8")
+	assert "- Verdict: **BLOCKED**" in content
+	assert "- Query status: `PASSED`" in content
 	assert "typescript:S1523" in content
 	assert "typescript:S1234" in content
 	assert "typescript:S5678" in content
@@ -152,6 +154,8 @@ def test_debug_prints_cli_and_api_inputs_outputs_without_token(
 
 	assert result is not None
 	assert result.violation_count == 0
+	content = (tmp_path / "docs" / "SONARQUBE_REPORT.md").read_text(encoding="utf-8")
+	assert "- Verdict: **PASSED**" in content
 	output = capsys.readouterr().err
 	assert "[debug] SonarQube CLI API input" in output
 	assert "[debug] SonarQube CLI API output" in output

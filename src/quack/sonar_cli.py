@@ -439,6 +439,15 @@ def _with_report(result: SonarCliResult, root: Path, source: str) -> SonarCliRes
 
 
 def _markdown(result: SonarCliResult, source: str) -> str:
+	verdict = (
+		"BLOCKED"
+		if result.blocks_commit
+		else (
+			"PASSED"
+			if result.status == "passed" and result.fresh and result.correlated
+			else "UNVERIFIED"
+		)
+	)
 	lines = [
 		"# SonarQube CLI report",
 		"",
@@ -448,8 +457,9 @@ def _markdown(result: SonarCliResult, source: str) -> str:
 		f"- Project: `{_safe_text(result.project_key or 'unknown', 256)}`",
 		f"- Branch: `{_safe_text(result.branch or 'default', 256)}`",
 		f"- Analysis: `{_safe_text(result.analysis_id or 'unavailable', 256)}`",
-		f"- Status: **{result.status.upper()}**",
+		f"- Verdict: **{verdict}**",
 		f"- Violations: **{result.violation_count}**",
+		f"- Query status: `{result.status.upper()}`",
 		"",
 		"## Outcome",
 		"",
