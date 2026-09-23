@@ -105,6 +105,15 @@ def run(
 	started = perf_counter()
 	if not getattr(delta, "files", None):
 		return None
+	if fresh is False:
+		return _result(
+			"failed",
+			"scanner did not complete; Sonar API was not queried",
+			started,
+			project_key=project_key,
+			branch=branch,
+			fresh=False,
+		)
 	root = Path(repo_root).resolve()
 	settings = sonar.configuration(root, staged=source == "pre-commit")
 	project = (project_key or settings.project_key).strip()

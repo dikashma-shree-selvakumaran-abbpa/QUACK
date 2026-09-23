@@ -74,8 +74,9 @@ path/content fingerprint and the complete effective scanner settings,
 including source/test roots, exclusions, project, host, and branch. Any index
 or configuration change forces a new local scan.
 
-The default server is `http://127.0.0.1:9002`. Set a local analysis token before
-using the integration:
+The default server is `https://codescan.abb.com`. Override
+`QUACK_SONAR_HOST_URL` explicitly when using a local SonarQube instance. Set an
+analysis token before using the integration:
 
 ```powershell
 $env:SONAR_TOKEN = "<TOKEN>" # SONAR_TOKEN, SQ_TOKEN, or SONARQUBE_TOKEN

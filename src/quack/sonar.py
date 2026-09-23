@@ -27,7 +27,7 @@ from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 from . import gitio, runio, sonar_debug
 
-DEFAULT_HOST_URL = "http://127.0.0.1:9002"
+DEFAULT_HOST_URL = "https://codescan.abb.com"
 DEFAULT_PROJECT_KEY = "quack-local"
 DEFAULT_TIMEOUT_S = runio.SONAR_TIMEOUT_S
 HEALTH_TIMEOUT_S = 2.0
