@@ -55,7 +55,7 @@ No apparent replacement code restoring delegates elsewhere in this path
 | Surface | When it runs | What it does | Network |
 |---|---|---|---|
 | `quack check` | Pre-commit | Checks secrets, merge markers, debug code, test guidance, and the exact staged SonarQube snapshot. | Tier 1 is offline; a confirmed current SonarQube MCP result can block on changed-file issues or hotspots. Unavailable Sonar infrastructure fails open. |
-| `quack watch` | Alongside development | Checks the complete tracked working delta with SonarQube, then optionally reviews it with AI and caches that AI verdict. | SonarQube and AI are used only when configured; the deterministic Sonar check does not require an LLM. |
+| `quack watch` | Alongside development | Scans the complete working delta (staged, unstaged, and non-ignored new files) with SonarQube, then optionally reviews it with AI and caches that AI verdict. | SonarQube and AI are used only when configured; the deterministic Sonar check does not require an LLM. |
 | `quack agent` | Pre-push | Reviews unpushed commits. Its optional investigative loop can run tests and propose fixes with `QUACK_PROVIDER=github_models`. | Yes, when a provider is available. |
 
 Secrets, merge markers, and a confirmed current staged SonarQube snapshot with
@@ -102,7 +102,8 @@ The repository also includes the generated MCP client configuration at
 `.vscode\mcp.json` and the Python adapter at
 `src\quack\mcp\sonarqube.py`. When Podman and a SonarQube token are available,
 both `quack watch` and the staged `quack check` hook collect a bounded,
-read-only snapshot. `quack watch` writes the snapshot to the living report at
+read-only snapshot. `quack watch` scans the current working snapshot before
+querying MCP, then writes the snapshot to the living report at
 `docs\SONARQUBE_REPORT.md`; the pre-commit hook renders its result directly
 without modifying the target repository. Watch report updates are atomic and
 the generated file is excluded from watch change detection.
@@ -110,11 +111,11 @@ the generated file is excluded from watch change detection.
 Each snapshot calls the requested duplication, security-hotspot, open-issue,
 and component-measure operations. Issue and hotspot results are filtered to
 the changed Sonar components, and component arguments are sent when the MCP
-schema advertises them. Component measures include every metric advertised by
-the server when metric discovery is available, plus the required
-`cognitive_complexity`, `ncloc`, and `reliability_rating` fields. A matching
-local scanner result still re-runs the MCP finding query; its old violation
-count is never trusted. If the server does not return a matching analysis
+schema advertises them. Metric discovery is retained for diagnostics while
+component measures request a stable supported subset, including
+`cognitive_complexity`, `ncloc`, and `reliability_rating`. A matching local
+scanner result still re-runs the MCP finding query; its old violation count is
+never trusted. If the server does not return a matching analysis
 identifier, that cached MCP result is explicitly unverified and fails open.
 Only a current correlated snapshot with open issues or security hotspots blocks
 `quack check`; missing credentials, Podman, unavailable tools, timeouts, stale

@@ -48,11 +48,12 @@ class WatchResult:
 	files: int
 	risk: str | None = None
 	reason: str | None = None
+	sonar_scan: sonar.ScanResult | None = None
 	sonar_report: SonarQubeReportResult | None = None
 
 
 def review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
-	"""Review the staged delta, or tracked working changes when unstaged."""
+	"""Review the staged delta, or the complete working delta when changed."""
 	started = time.perf_counter()
 	result = _review_once(repo_root, model)
 	try:
@@ -78,6 +79,20 @@ def review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
 					),
 				}
 			)
+		if result.sonar_scan is not None:
+			event.update(
+				{
+					"sonar_status": result.sonar_scan.status,
+					"sonar_duration_ms": int(
+						result.sonar_scan.duration_s * 1000
+					),
+					"sonar_failure": (
+						result.sonar_scan.reason
+						if result.sonar_scan.status != "passed"
+						else None
+					),
+				}
+			)
 		metrics.log(event)
 	except Exception:
 		pass
@@ -86,18 +101,26 @@ def review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
 
 def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
 	root = Path(repo_root)
+	sonar_scan: sonar.ScanResult | None = None
 	sonar_result: SonarQubeReportResult | None = None
 	try:
 		# Watch must represent the working tree developers are looking at.
-		# working_delta() includes staged and unstaged tracked edits; the
+		# working_delta() includes staged, unstaged, and new non-ignored edits;
 		# pre-commit path remains the only path that uses the exact index.
-		delta = gitio.working_delta()
+		delta = gitio.working_delta(root)
 		if not delta.files:
 			delta = gitio.staged_delta()
 		if not delta.files:
 			return WatchResult(files=0, reason="no changes")
 
 		sonar_settings = sonar.configuration(root, staged=False)
+		scan_started_at = time.time()
+		sonar_scan = sonar.scan(
+			delta,
+			root,
+			config=sonar_settings,
+			snapshot_scope="working",
+		)
 		sonar_result = sonar_report.run(
 			delta,
 			root,
@@ -105,6 +128,15 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 			project_path=root,
 			project_key=sonar_settings.project_key,
 			branch=sonar_settings.branch,
+			fresh=bool(sonar_scan and sonar_scan.status == "passed"),
+			expected_analysis_id=(
+				sonar_scan.analysis_id if sonar_scan else None
+			),
+			minimum_analysis_at=(
+				scan_started_at
+				if sonar_scan and sonar_scan.status == "passed"
+				else None
+			),
 		)
 		findings = tier1_run(delta, Tier1Config())
 		redacted = tier1_redact(delta, findings)
@@ -119,6 +151,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 			return WatchResult(
 				files=len(delta.files),
 				reason="no model configured",
+				sonar_scan=sonar_scan,
 				sonar_report=sonar_result,
 			)
 		availability = llmio.availability_error()
@@ -126,6 +159,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 			return WatchResult(
 				files=len(delta.files),
 				reason=availability,
+				sonar_scan=sonar_scan,
 				sonar_report=sonar_result,
 			)
 
@@ -142,6 +176,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 			return WatchResult(
 				files=len(delta.files),
 				reason=reason or llmio.availability_error() or "AI analysis unavailable",
+				sonar_scan=sonar_scan,
 				sonar_report=sonar_result,
 			)
 
@@ -155,13 +190,19 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 		return WatchResult(
 			files=len(delta.files),
 			risk=review.risk,
+			sonar_scan=sonar_scan,
 			sonar_report=sonar_result,
 		)
 	except Exception as exc:
 		message = str(exc)[:160].replace("\n", " ")
 		return WatchResult(
 			files=0,
-			reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+			reason=(
+				f"{type(exc).__name__}: {message}"
+				if message
+				else type(exc).__name__
+			),
+			sonar_scan=sonar_scan,
 			sonar_report=sonar_result,
 		)
 

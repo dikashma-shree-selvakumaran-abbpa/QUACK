@@ -540,6 +540,11 @@ def _collect(
 		and (
 			expected_analysis_id is None
 			or analysis_id == expected_analysis_id
+			or (
+				analysis_id is None
+				and minimum_analysis_at is not None
+				and branch_outcome.status == "passed"
+			)
 		)
 	)
 	if expected_analysis_id is not None and not correlated:
@@ -633,7 +638,7 @@ def _collect_branch_scope(
 				status="unavailable",
 				description=(
 					"configured SonarQube branch analysis is not newer than "
-					"the staged scan: "
+					"the local scan: "
 					+ _safe_text(branch, 256)
 				),
 				data=outcome.data,
@@ -1535,7 +1540,17 @@ def _result(
 def _decorate(
 	result: SonarQubeReportResult, fresh: bool | None
 ) -> SonarQubeReportResult:
-	return result if fresh is None else replace(result, fresh=fresh)
+	if fresh is None:
+		return result
+	if fresh:
+		return replace(result, fresh=True)
+	reason = result.reason
+	if "unverified" not in reason.casefold():
+		reason = (
+			f"{reason}; current local Sonar scan is unavailable; "
+			"MCP result is unverified"
+		)
+	return replace(result, fresh=False, reason=_safe_text(reason, 600))
 
 
 def _exception_reason(exc: Exception) -> str:

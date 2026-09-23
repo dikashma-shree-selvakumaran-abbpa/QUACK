@@ -48,11 +48,13 @@ A healthy result includes:
   report; a confirmed current issue or hotspot on a changed component blocks.
   Missing or stale Sonar infrastructure fails open.
 - `quack watch` is a foreground process you keep running while you work. It
-  checks the combined staged plus unstaged tracked delta with SonarQube before
-  optionally reviewing it with AI, refreshes the report after 30 seconds
-  without file changes by default, and caches the AI result for commit time.
+  scans the combined staged, unstaged, and non-ignored new-file delta with
+  SonarQube before optionally reviewing it with AI, refreshes the report after
+  30 seconds without file changes by default, and caches the AI result for
+  commit time.
   Use `quack watch --once` to review immediately; the Sonar check itself does
-  not require an LLM.
+  not require an LLM. The generated Sonar report is excluded from the working
+  snapshot so it cannot retrigger watch.
 - `git push` runs an advisory AI review on unpushed commits. The default
   `copilot_sdk` provider uses the Copilot CLI's stored OAuth login.
 - The optional tool-calling investigation loop requires

@@ -452,6 +452,31 @@ def test_cached_mcp_snapshot_is_unverified_without_analysis_correlation(
 	assert "could not be correlated" in result.reason
 
 
+def test_mcp_snapshot_is_unverified_when_local_watch_scan_is_unavailable(
+	monkeypatch, tmp_path: Path
+) -> None:
+	client = _CompleteClient()
+	monkeypatch.setattr(sonar_report.sonarqube_mcp, "enabled", lambda: True)
+	monkeypatch.setattr(
+		sonar_report.sonarqube_mcp,
+		"connection_from_environment",
+		lambda **kwargs: (client, None),
+	)
+
+	result = sonar_report.run(
+		_delta(),
+		tmp_path,
+		source="watch",
+		project_key="quack-local",
+		fresh=False,
+	)
+
+	assert result is not None
+	assert result.fresh is False
+	assert result.blocks_commit is False
+	assert "MCP result is unverified" in result.reason
+
+
 def test_cached_mcp_snapshot_blocks_when_analysis_correlation_matches(
 	monkeypatch, tmp_path: Path
 ) -> None:
@@ -864,10 +889,27 @@ def test_watch_passes_mcp_snapshot_to_review(
 			tests="tests",
 		),
 	)
+	scan_result = sonar.ScanResult(
+		status="passed",
+		reason="analysis completed",
+		analysis_id="analysis-1",
+	)
+	order: list[str] = []
+
+	def scan(*args, **kwargs):
+		order.append("scan")
+		return scan_result
+
+	monkeypatch.setattr(watch.sonar, "scan", scan)
+	monkeypatch.setattr(watch.gitio, "working_delta", lambda root=None: delta)
 	monkeypatch.setattr(watch.gitio, "staged_delta", lambda: delta)
-	monkeypatch.setattr(watch.sonar_report, "run", lambda *args, **kwargs: (
-		captured_call.update(kwargs) or mcp_result
-	))
+
+	def run_mcp(*args, **kwargs):
+		order.append("mcp")
+		captured_call.update(kwargs)
+		return mcp_result
+
+	monkeypatch.setattr(watch.sonar_report, "run", run_mcp)
 	monkeypatch.setattr(watch.testmap, "build_plan", lambda *args, **kwargs: TestPlan())
 	monkeypatch.setattr(watch.instructions, "load", lambda root: None)
 	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: "test-model")
@@ -884,12 +926,20 @@ def test_watch_passes_mcp_snapshot_to_review(
 	result = watch._review_once(tmp_path)
 
 	assert result.sonar_report is mcp_result
-	assert captured_call == {
+	assert result.sonar_scan is scan_result
+	assert order == ["scan", "mcp"]
+	assert {
+		key: captured_call[key]
+		for key in ("source", "project_path", "project_key", "branch", "fresh", "expected_analysis_id")
+	} == {
 		"source": "watch",
 		"project_path": tmp_path,
 		"project_key": "quack-local",
 		"branch": "validation",
+		"fresh": True,
+		"expected_analysis_id": "analysis-1",
 	}
+	assert isinstance(captured_call["minimum_analysis_at"], float)
 
 
 def test_watch_uses_combined_staged_and_unstaged_working_delta(
@@ -918,7 +968,12 @@ def test_watch_uses_combined_staged_and_unstaged_working_delta(
 			tests="tests",
 		),
 	)
-	monkeypatch.setattr(watch.gitio, "working_delta", lambda: working)
+	scan_result = sonar.ScanResult(
+		status="skipped",
+		reason="Sonar token is not set",
+	)
+	monkeypatch.setattr(watch.sonar, "scan", lambda *args, **kwargs: scan_result)
+	monkeypatch.setattr(watch.gitio, "working_delta", lambda root=None: working)
 	monkeypatch.setattr(
 		watch.gitio,
 		"staged_delta",
@@ -954,4 +1009,6 @@ def test_watch_uses_combined_staged_and_unstaged_working_delta(
 	assert captured["project_path"] == tmp_path
 	assert captured["sonar_kwargs"]["project_key"] == "quack-local"
 	assert captured["sonar_kwargs"]["branch"] is None
+	assert captured["sonar_kwargs"]["fresh"] is False
+	assert result.sonar_scan is scan_result
 	assert result.sonar_report is not None

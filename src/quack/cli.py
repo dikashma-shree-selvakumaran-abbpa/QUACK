@@ -320,7 +320,15 @@ def _mark_sonar_fresh(result, fresh: bool):
 	if hasattr(result, "fresh"):
 		if result.fresh == fresh:
 			return result
-		return replace(result, fresh=fresh)
+		if fresh:
+			return replace(result, fresh=True)
+		reason = getattr(result, "reason", "")
+		if "unverified" not in reason.casefold():
+			reason = (
+				f"{reason}; current local Sonar scan is unavailable; "
+				"MCP result is unverified"
+			)
+		return replace(result, fresh=False, reason=reason[:600])
 	return result
 
 
@@ -431,6 +439,8 @@ def watch(quiet_period: float, once: bool) -> None:
 
 
 def _render_watch_result(result: watch_mod.WatchResult) -> None:
+	if result.sonar_scan is not None:
+		render.sonar(result.sonar_scan)
 	if result.sonar_report is not None:
 		render.sonar_mcp(result.sonar_report)
 	if result.risk is not None:

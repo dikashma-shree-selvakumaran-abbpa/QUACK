@@ -52,6 +52,7 @@ PRUNE_DIRS = frozenset(
 		".tox",
 		".mypy_cache",
 		".pytest_cache",
+		".scannerwork",
 	}
 )
 

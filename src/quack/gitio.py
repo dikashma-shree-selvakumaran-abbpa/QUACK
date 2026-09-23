@@ -7,11 +7,14 @@ Everything else should take data in and return data out.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 from . import delta
 from .delta import StagedDelta
+
+_GENERATED_WATCH_FILES = frozenset({"docs/sonarqube_report.md"})
 
 
 def _run_git(args: list[str], *, cwd: str | Path | None = None) -> str:
@@ -116,16 +119,119 @@ def export_staged_snapshot(
 	return result.returncode == 0
 
 
-def working_delta() -> StagedDelta:
-	"""Collect tracked working-tree changes versus HEAD.
+def working_paths(root: str | Path | None = None) -> list[str]:
+	"""Return tracked and non-ignored untracked paths in the working tree."""
+	output = _run_git(
+		["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+		cwd=root,
+	)
+	return [item for item in output.split("\0") if item]
 
-	This includes staged and unstaged changes. Untracked files are visible to
-	the watcher's filesystem snapshot but have no Git diff until staged.
+
+def export_working_snapshot(
+	destination: str | Path, root: str | Path | None = None
+) -> bool:
+	"""Copy the current working tree into an empty scanner directory.
+
+	Only Git-tracked and non-ignored untracked files are copied. Symlinks and
+	paths escaping the repository are skipped so a scanner cannot follow a
+	worktree link outside the requested project.
 	"""
-	return delta.parse_staged_delta(
-		_run_git(["diff", "--name-status", "-M", "HEAD"]),
-		_run_git(["diff", "--numstat", "-M", "HEAD"]),
-		_run_git(["diff", "-M", "--unified=3", "HEAD"]),
+	root_path = Path(root).resolve() if root else Path.cwd().resolve()
+	destination_path = Path(destination).resolve()
+	try:
+		destination_path.mkdir(parents=True, exist_ok=True)
+		for relative_name in working_paths(root_path):
+			relative = Path(relative_name)
+			if relative.is_absolute() or ".." in relative.parts:
+				continue
+			if _is_generated_watch_path(relative.as_posix()):
+				continue
+			source = root_path / relative
+			if source.is_symlink() or not source.is_file():
+				continue
+			resolved = source.resolve()
+			if root_path != resolved and root_path not in resolved.parents:
+				continue
+			target = destination_path / relative
+			target.parent.mkdir(parents=True, exist_ok=True)
+			shutil.copy2(source, target)
+	except (OSError, RuntimeError):
+		return False
+	return True
+
+
+def working_delta(root: str | Path | None = None) -> StagedDelta:
+	"""Collect staged, unstaged, and non-ignored untracked changes vs HEAD."""
+	cwd = root
+	result = delta.parse_staged_delta(
+		_run_git(["diff", "--name-status", "-M", "HEAD"], cwd=cwd),
+		_run_git(["diff", "--numstat", "-M", "HEAD"], cwd=cwd),
+		_run_git(["diff", "-M", "--unified=3", "HEAD"], cwd=cwd),
+	)
+	tracked = set(staged_paths(root))
+	untracked = [
+		path
+		for path in working_paths(root)
+		if not _is_generated_watch_path(path)
+		and path not in tracked
+	]
+	for path in untracked:
+		added_file = _untracked_file(path, root)
+		if added_file is None:
+			continue
+		result.files.append(added_file)
+		result.raw_diff += _untracked_diff(path, added_file)
+	if len(result.raw_diff) > delta.MAX_RAW_DIFF:
+		result.raw_diff = result.raw_diff[: delta.MAX_RAW_DIFF] + delta.TRUNCATION_MARKER
+	return result
+
+
+def _is_generated_watch_path(path: str) -> bool:
+	normalised = path.replace("\\", "/").strip("/").casefold()
+	return normalised in _GENERATED_WATCH_FILES or normalised.startswith(
+		".scannerwork/"
+	)
+
+
+def _untracked_file(path: str, root: str | Path | None) -> delta.StagedFile | None:
+	base = Path(root).resolve() if root else Path.cwd().resolve()
+	source = base / Path(path)
+	try:
+		if source.is_symlink() or not source.is_file():
+			return None
+		data = source.read_bytes()
+	except OSError:
+		return None
+	if b"\0" in data:
+		return delta.StagedFile(path, "A", 0, 0, [], binary=True)
+	text = data.decode("utf-8", errors="replace")
+	lines = text.splitlines()
+	hunk_lines = [f"@@ -0,0 +1,{len(lines)} @@"]
+	hunk_lines.extend(f"+{line}" for line in lines)
+	hunk = "\n".join(hunk_lines)
+	if len(hunk) > delta.MAX_RAW_DIFF:
+		hunk = hunk[: delta.MAX_RAW_DIFF] + delta.TRUNCATION_MARKER
+	return delta.StagedFile(
+		path,
+		"A",
+		len(lines),
+		0,
+		[hunk] if lines else [],
+	)
+
+
+def _untracked_diff(path: str, file: delta.StagedFile) -> str:
+	"""Build the bounded diff text used by Tier 1/cache for a new file."""
+	if file.binary:
+		return (
+			f"diff --git a/{path} b/{path}\n"
+			f"new file mode 100644\nBinary files /dev/null and b/{path} differ\n"
+		)
+	return (
+		f"diff --git a/{path} b/{path}\n"
+		f"new file mode 100644\n--- /dev/null\n+++ b/{path}\n"
+		+ (file.hunks[0] + "\n" if file.hunks else "")
 	)
 
 

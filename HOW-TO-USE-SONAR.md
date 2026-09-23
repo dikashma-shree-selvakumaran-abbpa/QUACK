@@ -191,12 +191,17 @@ worktree inspect another; `--project-path` remains available for the direct
 
 ## 4. Run Sonar with `quack watch`
 
-`quack watch` uses the complete tracked working delta, including staged and
-unstaged edits. Sonar runs before optional AI review, so Sonar findings are
-available even when no model is configured. Watch reads the uploaded analysis
-from the configured Sonar branch; it does not upload a local worktree by
-itself. If the branch inventory does not contain that branch, watch reports
-`has no uploaded analysis` and will not treat an empty issue list as clean.
+`quack watch` uses the complete working delta, including staged, unstaged, and
+non-ignored new files. It exports that snapshot to a temporary directory and
+runs the local Sonar scanner before the optional AI review, so a new file is
+actually analyzed rather than compared with an older server-side result.
+After the bounded scanner task completes, watch queries MCP against the
+configured project/branch and correlates the returned analysis when the
+server provides an identifier, or by the branch's post-scan analysis timestamp
+when that identifier is not exposed. If the scan or branch inventory is
+unavailable, watch reports the result as unverified and will not treat an empty
+issue list as clean. The generated `docs\SONARQUBE_REPORT.md` is excluded from
+both the working snapshot and watch change detection.
 
 Run a one-shot check in the clean worktree:
 

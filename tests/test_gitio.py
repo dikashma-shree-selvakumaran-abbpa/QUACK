@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from quack import gitio
 
 
@@ -60,3 +62,61 @@ def test_upstream_ref_does_not_raise_on_git_failure(monkeypatch) -> None:
 def test_upstream_ref_returns_tracking_branch(monkeypatch) -> None:
 	monkeypatch.setattr(gitio, "_run_git", lambda args: "origin/main\n")
 	assert gitio.upstream_ref() == "origin/main"
+
+
+def test_export_working_snapshot_copies_tracked_and_untracked_files(
+	monkeypatch, tmp_path: Path
+) -> None:
+	root = tmp_path / "repo"
+	root.mkdir()
+	(root / "src").mkdir()
+	(root / "src" / "tracked.py").write_text(
+		"tracked = True\n", encoding="utf-8"
+	)
+	(root / "src" / "new.py").write_text("new = True\n", encoding="utf-8")
+	(root / ".scannerwork").mkdir()
+	(root / ".scannerwork" / "report-task.txt").write_text(
+		"generated\n", encoding="utf-8"
+	)
+	destination = tmp_path / "snapshot"
+
+	monkeypatch.setattr(
+		gitio,
+		"_run_git",
+		lambda args, cwd=None: (
+			"src/tracked.py\0src/new.py\0.scannerwork/report-task.txt\0"
+		)
+		if "ls-files" in args
+		else "",
+	)
+
+	assert gitio.export_working_snapshot(destination, root)
+	assert (destination / "src" / "tracked.py").read_text(encoding="utf-8") == (
+		"tracked = True\n"
+	)
+	assert (destination / "src" / "new.py").read_text(encoding="utf-8") == (
+		"new = True\n"
+	)
+	assert not (destination / ".scannerwork").exists()
+
+
+def test_working_delta_includes_nonignored_new_file(monkeypatch, tmp_path: Path) -> None:
+	root = tmp_path / "repo"
+	root.mkdir()
+	(root / "new.py").write_text("password = 'secret'\n", encoding="utf-8")
+
+	def fake_run_git(args, cwd=None):
+		if args == ["ls-files", "-z"]:
+			return ""
+		if "ls-files" in args:
+			return "new.py\0.scannerwork/report-task.txt\0"
+		return ""
+
+	monkeypatch.setattr(gitio, "_run_git", fake_run_git)
+
+	result = gitio.working_delta(root)
+
+	assert [file.path for file in result.files] == ["new.py"]
+	assert result.files[0].status == "A"
+	assert "+password = 'secret'" in result.files[0].hunks[0]
+	assert "new.py" in result.raw_diff
