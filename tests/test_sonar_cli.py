@@ -159,6 +159,9 @@ def test_debug_prints_cli_and_api_inputs_outputs_without_token(
 	output = capsys.readouterr().err
 	assert "[debug] SonarQube CLI API input" in output
 	assert "[debug] SonarQube CLI API output" in output
+	assert "[debug] SonarQube CLI API timing" in output
+	assert "duration_ms=" in output
+	assert "total_api_ms=" in output
 	assert '"issues":[]' in output
 	assert "secret-token" not in output
 

@@ -1168,6 +1168,7 @@ def _invoke_sonar_mcp_tool(
 		raw_arguments=tool_arguments,
 		force=debug_output,
 	)
+	started = time.perf_counter()
 	try:
 		if json_output:
 			response = client.call_tool_response(resolved_name, arguments)
@@ -1182,6 +1183,7 @@ def _invoke_sonar_mcp_tool(
 			response={"error": exc.reason},
 			raw_arguments=tool_arguments,
 			force=debug_output,
+			duration_ms=int((time.perf_counter() - started) * 1000),
 		)
 		render.warning(f"quack sonar-mcp: {exc.reason}")
 		sys.exit(1)
@@ -1192,6 +1194,7 @@ def _invoke_sonar_mcp_tool(
 		response=response,
 		raw_arguments=tool_arguments,
 		force=debug_output,
+		duration_ms=int((time.perf_counter() - started) * 1000),
 	)
 	if response.get("isError"):
 		if json_output:
@@ -1217,6 +1220,7 @@ def _emit_sonar_mcp_debug(
 	response: dict[str, object] | None,
 	raw_arguments: str,
 	force: bool,
+	duration_ms: int | None = None,
 ) -> None:
 	"""Print safe diagnostics for one explicit MCP invocation."""
 	if not force:
@@ -1243,6 +1247,8 @@ def _emit_sonar_mcp_debug(
 		f"  tool={tool_name}",
 		f"  raw_arguments={raw}",
 	]
+	if duration_ms is not None:
+		lines.append(f"  duration_ms={duration_ms}")
 	if arguments is None:
 		lines.append("  request=<not sent; argument parsing failed>")
 	else:

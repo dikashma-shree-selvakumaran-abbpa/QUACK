@@ -18,6 +18,7 @@ import re
 import shutil
 import uuid
 from dataclasses import dataclass, field
+from time import perf_counter
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit
@@ -394,6 +395,7 @@ class SonarQubeMcpClient:
 		request_id: int,
 	) -> dict[str, Any]:
 		"""Run one initialize/request exchange over the Podman stdio server."""
+		started = perf_counter()
 		payloads = [
 			{
 				"jsonrpc": "2.0",
@@ -439,10 +441,15 @@ class SonarQubeMcpClient:
 			self._config.child_environment(),
 			timeout_s=self._config.timeout_s,
 		)
+		duration_ms = int((perf_counter() - started) * 1000)
 		if exit_code != 0:
 			sonar_debug.emit(
 				"SonarQube MCP transport failure",
-				{"exit_code": exit_code, "output": output},
+				{
+					"exit_code": exit_code,
+					"duration_ms": duration_ms,
+					"output": output,
+				},
 				secrets=(self._config.token,),
 			)
 		if exit_code != 0:
@@ -479,6 +486,7 @@ class SonarQubeMcpClient:
 			"SonarQube MCP response",
 			{
 				"method": method,
+				"duration_ms": duration_ms,
 				"responses": responses,
 				"selected_response": result,
 			},

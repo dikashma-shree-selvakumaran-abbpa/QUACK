@@ -104,7 +104,7 @@ def test_watch_debug_flag_is_forwarded_and_scoped(monkeypatch) -> None:
 	assert "QUACK_SONAR_DEBUG" not in os.environ
 
 
-def test_watch_uses_scanner_correlated_direct_sonar_api(monkeypatch) -> None:
+def test_watch_uses_scanner_correlated_direct_sonar_api(monkeypatch, capsys) -> None:
 	delta = _delta()
 	captured: dict[str, object] = {}
 	settings = SimpleNamespace(
@@ -115,6 +115,7 @@ def test_watch_uses_scanner_correlated_direct_sonar_api(monkeypatch) -> None:
 	scan_result = SimpleNamespace(
 		status="passed",
 		analysis_id="analysis-1",
+		duration_s=0.2,
 	)
 	cli_result = SimpleNamespace(
 		status="passed",
@@ -134,8 +135,14 @@ def test_watch_uses_scanner_correlated_direct_sonar_api(monkeypatch) -> None:
 	monkeypatch.setattr(watch.sonar_cli, "run", direct_run)
 	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: None)
 
-	result = watch.review_once("/repo")
+	result = watch.review_once("/repo", debug=True)
 
 	assert result.sonar_cli is cli_result
+	debug = capsys.readouterr().err
+	assert "[debug] SonarQube Watch timing" in debug
+	assert "total_watch_ms=" in debug
+	assert "scanner_total_ms=200" in debug
+	assert "api_total_ms=100" in debug
+	assert "other_review_ms=" in debug
 	assert captured["host_url"] == "https://sonar.example"
 	assert captured["expected_analysis_id"] == "analysis-1"

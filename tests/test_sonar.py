@@ -145,6 +145,10 @@ def test_scan_exports_index_and_runs_bounded_scanner(
 	assert "[debug] SonarQube CLI input" in debug
 	assert "[debug] SonarQube CLI output" in debug
 	assert "[debug] SonarQube CLI analysis output" in debug
+	assert "snapshot_export_ms=" in debug
+	assert "scanner_process_ms=" in debug
+	assert "analysis_wait_ms=" in debug
+	assert "total_scan_ms=" in debug
 	assert "-Dsonar.projectKey=quack-local" in debug
 	assert "local-token" not in debug
 

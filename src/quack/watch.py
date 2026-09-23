@@ -63,6 +63,18 @@ def review_once(
 	started = time.perf_counter()
 	with sonar_debug.scope(debug):
 		result = _review_once(repo_root, model)
+		total_ms = int((time.perf_counter() - started) * 1000)
+		scanner_ms = int(getattr(result.sonar_scan, "duration_s", 0.0) * 1000)
+		api_ms = int(getattr(result.sonar_cli, "duration_s", 0.0) * 1000)
+		sonar_debug.emit(
+			"SonarQube Watch timing",
+			{
+				"total_watch_ms": total_ms,
+				"scanner_total_ms": scanner_ms,
+				"api_total_ms": api_ms,
+				"other_review_ms": max(0, total_ms - scanner_ms - api_ms),
+			},
+		)
 	try:
 		event = {
 			"ts": metrics.timestamp(),
