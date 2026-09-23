@@ -28,6 +28,7 @@ pipe (or NO_COLOR is set) no ANSI escape codes are emitted, so CI logs and
 from __future__ import annotations
 
 import os
+import re
 import sys
 from contextlib import contextmanager
 from typing import Iterator
@@ -64,6 +65,16 @@ _RISK_STYLES: dict[str, str] = {
 	"high": _BLOCK,
 	"critical": _BLOCK,
 }
+
+_SONAR_SECRET_RE = re.compile(
+	r"(?:ghp_|github_pat_|gho_|ghs_|ghu_|xox|AKIA)[A-Za-z0-9_-]+"
+	r"|[A-Za-z0-9_+/=-]{32,}"
+)
+_SONAR_PATH_SAFE_TOKEN_RE = re.compile(
+	r"(?:ghp_|github_pat_|gho_|ghs_|ghu_|xox|AKIA)[A-Za-z0-9_-]+"
+	r"|(?<![\w./-])[A-Za-z0-9_+=-]{32,}(?![\w./-])"
+)
+_MAX_SONAR_FINDINGS = 10
 
 
 def _console(stderr: bool = False) -> Console:
@@ -337,7 +348,7 @@ def _sonar_mcp_group(result) -> RenderableType | None:
 	if report:
 		message += f" - report: {report}"
 	if getattr(result, "blocks_commit", False):
-		return Text(
+		status_line = Text(
 			f"SonarQube MCP: BLOCKED - {getattr(result, 'violation_count', 0)} "
 			"violation(s) detected"
 			+ (f" - report: {report}" if report else ""),
@@ -345,11 +356,115 @@ def _sonar_mcp_group(result) -> RenderableType | None:
 			no_wrap=False,
 			overflow="fold",
 		)
+		details = _sonar_finding_details(result)
+		if details:
+			return Group(
+				status_line,
+				Text("SonarQube violation details:", style=f"bold {_BLOCK}"),
+				*details,
+			)
+		return status_line
+	details = _sonar_finding_details(result)
 	if status == "passed":
-		return Text(message, style=_CLEAN, no_wrap=False, overflow="fold")
-	if status == "skipped":
-		return Text(message, style=_META, no_wrap=False, overflow="fold")
-	return Text(message, style=_WARN, no_wrap=False, overflow="fold")
+		status_line = Text(message, style=_CLEAN, no_wrap=False, overflow="fold")
+	elif status == "skipped":
+		status_line = Text(message, style=_META, no_wrap=False, overflow="fold")
+	else:
+		status_line = Text(message, style=_WARN, no_wrap=False, overflow="fold")
+	if details:
+		return Group(
+			status_line,
+			Text("SonarQube findings (not blocking):", style=f"bold {_WARN}"),
+			*details,
+		)
+	return status_line
+
+
+def _sonar_finding_details(result) -> list[RenderableType]:
+	"""Render bounded, redacted issue and hotspot details from the MCP result."""
+	lines: list[RenderableType] = []
+	for outcome in getattr(result, "outcomes", ()) or ():
+		if getattr(outcome, "status", None) != "passed":
+			continue
+		data = getattr(outcome, "data", None)
+		if not isinstance(data, dict):
+			continue
+		is_hotspot = getattr(outcome, "name", "") == (
+			"sonarqube_search_security_hotspot"
+		)
+		item_key = "hotspots" if is_hotspot else "issues"
+		items = data.get(item_key)
+		if not isinstance(items, list):
+			continue
+		kind = "HOTSPOT" if is_hotspot else "ISSUE"
+		for item in items:
+			if not isinstance(item, dict):
+				continue
+			rule = _sonar_display(
+				item.get("rule") or item.get("ruleKey"),
+				"unknown rule",
+			)
+			severity = _sonar_display(
+				item.get("severity")
+				or item.get("vulnerabilityProbability")
+				or item.get("securityCategory"),
+				"unknown severity",
+			)
+			component = _sonar_display(
+				item.get("component") or item.get("project"),
+				"unknown component",
+				path=True,
+			)
+			line = _sonar_line(item)
+			location = f"{component}:{line}" if line else component
+			message = _sonar_display(item.get("message"), "no message")
+			lines.append(
+				Text(
+					f"  [{kind}] {rule} [{severity}] {location} - {message}",
+					style=_BLOCK,
+					no_wrap=False,
+					overflow="fold",
+				)
+			)
+			if len(lines) >= _MAX_SONAR_FINDINGS:
+				return lines
+	if lines:
+		total = getattr(result, "violation_count", 0)
+		if isinstance(total, int) and total > len(lines):
+			lines.append(
+				Text(
+					f"  ...and {total - len(lines)} more violation(s)",
+					style=_META,
+				)
+			)
+	return lines
+
+
+def _sonar_line(item: dict) -> str:
+	"""Return the first useful Sonar line number from an issue payload."""
+	line = item.get("line")
+	if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+		return str(line)
+	text_range = item.get("textRange")
+	if isinstance(text_range, dict):
+		start_line = text_range.get("startLine")
+		if (
+			isinstance(start_line, int)
+			and not isinstance(start_line, bool)
+			and start_line > 0
+		):
+			return str(start_line)
+	return ""
+
+
+def _sonar_display(value, default: str, *, path: bool = False) -> str:
+	"""Normalize and redact one server-controlled terminal field."""
+	if value is None:
+		return default
+	text = " ".join(str(value).split())
+	pattern = _SONAR_PATH_SAFE_TOKEN_RE if path else _SONAR_SECRET_RE
+	text = pattern.sub("<redacted>", text)
+	return text[:240].rstrip() or default
 
 
 def sonar_mcp(result) -> None:
