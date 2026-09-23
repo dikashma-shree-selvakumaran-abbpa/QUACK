@@ -67,6 +67,42 @@ def test_scan_skips_without_token(monkeypatch, tmp_path) -> None:
 	assert result.reason == "Sonar token is not set"
 
 
+def test_configuration_reads_worktree_local_gui_settings(monkeypatch, tmp_path) -> None:
+	values = {
+		"quack.sonar.hostUrl": "https://sonar.example",
+		"quack.sonar.projectKey": "demo",
+		"quack.sonar.branch": "feature/gui",
+	}
+	monkeypatch.setattr(
+		sonar.gitio, "config_get", lambda key, root=None: values.get(key, "")
+	)
+
+	settings = sonar.configuration(tmp_path, staged=True)
+
+	assert settings.host_url == "https://sonar.example"
+	assert settings.project_key == "demo"
+	assert settings.branch == "feature/gui"
+
+
+def test_token_uses_noninteractive_git_credential_fallback(monkeypatch, tmp_path) -> None:
+	for name in ("SONAR_TOKEN", "SQ_TOKEN", "SONARQUBE_TOKEN"):
+		monkeypatch.delenv(name, raising=False)
+	monkeypatch.setattr(
+		sonar.gitio,
+		"config_get",
+		lambda key, root=None: "quack"
+		if key == "quack.sonar.credentialUsername"
+		else "",
+	)
+	monkeypatch.setattr(
+		sonar.gitio,
+		"credential_password",
+		lambda url, username, root=None: "stored-token",
+	)
+
+	assert sonar.token_for("https://sonar.example", tmp_path) == "stored-token"
+
+
 def test_discover_scanner_falls_back_to_quack_tools_after_stale_override(
 	monkeypatch, tmp_path
 ) -> None:

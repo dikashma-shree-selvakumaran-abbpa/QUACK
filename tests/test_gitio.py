@@ -2,9 +2,28 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from quack import gitio
+
+
+def test_credential_approve_passes_secret_only_on_stdin(monkeypatch) -> None:
+	captured: dict[str, object] = {}
+
+	def fake_run(command, **kwargs):
+		captured.update(command=command, **kwargs)
+		return subprocess.CompletedProcess(command, 0)
+
+	monkeypatch.setattr(gitio.subprocess, "run", fake_run)
+
+	assert gitio.credential_approve(
+		"https://sonar.example", "quack", "secret-token"
+	)
+	assert "secret-token" not in captured["command"]
+	assert "password=secret-token" in captured["input"]
+	assert captured["stdout"] is subprocess.DEVNULL
+	assert captured["stderr"] is subprocess.DEVNULL
 
 
 def test_range_delta_parses_range_via_existing_parser(monkeypatch) -> None:

@@ -121,7 +121,7 @@ def run(
 	selected_branch = branch if branch is not None else settings.branch
 	if not _PROJECT_KEY_RE.fullmatch(project):
 		return _result("failed", "invalid SonarQube project key", started, fresh=fresh)
-	token = _token()
+	token = sonar.token_for(host, root)
 	if not token:
 		return _result(
 			"skipped",
@@ -545,14 +545,6 @@ def _api_timeout() -> float:
 		return max(2.0, min(60.0, float(raw)))
 	except (TypeError, ValueError):
 		return 10.0
-
-
-def _token() -> str:
-	return (
-		os.environ.get("SONAR_TOKEN", "").strip()
-		or os.environ.get("SQ_TOKEN", "").strip()
-		or os.environ.get("SONARQUBE_TOKEN", "").strip()
-	)
 
 
 def _safe_text(value: object, limit: int) -> str:
