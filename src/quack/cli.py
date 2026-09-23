@@ -873,6 +873,56 @@ def init(use_local: bool) -> None:
 	sys.exit(0)
 
 
+def _configure_sonar_for_git_clients(root: Path) -> None:
+	"""Persist local Sonar settings so GUI Git clients match the terminal."""
+	explicit_project = (
+		os.environ.get("QUACK_SONAR_PROJECT_KEY", "").strip()
+		or os.environ.get("SONARQUBE_PROJECT_KEY", "").strip()
+		or os.environ.get("SONAR_PROJECT_KEY", "").strip()
+		or gitio.config_get("quack.sonar.projectKey", root)
+	)
+	if not explicit_project and not (root / "sonar-project.properties").is_file():
+		return
+
+	settings = sonar.configuration(root)
+	branch = gitio.current_branch(root) or settings.branch
+	if not settings.valid or not branch:
+		return
+	if not gitio.config_set("extensions.worktreeConfig", "true", root):
+		return
+
+	configured = all(
+		(
+			gitio.config_set(
+				"quack.sonar.hostUrl", settings.host_url, root, worktree=True
+			),
+			gitio.config_set(
+				"quack.sonar.projectKey", settings.project_key, root, worktree=True
+			),
+			gitio.config_set("quack.sonar.branch", branch, root, worktree=True),
+		)
+	)
+	if not configured:
+		render.warning("quack: could not save worktree-local Sonar settings")
+		return
+	render.clean("quack: Sonar settings saved for terminal and IDE commits")
+
+	token = sonar.environment_token()
+	if not token:
+		return
+	username = "quack"
+	if gitio.credential_approve(settings.host_url, username, token, root):
+		gitio.config_set(
+			"quack.sonar.credentialUsername", username, root, worktree=True
+		)
+		render.clean("quack: Sonar token saved in the Git credential helper")
+	else:
+		render.warning(
+			"quack: could not save the Sonar token for IDE commits; "
+			"configure a Git credential helper and rerun `quack init`"
+		)
+
+
 def _install_hooks(use_local: bool) -> None:
 	"""Write hook configuration and best-effort install both hook types."""
 	render.install_banner()
@@ -882,6 +932,8 @@ def _install_hooks(use_local: bool) -> None:
 	else:
 		_upsert_precommit_stanza(config_path)
 	render.clean(f"quack: updated {config_path}")
+
+	_configure_sonar_for_git_clients(Path.cwd())
 
 	if shutil.which("pre-commit"):
 		try:

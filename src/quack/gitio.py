@@ -31,12 +31,112 @@ def _run_git(args: list[str], *, cwd: str | Path | None = None) -> str:
 		)
 	except (subprocess.CalledProcessError, OSError):
 		return ""
-	return result.stdout
+	return result.stdout or ""
 
 
 def repo_root() -> str:
 	"""Absolute path to the repository top level, or "" if unavailable."""
 	return _run_git(["rev-parse", "--show-toplevel"]).strip()
+
+
+def current_branch(cwd: str | Path | None = None) -> str:
+	"""Return the checked-out branch name, or "" for detached/unavailable Git."""
+	return _run_git(["branch", "--show-current"], cwd=cwd).strip()
+
+
+def config_get(key: str, cwd: str | Path | None = None) -> str:
+	"""Read one repository-local Git setting, or "" when unavailable."""
+	return _run_git(["config", "--get", key], cwd=cwd).strip()
+
+
+def config_set(
+	key: str,
+	value: str,
+	cwd: str | Path | None = None,
+	*,
+	worktree: bool = False,
+) -> bool:
+	"""Write one local or worktree-local Git setting without invoking a shell."""
+	args = ["config"]
+	if worktree:
+		args.append("--worktree")
+	args.extend([key, value])
+	try:
+		result = subprocess.run(
+			["git", *args],
+			cwd=str(cwd) if cwd else None,
+			stdout=subprocess.DEVNULL,
+			stderr=subprocess.DEVNULL,
+			check=False,
+		)
+	except (OSError, subprocess.SubprocessError):
+		return False
+	return result.returncode == 0
+
+
+def credential_password(
+	url: str,
+	username: str,
+	cwd: str | Path | None = None,
+) -> str:
+	"""Read a password from Git's credential helper without interactive prompts."""
+	if not url or not username or any(char in url + username for char in "\r\n"):
+		return ""
+	environment = os.environ.copy()
+	environment["GIT_TERMINAL_PROMPT"] = "0"
+	environment["GCM_INTERACTIVE"] = "Never"
+	payload = f"url={url}\nusername={username}\n\n"
+	try:
+		result = subprocess.run(
+			["git", "credential", "fill"],
+			cwd=str(cwd) if cwd else None,
+			input=payload,
+			capture_output=True,
+			encoding="utf-8",
+			errors="replace",
+			env=environment,
+			timeout=5,
+			check=False,
+		)
+	except (OSError, subprocess.SubprocessError):
+		return ""
+	if result.returncode != 0:
+		return ""
+	for line in result.stdout.splitlines():
+		if line.startswith("password="):
+			return line.removeprefix("password=").strip()
+	return ""
+
+
+def credential_approve(
+	url: str,
+	username: str,
+	password: str,
+	cwd: str | Path | None = None,
+) -> bool:
+	"""Store a secret through Git's configured credential helper via stdin."""
+	if (
+		not url
+		or not username
+		or not password
+		or any(char in url + username + password for char in "\r\n")
+	):
+		return False
+	payload = f"url={url}\nusername={username}\npassword={password}\n\n"
+	try:
+		result = subprocess.run(
+			["git", "credential", "approve"],
+			cwd=str(cwd) if cwd else None,
+			input=payload,
+			stdout=subprocess.DEVNULL,
+			stderr=subprocess.DEVNULL,
+			encoding="utf-8",
+			timeout=5,
+			check=False,
+		)
+	except (OSError, subprocess.SubprocessError):
+		return False
+	return result.returncode == 0
 
 
 def staged_name_status() -> str:

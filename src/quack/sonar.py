@@ -90,12 +90,15 @@ def configuration(
 	*,
 	staged: bool = False,
 ) -> ScanConfig:
-	"""Resolve settings from the index for staged scans.
+	"""Resolve settings from environment, private Git config, and project files.
 
-	Only explicit environment overrides and files in the Git index are used
-	when ``staged`` is true. Working-tree Sonar or IDE settings are ignored.
+	Staged scans use only explicit overrides, worktree-local Git settings, and
+	files in the index. Unstaged Sonar or IDE settings are ignored.
 	"""
 	base = Path(root).resolve() if root else Path.cwd().resolve()
+	local_host = gitio.config_get("quack.sonar.hostUrl", base)
+	local_project = gitio.config_get("quack.sonar.projectKey", base)
+	local_branch = gitio.config_get("quack.sonar.branch", base)
 	if staged:
 		properties = _project_properties_text(
 			gitio.staged_file_text("sonar-project.properties", base)
@@ -117,7 +120,7 @@ def configuration(
 		tests_default = "tests" if (base / "tests").is_dir() else ""
 
 	invalid: list[str] = []
-	host_url = _host_url(properties)
+	host_url = _host_url(properties, local_host)
 	if host_url is None:
 		invalid.append("invalid server URL")
 		host_url = DEFAULT_HOST_URL
@@ -125,6 +128,7 @@ def configuration(
 		os.environ.get("QUACK_SONAR_PROJECT_KEY")
 		or os.environ.get("SONARQUBE_PROJECT_KEY")
 		or os.environ.get("SONAR_PROJECT_KEY")
+		or local_project
 		or properties.get("sonar.projectKey")
 		or DEFAULT_PROJECT_KEY
 	).strip()
@@ -152,6 +156,7 @@ def configuration(
 		os.environ.get("QUACK_SONAR_BRANCH")
 		or os.environ.get("SONARQUBE_BRANCH")
 		or os.environ.get("SONAR_BRANCH")
+		or local_branch
 		or properties.get("sonar.branch.name"),
 		"branch",
 		invalid,
@@ -310,7 +315,7 @@ def scan(
 	if scanner is None:
 		return _result("skipped", "scanner not found", started)
 
-	token = _token()
+	token = token_for(settings.host_url, root)
 	if not token:
 		return _result("skipped", "Sonar token is not set", started)
 
@@ -509,7 +514,7 @@ def scan(
 		)
 	return _result(
 		"failed",
-		_scanner_failure_reason(exit_code, scanner_output),
+		_scanner_failure_reason(exit_code, scanner_output, token),
 		started,
 		dashboard,
 		project_key=project_key,
@@ -517,7 +522,7 @@ def scan(
 	)
 
 
-def _scanner_failure_reason(exit_code: int, output: str) -> str:
+def _scanner_failure_reason(exit_code: int, output: str, token: str = "") -> str:
 	"""Return a bounded scanner error without leaking credentials."""
 	detail = ""
 	for line in reversed((output or "").splitlines()):
@@ -526,9 +531,8 @@ def _scanner_failure_reason(exit_code: int, output: str) -> str:
 			break
 	if not detail:
 		detail = "scanner returned no diagnostic output"
-	for secret in (_token(),):
-		if secret:
-			detail = detail.replace(secret, "<redacted>")
+	if token:
+		detail = detail.replace(token, "<redacted>")
 	return f"scanner exited with code {exit_code}: {detail[:240]}"
 
 
@@ -540,12 +544,16 @@ def _disabled() -> bool:
 	return os.environ.get("QUACK_SONAR", "auto").strip().lower() in _DISABLED_VALUES
 
 
-def _host_url(properties: dict[str, str] | None = None) -> str | None:
+def _host_url(
+	properties: dict[str, str] | None = None,
+	local_value: str = "",
+) -> str | None:
 	"""Resolve and validate the configured SonarQube HTTP endpoint."""
 	raw = (
 		os.environ.get("QUACK_SONAR_HOST_URL")
 		or os.environ.get("SONAR_HOST_URL")
 		or os.environ.get("SONARQUBE_URL")
+		or local_value
 		or (properties or {}).get("sonar.host.url")
 		or DEFAULT_HOST_URL
 	).strip()
@@ -905,12 +913,26 @@ def _open_sonar(request: Request, *, timeout: float):
 		return urlopen(request, timeout=timeout)
 
 
-def _token() -> str:
+def environment_token() -> str:
+	"""Return the explicit process token without consulting persistent storage."""
 	return (
 		os.environ.get("SONAR_TOKEN", "").strip()
 		or os.environ.get("SQ_TOKEN", "").strip()
 		or os.environ.get("SONARQUBE_TOKEN", "").strip()
 	)
+
+
+def token_for(
+	host_url: str = DEFAULT_HOST_URL,
+	root: str | Path | None = None,
+) -> str:
+	token = environment_token()
+	if token:
+		return token
+	username = gitio.config_get("quack.sonar.credentialUsername", root)
+	if not username:
+		return ""
+	return gitio.credential_password(host_url, username, root)
 
 
 def _project_properties(root: Path) -> dict[str, str]:

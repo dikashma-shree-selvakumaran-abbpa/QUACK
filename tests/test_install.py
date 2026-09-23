@@ -9,6 +9,7 @@ install degrading gracefully if it fails.
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 
 import yaml
 from click.testing import CliRunner
@@ -83,6 +84,51 @@ def test_install_installs_both_hook_types(monkeypatch, tmp_path):
 	assert result.exit_code == 0
 	assert ["pre-commit", "install"] in calls
 	assert ["pre-commit", "install", "--hook-type", "pre-push"] in calls
+
+
+def test_install_saves_sonar_settings_and_token_for_gui_clients(
+	monkeypatch, tmp_path
+):
+	monkeypatch.setenv("QUACK_SONAR_PROJECT_KEY", "demo")
+	monkeypatch.setenv("SQ_TOKEN", "secret-token")
+	monkeypatch.setattr(
+		cli.sonar,
+		"configuration",
+		lambda root: SimpleNamespace(
+			valid=True,
+			host_url="https://sonar.example",
+			project_key="demo",
+			branch="stale-shell-branch",
+		),
+	)
+	monkeypatch.setattr(cli.gitio, "current_branch", lambda root: "feature/gui")
+	monkeypatch.setattr(cli.gitio, "config_get", lambda *args: "")
+	settings: list[tuple[str, str, bool]] = []
+	monkeypatch.setattr(
+		cli.gitio,
+		"config_set",
+		lambda key, value, root, worktree=False: settings.append(
+			(key, value, worktree)
+		)
+		or True,
+	)
+	credentials: list[tuple[str, str, str]] = []
+	monkeypatch.setattr(
+		cli.gitio,
+		"credential_approve",
+		lambda url, username, password, root: credentials.append(
+			(url, username, password)
+		)
+		or True,
+	)
+
+	cli._configure_sonar_for_git_clients(tmp_path)
+
+	assert ("extensions.worktreeConfig", "true", False) in settings
+	assert ("quack.sonar.projectKey", "demo", True) in settings
+	assert ("quack.sonar.branch", "feature/gui", True) in settings
+	assert ("quack.sonar.credentialUsername", "quack", True) in settings
+	assert credentials == [("https://sonar.example", "quack", "secret-token")]
 
 
 def test_pre_push_install_failure_degrades_gracefully(monkeypatch, tmp_path):

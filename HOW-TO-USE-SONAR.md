@@ -492,6 +492,15 @@ SonarQube CLI: BLOCKED - <n> violation(s) detected
 BLOCKED - fix and re-stage
 ```
 
+VS Code and Visual Studio do not inherit environment variables added in a
+PowerShell window after the IDE was started. Run `quack init --local` once
+from a terminal where the Sonar project, branch, and token are configured.
+Quack saves the non-secret settings in worktree-local Git config and stores
+the token through Git Credential Manager. The hook can then retrieve the same
+configuration non-interactively from terminal, VS Code, and Visual Studio
+without committing or printing the token. Each validation worktree keeps its
+own branch setting.
+
 The command exits with code `1`. A normal `git commit` invokes the same hook
 and is stopped before the commit is created:
 
