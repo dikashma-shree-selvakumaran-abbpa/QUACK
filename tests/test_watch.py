@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from click.testing import CliRunner
 
@@ -101,3 +102,40 @@ def test_watch_debug_flag_is_forwarded_and_scoped(monkeypatch) -> None:
 	assert result.exit_code == 0
 	assert seen == {"root": "/repo", "model": None, "debug": True}
 	assert "QUACK_SONAR_DEBUG" not in os.environ
+
+
+def test_watch_uses_scanner_correlated_direct_sonar_api(monkeypatch) -> None:
+	delta = _delta()
+	captured: dict[str, object] = {}
+	settings = SimpleNamespace(
+		project_key="demo",
+		host_url="https://sonar.example",
+		branch="feature",
+	)
+	scan_result = SimpleNamespace(
+		status="passed",
+		analysis_id="analysis-1",
+	)
+	cli_result = SimpleNamespace(
+		status="passed",
+		reason="no changed-file violations",
+		duration_s=0.1,
+		violation_count=0,
+		blocks_commit=False,
+	)
+	monkeypatch.setattr(watch.gitio, "working_delta", lambda root=None: delta)
+	monkeypatch.setattr(watch.sonar, "configuration", lambda *args, **kwargs: settings)
+	monkeypatch.setattr(watch.sonar, "scan", lambda *args, **kwargs: scan_result)
+
+	def direct_run(current, root, **kwargs):
+		captured.update(kwargs)
+		return cli_result
+
+	monkeypatch.setattr(watch.sonar_cli, "run", direct_run)
+	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: None)
+
+	result = watch.review_once("/repo")
+
+	assert result.sonar_cli is cli_result
+	assert captured["host_url"] == "https://sonar.example"
+	assert captured["expected_analysis_id"] == "analysis-1"

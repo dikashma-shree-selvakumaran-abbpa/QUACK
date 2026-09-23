@@ -142,9 +142,9 @@ def test_scan_exports_index_and_runs_bounded_scanner(
 		for property in captured["properties"]
 	)
 	debug = capsys.readouterr().err
-	assert "[debug] SonarQube scanner request" in debug
-	assert "[debug] SonarQube scanner response" in debug
-	assert "[debug] SonarQube analysis result" in debug
+	assert "[debug] SonarQube CLI input" in debug
+	assert "[debug] SonarQube CLI output" in debug
+	assert "[debug] SonarQube CLI analysis output" in debug
 	assert "-Dsonar.projectKey=quack-local" in debug
 	assert "local-token" not in debug
 

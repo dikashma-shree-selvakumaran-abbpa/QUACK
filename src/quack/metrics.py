@@ -44,9 +44,9 @@ _ALLOWED_KEYS = frozenset(
 		"sonar_status",
 		"sonar_duration_ms",
 		"sonar_failure",
-		"sonar_mcp_status",
-		"sonar_mcp_duration_ms",
-		"sonar_mcp_failure",
+		"sonar_cli_status",
+		"sonar_cli_duration_ms",
+		"sonar_cli_failure",
 		"failure",
 	}
 )
@@ -61,7 +61,7 @@ _NUMERIC_KEYS = frozenset(
 		"untested_sources",
 		"exit",
 		"sonar_duration_ms",
-		"sonar_mcp_duration_ms",
+		"sonar_cli_duration_ms",
 	}
 )
 _FAILURE_KEYS = frozenset(
@@ -69,12 +69,12 @@ _FAILURE_KEYS = frozenset(
 		"tier2_failure",
 		"agent_failure",
 		"sonar_failure",
-		"sonar_mcp_failure",
+		"sonar_cli_failure",
 		"failure",
 	}
 )
 _RISKS = frozenset({"low", "medium", "high"})
-_SONAR_STATUSES = frozenset({"passed", "pending", "skipped", "failed"})
+_SONAR_STATUSES = frozenset({"passed", "partial", "pending", "skipped", "failed"})
 _PATH_RE = re.compile(
 	r"(?:\b[A-Za-z]:[\\/][^\s]*|\\\\[^\s\\]+\\[^\s\\]+(?:\\[^\s]*)?|(?<![\w:/])\/[^\s]+)"
 )
@@ -129,7 +129,7 @@ def _sanitize_event(event: dict) -> dict[str, Any]:
 			if value in _SONAR_STATUSES:
 				sanitized[key] = value
 			continue
-		if key == "sonar_mcp_status":
+		if key == "sonar_cli_status":
 			if value in _SONAR_STATUSES:
 				sanitized[key] = value
 			continue

@@ -44,9 +44,9 @@ A healthy result includes:
 ## Daily use
 
 - `git commit` runs deterministic checks automatically. When configured, it
-  scans the exact staged snapshot and queries the read-only SonarQube MCP
-  report; a confirmed current issue or hotspot on a changed component blocks.
-  Missing or stale Sonar infrastructure fails open.
+  scans the exact staged snapshot and queries SonarQube's Web API directly;
+  a confirmed current issue or hotspot on a changed component blocks. Missing
+  or stale Sonar infrastructure fails open.
 - `quack watch` is a foreground process you keep running while you work. It
   scans the combined staged, unstaged, and non-ignored new-file delta with
   SonarQube before optionally reviewing it with AI, refreshes the report after
@@ -95,53 +95,30 @@ SonarQube failures and unavailable infrastructure are fail-open. Use
 `QUACK_SONAR=off` to disable it or `QUACK_SONAR_TIMEOUT_S` to set a bounded
 timeout (maximum 300 seconds; the default is 180 seconds).
 
-## SonarQube MCP server
+## Deterministic Sonar CLI integration
 
-For the optional SonarQube MCP snapshot and pre-push investigation tools,
-Podman and a SonarQube token are required. The repository includes the client
-configuration in `.vscode\mcp.json`; set the token in the shell rather than
-editing that file:
-
-```powershell
-$env:SQ_TOKEN = "<TOKEN>"
-$env:QUACK_PROVIDER = "github_models"
-quack agent
-```
-
-The adapter in `src\quack\mcp\sonarqube.py` starts
-`mcp/sonarqube` over stdio, filters tools explicitly marked as write-capable,
-and bounds each request. It defaults to `https://codescan.abb.com` without an
-IDE proxy. `quack watch` and the staged `quack check` hook use this adapter to
-collect a bounded snapshot and refresh
-`docs\SONARQUBE_REPORT.md`. Issue and hotspot counts are filtered to changed
-components, and branch/project values are forwarded when supported by the
-advertised MCP schema.
-`SONARQUBE_TOKEN` can be used instead of `SQ_TOKEN`. Use a SonarQube user
-token. If the project workspace is outside the repository being reviewed,
-configure it explicitly so Podman can mount it read-only:
-
-The MCP endpoint is independent from the local scanner endpoint and does not
-use an IDE proxy by default. Set `SONARQUBE_IDE_PORT` explicitly only when a
-running SonarLint IDE proxy should be used. Set
-`QUACK_SONAR_MCP_URL` for an explicit MCP server; otherwise `SONARQUBE_URL`
-or the adapter default (`https://codescan.abb.com`) is used. A local scanner
-default (`http://127.0.0.1:9002`) is never forwarded to MCP accidentally.
-The staged check and watch also bind the MCP workspace to the current
-repository root, preventing an inherited external-workspace setting from
-cross-contaminating separate worktrees.
+`quack watch` and `quack check` run `sonar-scanner`, wait for the exact task,
+and query SonarQube's Web API directly. They do not use MCP or Podman. The
+latest API analysis must match the scanner analysis before changed-file issues
+or review-required hotspots can block. Watch prints every returned violation
+and writes `docs\SONARQUBE_REPORT.md`; pre-commit keeps its result in memory.
+Use `quack watch --once --debug` to print redacted scanner CLI inputs/outputs
+and complete bounded direct API request/response payloads.
 
 An unchanged staged index reuses the local scanner result, but `quack check`
-still re-queries MCP for current findings. A cached finding count is never
-trusted by itself; if MCP cannot return the matching analysis identifier, the
-snapshot is shown as unverified and remains fail-open.
+still re-queries the direct API. A cached finding count is never trusted by
+itself; a mismatched analysis remains unverified and fail-open.
+
+## Standalone SonarQube MCP command
+
+`quack sonar-mcp` and optional agent/skill workflows still use the read-only
+Podman MCP adapter. This explicit command is independent of automatic Watch
+and pre-commit Sonar checks.
 
 ```powershell
 $env:QUACK_SONAR_MCP_PROJECT_PATH = "C:\Dev\Workspace\alarms\main\prestine\Operations.HMI.App.Alarms"
 $env:SONARQUBE_PROJECT_KEY = "Operations.HMI.App.Alarms"
 quack sonar-mcp
-quack watch --once
-git add .
-git commit
 ```
 
 Equivalent one-shot options are
@@ -152,12 +129,9 @@ inspection, place the public `.crt` or `.pem` CA certificate under
 `/usr/local/share/ca-certificates`. Use `--ca-dir <folder>` or
 `QUACK_SONAR_MCP_CA_DIR` to select another directory. Set
 `QUACK_SONAR_MCP=off` to disable the optional MCP tools. This MCP path is
-independent of the local scanner used by `quack check`; the staged local
-scanner remains an additional pre-commit check. The report is updated only
-after a connected snapshot, and its generated file is ignored by
-`quack watch` change detection so it cannot trigger an endless review loop.
-The optional `quack agent` investigation can use the same read-only MCP
-capability during pre-push analysis.
+independent of the scanner/API integration used by `quack watch` and
+`quack check`. The optional `quack agent` investigation can use the same
+read-only MCP capability during pre-push analysis.
 
 To enable any SonarQube MCP toolsets, repeat `--toolset` or provide a
 comma-separated value, or set the native `SONARQUBE_TOOLSETS` environment

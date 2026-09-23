@@ -161,8 +161,10 @@ $env:QUACK_TOOLS_DIR = "C:\Dev\Workspace\AI-Champs\QUACK\tools"
 An invalid explicit scanner path falls back to these discovered locations.
 
 The scanner must produce `.scannerwork\report-task.txt` and a completed
-server-side task before Quack records a fresh staged result. Start Podman and
-make sure the Sonar MCP image is available:
+server-side task before Quack records a fresh staged result. Watch and check
+then query the Sonar Web API directly; Podman and MCP are not used by these
+automatic checks. The standalone `quack sonar-mcp` command still requires
+Podman when you explicitly use it:
 
 ```powershell
 podman machine start
@@ -184,10 +186,10 @@ analysis is not supported, use the project's documented branch and run the
 worktrees one at a time; do not run competing analyses concurrently.
 When switching worktrees in one PowerShell session, set both branch variables
 again because `QUACK_SONAR_BRANCH` takes precedence over
-`SONARQUBE_BRANCH`. `quack watch` and `quack check` bind MCP to the current
-worktree, so an inherited `QUACK_SONAR_MCP_PROJECT_PATH` cannot make one
-worktree inspect another; `--project-path` remains available for the direct
-`quack sonar-mcp` command.
+`SONARQUBE_BRANCH`. `quack watch` and `quack check` scan the current worktree
+snapshot and query the configured Sonar host directly. `--project-path` and
+`QUACK_SONAR_MCP_PROJECT_PATH` apply only to the standalone `quack sonar-mcp`
+command.
 
 ## 4. Run Sonar with `quack watch`
 
@@ -195,11 +197,12 @@ worktree inspect another; `--project-path` remains available for the direct
 non-ignored new files. It exports that snapshot to a temporary directory and
 runs the local Sonar scanner before the optional AI review, so a new file is
 actually analyzed rather than compared with an older server-side result.
-After the bounded scanner task completes, watch queries MCP against the
-configured project/branch and correlates the returned analysis when the
-server provides an identifier, or by the branch's post-scan analysis timestamp
-when that identifier is not exposed. If the scan or branch inventory is
-unavailable, watch reports the result as unverified and will not treat an empty
+After the bounded scanner task completes, Watch queries the Sonar Web API
+against the configured project/branch and requires the latest analysis ID (or
+post-scan analysis timestamp) to match the scanner result. It then reads every
+open issue and review-required hotspot, filters them to changed files, and
+prints every returned violation. If the scan or API result is unavailable,
+Watch reports the result as unverified and will not treat an empty
 issue list as clean. The generated `docs\SONARQUBE_REPORT.md` is excluded from
 both the working snapshot and watch change detection.
 
@@ -230,10 +233,10 @@ For troubleshooting, add `--debug`:
 quack watch --once --debug
 ```
 
-Debug mode prints the scanner properties, MCP JSON-RPC requests, and complete
-bounded Sonar responses, including the selected analysis/task result. Tokens
-and known token-shaped values are redacted; normal Watch output does not print
-these payloads.
+Debug mode prints the exact scanner CLI properties and bounded scanner output,
+followed by each direct Sonar API input and complete bounded JSON output,
+including the selected analysis/task result. Tokens and known token-shaped
+values are redacted; normal Watch output does not print these payloads.
 
 The separate `AI review (advisory): ... risk: ...` line is a model-dependent
 Tier 2 signal, not a Sonar finding or a commit decision. A `medium` or `high`
@@ -254,7 +257,7 @@ quack watch --once
 Expected behavior for the deliberate fixture is a Sonar message similar to:
 
 ```text
-SonarQube MCP: BLOCKED - <n> violation(s) detected
+SonarQube CLI: BLOCKED - <n> violation(s) detected
 [HOTSPOT] <rule> [<severity>] <component>:<line> - <message>
 review unavailable (no model configured)
 ```
@@ -397,8 +400,8 @@ block a commit by themselves.
 
 Pre-commit analyzes only the exact Git index. Unstaged source and unstaged
 Sonar configuration cannot contaminate the staged scanner snapshot. A
-matching staged scanner result is reused locally, but MCP findings are
-re-queried and must correlate to the recorded analysis before they can block.
+matching staged scanner result is reused locally, but direct Sonar API findings
+are re-queried and must correlate to the recorded analysis before they can block.
 
 Verify the clean worktree:
 
@@ -427,7 +430,7 @@ Expected result for a current correlated Sonar finding:
 
 ```text
 quack.................................................................Failed
-SonarQube MCP: BLOCKED - <n> violation(s) detected
+SonarQube CLI: BLOCKED - <n> violation(s) detected
 BLOCKED - fix and re-stage
 ```
 
@@ -454,9 +457,9 @@ after a push.
 ## 8. Understand fail-open and backend behavior
 
 Quack blocks only a confirmed current Sonar issue or security hotspot in the
-exact staged snapshot. It fails open when credentials, Podman, the scanner,
-the server, MCP tools, task completion, or analysis correlation are
-unavailable. An unavailable result is not treated as a clean result.
+exact staged snapshot. It fails open when credentials, the scanner, the
+server/API, task completion, or analysis correlation are unavailable. An
+unavailable result is not treated as a clean result.
 
 The generic `sonar-scanner` path is valid for the Alarms FrontEnd. BackEnd-only
 and mixed FrontEnd/BackEnd staged changes are explicitly unverified because
@@ -482,3 +485,4 @@ Finally, verify that the original dirty checkout was not modified:
 ```powershell
 git -C "C:\Dev\Workspace\alarms\main\prestine\Operations.HMI.App.Alarms" status --short
 ```
+

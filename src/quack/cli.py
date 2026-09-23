@@ -37,7 +37,7 @@ from . import (
 	render,
 	reviewcache,
 	sonar,
-	sonar_report,
+	sonar_cli,
 	sonar_state,
 	templates,
 	testmap,
@@ -118,11 +118,11 @@ def check() -> None:
 
 	root = gitio.repo_root() or os.getcwd()
 
-	sonar_result, sonar_mcp_result, _sonar_cache_hit = _run_staged_sonar_check(
+	sonar_result, sonar_cli_result, _sonar_cache_hit = _run_staged_sonar_check(
 		delta, root
 	)
 	blocked = blocked or bool(
-		getattr(sonar_mcp_result, "blocks_commit", False)
+		getattr(sonar_cli_result, "blocks_commit", False)
 	)
 
 	# Test guidance (only worth computing on an unblocked commit).
@@ -158,7 +158,7 @@ def check() -> None:
 		plan=plan,
 		ai=ai,
 		sonar=sonar_result,
-		sonar_mcp=sonar_mcp_result,
+		sonar_cli=sonar_cli_result,
 		model=cached_model,
 		ai_note=cache_note,
 		blocked=blocked,
@@ -172,7 +172,7 @@ def check() -> None:
 		cache_hit=cached_review is not None,
 		risk=cached_review.risk if cached_review is not None else None,
 		sonar_result=sonar_result,
-		sonar_mcp_result=sonar_mcp_result,
+		sonar_cli_result=sonar_cli_result,
 		blocked=blocked,
 		exit_code=1 if blocked else 0,
 	)
@@ -182,7 +182,6 @@ def check() -> None:
 def _run_staged_sonar_check(delta, root):
 	"""Check the exact index and revalidate any locally cached server result."""
 	settings = sonar.configuration(root, staged=True)
-	mcp_server_url = _mcp_server_url()
 	identity = sonar.effective_identity(root, settings=settings)
 	digest = sonar_state.snapshot_digest(
 		delta,
@@ -215,13 +214,12 @@ def _run_staged_sonar_check(delta, root):
 			analysis_id=cached.analysis_id,
 			confirmed=True,
 		)
-		report = sonar_report.run(
+		report = sonar_cli.run(
 			delta,
 			root,
 			source="pre-commit",
-			project_path=root,
 			project_key=settings.project_key,
-			server_url=mcp_server_url,
+			host_url=settings.host_url,
 			branch=settings.branch,
 			expected_analysis_id=cached.analysis_id,
 		)
@@ -234,7 +232,10 @@ def _run_staged_sonar_check(delta, root):
 			and getattr(report, "analysis_id", None) == cached.analysis_id
 		)
 		report = _mark_sonar_cache_result(report, correlated)
-		return scan_result, report, True
+		if correlated:
+			return scan_result, report, True
+		# Watch or another branch upload may have replaced the latest analysis.
+		# Re-scan the exact index instead of trusting or failing open on stale data.
 
 	scan_result = sonar.scan(delta, root)
 	scan_uploaded = bool(getattr(scan_result, "uploaded", False))
@@ -250,13 +251,12 @@ def _run_staged_sonar_check(delta, root):
 		analysis_floor = (
 			time.time() - max(float(getattr(scan_result, "duration_s", 0.0)), 0.0) - 30
 		)
-	report = sonar_report.run(
+	report = sonar_cli.run(
 		delta,
 		root,
 		source="pre-commit",
-		project_path=root,
 		project_key=settings.project_key,
-		server_url=mcp_server_url,
+		host_url=settings.host_url,
 		branch=settings.branch,
 		minimum_analysis_at=analysis_floor,
 	)
@@ -287,15 +287,6 @@ def _run_staged_sonar_check(delta, root):
 	return scan_result, report, False
 
 
-def _mcp_server_url() -> str | None:
-	"""Resolve only explicit MCP settings, never scanner project settings."""
-	explicit = (
-		os.environ.get("QUACK_SONAR_MCP_URL", "").strip()
-		or os.environ.get("SONARQUBE_URL", "").strip()
-	)
-	return explicit or None
-
-
 def _mark_sonar_cache_result(result, correlated: bool):
 	"""Never let an old cached violation count become a commit blocker."""
 	if result is None:
@@ -306,7 +297,7 @@ def _mark_sonar_cache_result(result, correlated: bool):
 			updated = replace(updated, correlated=correlated)
 		if not correlated and getattr(updated, "reason", ""):
 			reason = (
-				f"{updated.reason}; current MCP result is unverified for the "
+				f"{updated.reason}; current Sonar API result is unverified for the "
 				"cached staged analysis"
 			)
 			updated = replace(updated, reason=reason[:600])
@@ -326,7 +317,7 @@ def _mark_sonar_fresh(result, fresh: bool):
 		if "unverified" not in reason.casefold():
 			reason = (
 				f"{reason}; current local Sonar scan is unavailable; "
-				"MCP result is unverified"
+				"Sonar API result is unverified"
 			)
 		return replace(result, fresh=False, reason=reason[:600])
 	return result
@@ -342,7 +333,7 @@ def _log_check_metrics(
 	cache_hit: bool = False,
 	risk: str | None = None,
 	sonar_result=None,
-	sonar_mcp_result=None,
+	sonar_cli_result=None,
 	exit_code: int,
 ) -> None:
 	try:
@@ -370,17 +361,17 @@ def _log_check_metrics(
 			)
 			if sonar_result.status != "passed":
 				event["sonar_failure"] = sonar_result.reason
-		if sonar_mcp_result is not None:
+		if sonar_cli_result is not None:
 			event.update(
 				{
-					"sonar_mcp_status": sonar_mcp_result.status,
-					"sonar_mcp_duration_ms": int(
-						sonar_mcp_result.duration_s * 1000
+					"sonar_cli_status": sonar_cli_result.status,
+					"sonar_cli_duration_ms": int(
+						sonar_cli_result.duration_s * 1000
 					),
 				}
 			)
-			if sonar_mcp_result.status != "passed":
-				event["sonar_mcp_failure"] = sonar_mcp_result.reason
+			if sonar_cli_result.status != "passed":
+				event["sonar_cli_failure"] = sonar_cli_result.reason
 		metrics_mod.log(event)
 	except Exception:
 		pass
@@ -426,7 +417,7 @@ def _format_age(timestamp: float) -> str:
 @click.option(
 	"--debug",
 	is_flag=True,
-	help="Print redacted scanner/MCP requests and complete bounded responses.",
+	help="Print redacted Sonar CLI/API inputs and complete bounded outputs.",
 )
 def watch(quiet_period: float, once: bool, debug: bool) -> None:
 	"""Review changes in the background and cache the result for commits."""
@@ -451,8 +442,8 @@ def watch(quiet_period: float, once: bool, debug: bool) -> None:
 def _render_watch_result(result: watch_mod.WatchResult) -> None:
 	if result.sonar_scan is not None:
 		render.sonar(result.sonar_scan)
-	if result.sonar_report is not None:
-		render.sonar_mcp(result.sonar_report)
+	if result.sonar_cli is not None:
+		render.sonar_cli(result.sonar_cli)
 	if result.risk is not None:
 		render.metadata(
 			f"AI review (advisory): reviewed {result.files} file(s) "

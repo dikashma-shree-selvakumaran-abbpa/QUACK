@@ -54,7 +54,7 @@ No apparent replacement code restoring delegates elsewhere in this path
 
 | Surface | When it runs | What it does | Network |
 |---|---|---|---|
-| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, test guidance, and the exact staged SonarQube snapshot. | Tier 1 is offline; a confirmed current SonarQube MCP result can block on changed-file issues or hotspots. Unavailable Sonar infrastructure fails open. |
+| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, test guidance, and the exact staged SonarQube snapshot. | Tier 1 is offline; a scanner-correlated direct Sonar API result can block on changed-file issues or hotspots. Unavailable Sonar infrastructure fails open. |
 | `quack watch` | Alongside development | Scans the complete working delta (staged, unstaged, and non-ignored new files) with SonarQube, then optionally reviews it with AI and caches that AI verdict. | SonarQube and AI are used only when configured; the deterministic Sonar check does not require an LLM. |
 | `quack agent` | Pre-push | Reviews unpushed commits. Its optional investigative loop can run tests and propose fixes with `QUACK_PROVIDER=github_models`. | Yes, when a provider is available. |
 
@@ -96,30 +96,25 @@ Set `QUACK_SONAR=off` (or `QUACK_DISABLE_SONAR=1`) to disable the scan; the
 timeout is bounded by `QUACK_SONAR_TIMEOUT_S` and capped at 300 seconds. The default is 180 seconds
 because the first FrontEnd scan may download language analyzers and runtimes.
 
-### SonarQube MCP server
+### Deterministic scanner and API result
 
-The repository also includes the generated MCP client configuration at
-`.vscode\mcp.json` and the Python adapter at
-`src\quack\mcp\sonarqube.py`. When Podman and a SonarQube token are available,
-both `quack watch` and the staged `quack check` hook collect a bounded,
-read-only snapshot. `quack watch` scans the current working snapshot before
-querying MCP, then writes the snapshot to the living report at
-`docs\SONARQUBE_REPORT.md`; the pre-commit hook renders its result directly
-without modifying the target repository. Watch report updates are atomic and
-the generated file is excluded from watch change detection.
+`quack watch` and `quack check` do not use MCP. They run `sonar-scanner`, wait
+for its exact server task, then query SonarQube's Web API directly for the
+latest analysis, open issues, review-required hotspots, and component measures.
+The analysis ID must match the scanner result before findings can block. Issue
+and hotspot results are filtered to changed files, and every returned violation
+is printed with its rule, severity, component, line, and message. Watch writes
+`docs\SONARQUBE_REPORT.md`; pre-commit keeps the result in memory.
 
-Each snapshot calls the requested duplication, security-hotspot, open-issue,
-and component-measure operations. Issue and hotspot results are filtered to
-the changed Sonar components, and component arguments are sent when the MCP
-schema advertises them. Metric discovery is retained for diagnostics while
-component measures request a stable supported subset, including
-`cognitive_complexity`, `ncloc`, and `reliability_rating`. A matching local
-scanner result still re-runs the MCP finding query; its old violation count is
-never trusted. If the server does not return a matching analysis
-identifier, that cached MCP result is explicitly unverified and fails open.
-Only a current correlated snapshot with open issues or security hotspots blocks
-`quack check`; missing credentials, Podman, unavailable tools, timeouts, stale
-reports, and malformed responses do not block the commit.
+`quack watch --once --debug` prints redacted scanner CLI inputs/outputs and each
+direct API request/JSON response. Missing credentials, scanner/API failures,
+timeouts, stale analyses, and malformed responses remain fail-open.
+
+### Standalone SonarQube MCP command
+
+The generated MCP client configuration and `src\quack\mcp\sonarqube.py` remain
+available only for explicit `quack sonar-mcp` and optional agent/skill use.
+Automatic Watch and pre-commit Sonar checks do not start Podman or call MCP.
 
 ```powershell
 $env:SQ_TOKEN = "<TOKEN>"
@@ -165,12 +160,10 @@ quack sonar-mcp --toolset sources,measures --tool get_component_measures `
 Tool names may be the displayed `sonarqube_*` name or the native MCP name.
 `--json` prints the complete successful MCP response for scripting. Quack
 keeps the container in read-only mode, so write-capable tools are not exposed.
-The MCP snapshot is used by watch and pre-commit; the staged local scanner
-remains an additional pre-commit check. Watch reviews staged plus unstaged
-tracked changes, while pre-commit uses only the exact index. The optional
-`quack agent`
-investigation can use the same read-only MCP capability during pre-push
-analysis.
+The MCP command is independent of automatic Watch and pre-commit scanning.
+Watch reviews staged plus unstaged tracked changes, while pre-commit uses only
+the exact index. The optional `quack agent` investigation can still use the
+same read-only MCP capability during pre-push analysis.
 
 ## CLI surface
 

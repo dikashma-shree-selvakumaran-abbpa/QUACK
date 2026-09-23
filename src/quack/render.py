@@ -74,9 +74,6 @@ _SONAR_PATH_SAFE_TOKEN_RE = re.compile(
 	r"(?:ghp_|github_pat_|gho_|ghs_|ghu_|xox|AKIA)[A-Za-z0-9_-]+"
 	r"|(?<![\w./-])[A-Za-z0-9_+=-]{32,}(?![\w./-])"
 )
-_MAX_SONAR_FINDINGS = 10
-
-
 def _console(stderr: bool = False) -> Console:
 	"""Build a Console honoring the current stdout, NO_COLOR and TTY state.
 
@@ -202,7 +199,7 @@ def report(
 	plan,
 	ai,
 	sonar=None,
-	sonar_mcp=None,
+	sonar_cli=None,
 	model: str = "",
 	ai_note: str | None = None,
 	blocked: bool = False,
@@ -218,7 +215,7 @@ def report(
 	  ``.dotnet_hint``) or ``None``.
 	* ``sonar``     -- optional SonarQube result (``.status``, ``.reason``,
 	  ``.dashboard_url``).
-	* ``sonar_mcp`` -- optional SonarQube MCP snapshot result (``.status``,
+	* ``sonar_cli`` -- deterministic scanner/API result (``.status``,
 	  ``.reason``, ``.report_path``).
 	* ``ai``        -- ``None`` (no AI section), ``("skipped", reason)``, or a
 	  review result (``.risk``, ``.one_liner``, ``.reasons``,
@@ -232,7 +229,7 @@ def report(
 		_quack_alarm(findings, blocked),
 		_guidance_group(plan),
 		_sonar_group(sonar),
-		_sonar_mcp_group(sonar_mcp),
+		_sonar_cli_group(sonar_cli),
 		_ai_group(ai, model, ai_note),
 	):
 		if section is not None:
@@ -337,19 +334,19 @@ def _sonar_group(result) -> RenderableType | None:
 	return Text(f"SonarQube: advisory failure ({reason})", style=_WARN)
 
 
-def _sonar_mcp_group(result) -> RenderableType | None:
-	"""Render the MCP snapshot outcome and its living report location."""
+def _sonar_cli_group(result) -> RenderableType | None:
+	"""Render the deterministic scanner/API result and report location."""
 	if result is None:
 		return None
 	status = str(getattr(result, "status", "failed"))
 	reason = str(getattr(result, "reason", "") or "unavailable")
 	report = getattr(result, "report_path", None)
-	message = f"SonarQube MCP: {reason}"
+	message = f"SonarQube CLI: {reason}"
 	if report:
 		message += f" - report: {report}"
 	if getattr(result, "blocks_commit", False):
 		status_line = Text(
-			f"SonarQube MCP: BLOCKED - {getattr(result, 'violation_count', 0)} "
+			f"SonarQube CLI: BLOCKED - {getattr(result, 'violation_count', 0)} "
 			"violation(s) detected"
 			+ (f" - report: {report}" if report else ""),
 			style=_BLOCK,
@@ -381,7 +378,7 @@ def _sonar_mcp_group(result) -> RenderableType | None:
 
 
 def _sonar_finding_details(result) -> list[RenderableType]:
-	"""Render bounded, redacted issue and hotspot details from the MCP result."""
+	"""Render every redacted issue and hotspot returned for changed files."""
 	lines: list[RenderableType] = []
 	for outcome in getattr(result, "outcomes", ()) or ():
 		if getattr(outcome, "status", None) != "passed":
@@ -389,9 +386,10 @@ def _sonar_finding_details(result) -> list[RenderableType]:
 		data = getattr(outcome, "data", None)
 		if not isinstance(data, dict):
 			continue
-		is_hotspot = getattr(outcome, "name", "") == (
-			"sonarqube_search_security_hotspot"
-		)
+		is_hotspot = getattr(outcome, "name", "") in {
+			"hotspots",
+			"sonarqube_search_security_hotspot",
+		}
 		item_key = "hotspots" if is_hotspot else "issues"
 		items = data.get(item_key)
 		if not isinstance(items, list):
@@ -426,17 +424,6 @@ def _sonar_finding_details(result) -> list[RenderableType]:
 					overflow="fold",
 				)
 			)
-			if len(lines) >= _MAX_SONAR_FINDINGS:
-				return lines
-	if lines:
-		total = getattr(result, "violation_count", 0)
-		if isinstance(total, int) and total > len(lines):
-			lines.append(
-				Text(
-					f"  ...and {total - len(lines)} more violation(s)",
-					style=_META,
-				)
-			)
 	return lines
 
 
@@ -467,9 +454,9 @@ def _sonar_display(value, default: str, *, path: bool = False) -> str:
 	return text[:240].rstrip() or default
 
 
-def sonar_mcp(result) -> None:
-	"""Render a standalone SonarQube MCP snapshot outcome."""
-	group = _sonar_mcp_group(result)
+def sonar_cli(result) -> None:
+	"""Render a standalone deterministic SonarQube CLI/API outcome."""
+	group = _sonar_cli_group(result)
 	if group is not None:
 		_console().print(group)
 

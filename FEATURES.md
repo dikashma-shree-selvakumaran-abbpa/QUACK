@@ -31,8 +31,8 @@ developer works or at pre-push via `quack agent`.
 The staged Sonar identity is built from the index-resolved project properties,
 validated environment overrides, scanner fingerprint, and all effective
 scanner settings. An unchanged local scanner result is reused only as an
-analysis artifact: `quack check` re-queries MCP and blocks only when the
-current finding response is correlated to that analysis. Missing correlation
+analysis artifact: `quack check` re-queries SonarQube's Web API directly and
+blocks only when the current finding response is correlated to that analysis. Missing correlation
 is explicitly unverified and fail-open. Generic `sonar-scanner` does not claim
 coverage for C#; BackEnd-only and mixed FrontEnd/BackEnd staged changes remain
 unverified.
@@ -44,7 +44,7 @@ unverified.
 **Two hook surfaces.** quack installs two pre-commit-framework hooks:
 
 - **pre-commit (`quack`)** — Tier 1, exact staged SonarQube scanning, and
-  read-only SonarQube MCP checks. Sonar is fail-open when unavailable.
+  direct scanner-correlated Sonar API checks. Sonar is fail-open when unavailable.
 - **pre-push (`quack-agent`)** — AI review, plus the investigative agent where
   the provider supports tool calling.
 

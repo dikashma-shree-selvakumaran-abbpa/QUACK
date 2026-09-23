@@ -29,12 +29,12 @@ from . import (
 	render,
 	reviewcache,
 	sonar,
+	sonar_cli,
 	sonar_debug,
-	sonar_report,
 	testmap,
 	tier2,
 )
-from .sonar_report import SonarQubeReportResult
+from .sonar_cli import SonarCliResult
 from .tier1 import Tier1Config
 from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
@@ -50,7 +50,7 @@ class WatchResult:
 	risk: str | None = None
 	reason: str | None = None
 	sonar_scan: sonar.ScanResult | None = None
-	sonar_report: SonarQubeReportResult | None = None
+	sonar_cli: SonarCliResult | None = None
 
 
 def review_once(
@@ -72,16 +72,16 @@ def review_once(
 			"risk": result.risk,
 			"failure": result.reason,
 		}
-		if result.sonar_report is not None:
+		if result.sonar_cli is not None:
 			event.update(
 				{
-					"sonar_mcp_status": result.sonar_report.status,
-					"sonar_mcp_duration_ms": int(
-						result.sonar_report.duration_s * 1000
+					"sonar_cli_status": result.sonar_cli.status,
+					"sonar_cli_duration_ms": int(
+						result.sonar_cli.duration_s * 1000
 					),
-					"sonar_mcp_failure": (
-						result.sonar_report.reason
-						if result.sonar_report.status != "passed"
+					"sonar_cli_failure": (
+						result.sonar_cli.reason
+						if result.sonar_cli.status != "passed"
 						else None
 					),
 				}
@@ -109,7 +109,7 @@ def review_once(
 def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult:
 	root = Path(repo_root)
 	sonar_scan: sonar.ScanResult | None = None
-	sonar_result: SonarQubeReportResult | None = None
+	sonar_result: SonarCliResult | None = None
 	try:
 		# Watch must represent the working tree developers are looking at.
 		# working_delta() includes staged, unstaged, and new non-ignored edits;
@@ -128,12 +128,12 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 			config=sonar_settings,
 			snapshot_scope="working",
 		)
-		sonar_result = sonar_report.run(
+		sonar_result = sonar_cli.run(
 			delta,
 			root,
 			source="watch",
-			project_path=root,
 			project_key=sonar_settings.project_key,
+			host_url=sonar_settings.host_url,
 			branch=sonar_settings.branch,
 			fresh=bool(sonar_scan and sonar_scan.status == "passed"),
 			expected_analysis_id=(
@@ -159,7 +159,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 				files=len(delta.files),
 				reason="no model configured",
 				sonar_scan=sonar_scan,
-				sonar_report=sonar_result,
+				sonar_cli=sonar_result,
 			)
 		availability = llmio.availability_error()
 		if availability:
@@ -167,7 +167,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 				files=len(delta.files),
 				reason=availability,
 				sonar_scan=sonar_scan,
-				sonar_report=sonar_result,
+				sonar_cli=sonar_result,
 			)
 
 		with render.thinking("reviewing changes..."):
@@ -184,7 +184,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 				files=len(delta.files),
 				reason=reason or llmio.availability_error() or "AI analysis unavailable",
 				sonar_scan=sonar_scan,
-				sonar_report=sonar_result,
+				sonar_cli=sonar_result,
 			)
 
 		payload = asdict(review)
@@ -198,7 +198,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 			files=len(delta.files),
 			risk=review.risk,
 			sonar_scan=sonar_scan,
-			sonar_report=sonar_result,
+			sonar_cli=sonar_result,
 		)
 	except Exception as exc:
 		message = str(exc)[:160].replace("\n", " ")
@@ -210,7 +210,7 @@ def _review_once(repo_root: str | Path, model: str | None = None) -> WatchResult
 				else type(exc).__name__
 			),
 			sonar_scan=sonar_scan,
-			sonar_report=sonar_result,
+			sonar_cli=sonar_result,
 		)
 
 
@@ -250,7 +250,7 @@ def snapshot(repo_root: str | Path) -> dict[str, tuple[int, int]]:
 				path = Path(dirpath) / filename
 				try:
 					relative = path.relative_to(root).as_posix()
-					if sonar_report.is_report_file(relative):
+					if sonar_cli.is_report_file(relative):
 						continue
 					stat = path.stat()
 					state[relative] = (

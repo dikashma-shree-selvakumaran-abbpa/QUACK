@@ -270,7 +270,7 @@ def test_quack_alarm_absent_when_not_blocked(capsys) -> None:
 
 
 def test_partial_sonar_snapshot_with_confirmed_finding_blocks(capsys) -> None:
-	render.sonar_mcp(
+	render.sonar_cli(
 		SimpleNamespace(
 			status="partial",
 			reason="one finding endpoint unavailable",
@@ -279,7 +279,7 @@ def test_partial_sonar_snapshot_with_confirmed_finding_blocks(capsys) -> None:
 		)
 	)
 
-	assert "SonarQube MCP: BLOCKED - 1 violation(s) detected" in (
+	assert "SonarQube CLI: BLOCKED - 1 violation(s) detected" in (
 		capsys.readouterr().out
 	)
 
@@ -304,14 +304,14 @@ def test_sonar_status_is_rendered_as_advisory(capsys) -> None:
 	assert "dashboard?id=quack-local" in out
 
 
-def test_sonar_mcp_violations_are_rendered_as_blocking(capsys) -> None:
+def test_sonar_cli_violations_are_rendered_as_blocking(capsys) -> None:
 	render.report(
 		files=1,
 		added=1,
 		removed=0,
 		findings=[],
 		plan=None,
-		sonar_mcp=SimpleNamespace(
+		sonar_cli=SimpleNamespace(
 			status="passed",
 			reason="1 SonarQube violation(s) detected",
 			violation_count=1,
@@ -327,8 +327,8 @@ def test_sonar_mcp_violations_are_rendered_as_blocking(capsys) -> None:
 	assert "docs/SONARQUBE_REPORT.md" in out
 
 
-def test_sonar_mcp_prints_violation_details(capsys) -> None:
-	render.sonar_mcp(
+def test_sonar_cli_prints_violation_details(capsys) -> None:
+	render.sonar_cli(
 		SimpleNamespace(
 			status="passed",
 			reason="1 SonarQube violation(s) detected",
@@ -367,7 +367,7 @@ def test_sonar_mcp_prints_violation_details(capsys) -> None:
 	assert "dynamic injection/execution requires safety review" in out
 
 
-def test_stale_sonar_mcp_violations_are_not_rendered_as_blocking(
+def test_stale_sonar_cli_violations_are_not_rendered_as_blocking(
 	capsys,
 ) -> None:
 	render.report(
@@ -376,7 +376,7 @@ def test_stale_sonar_mcp_violations_are_not_rendered_as_blocking(
 		removed=0,
 		findings=[],
 		plan=None,
-		sonar_mcp=SimpleNamespace(
+		sonar_cli=SimpleNamespace(
 			status="passed",
 			reason="stale SonarQube violation(s) detected",
 			violation_count=1,
@@ -406,3 +406,4 @@ def test_install_banner_no_ansi_under_no_color(monkeypatch, capsys) -> None:
 	out = capsys.readouterr().out
 	assert ANSI not in out
 	assert "QUACK" in out
+
