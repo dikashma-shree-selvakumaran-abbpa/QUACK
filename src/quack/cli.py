@@ -5,6 +5,7 @@ Subcommands:
 	agent   agentic pre-push loop (stub)
 	model   model/config utilities (stub)
 	install wire quack into .pre-commit-config.yaml and run `pre-commit install`
+	init    install hooks and scaffold repo-scoped Sonar Copilot skills/agent
 	sonar-mcp connect to, inspect, and invoke read-only SonarQube MCP tools
 """
 
@@ -12,11 +13,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 from statistics import median
 
@@ -35,6 +38,8 @@ from . import (
 	reviewcache,
 	sonar,
 	sonar_report,
+	sonar_state,
+	templates,
 	testmap,
 	tier2,
 	watch as watch_mod,
@@ -113,10 +118,9 @@ def check() -> None:
 
 	root = gitio.repo_root() or os.getcwd()
 
-	# SonarQube analyzes a temporary export of the staged index. It is
-	# advisory and returns quickly when the local scanner/server is unavailable.
-	sonar_result = sonar.scan(delta, root)
-	sonar_mcp_result = sonar_report.run(delta, root, source="pre-commit")
+	sonar_result, sonar_mcp_result, _sonar_cache_hit = _run_staged_sonar_check(
+		delta, root
+	)
 	blocked = blocked or bool(
 		getattr(sonar_mcp_result, "blocks_commit", False)
 	)
@@ -173,6 +177,151 @@ def check() -> None:
 		exit_code=1 if blocked else 0,
 	)
 	sys.exit(1 if blocked else 0)
+
+
+def _run_staged_sonar_check(delta, root):
+	"""Check the exact index and revalidate any locally cached server result."""
+	settings = sonar.configuration(root, staged=True)
+	mcp_server_url = _mcp_server_url()
+	identity = sonar.effective_identity(root, settings=settings)
+	digest = sonar_state.snapshot_digest(
+		delta,
+		scope="staged",
+		repo_root=root,
+		project_key=settings.project_key,
+		host_url=settings.host_url,
+		branch=settings.branch,
+		config_identity=identity,
+	)
+	cached = sonar_state.read(
+		root,
+		digest,
+		scope="staged",
+		project_key=settings.project_key,
+		host_url=settings.host_url,
+		branch=settings.branch,
+	)
+	if cached is not None:
+		scan_result = sonar.ScanResult(
+			status="passed",
+			reason="reused completed staged analysis",
+			duration_s=0.0,
+			dashboard_url=(
+				f"{settings.host_url}/dashboard?id={settings.project_key}"
+			),
+			project_key=settings.project_key,
+			branch=settings.branch,
+			task_id=cached.task_id,
+			analysis_id=cached.analysis_id,
+			confirmed=True,
+		)
+		report = sonar_report.run(
+			delta,
+			root,
+			source="pre-commit",
+			project_path=root,
+			project_key=settings.project_key,
+			server_url=mcp_server_url,
+			branch=settings.branch,
+			expected_analysis_id=cached.analysis_id,
+		)
+		correlated = (
+			cached.analysis_id is not None
+			and report is not None
+			and getattr(report, "status", None) == "passed"
+			and getattr(report, "project_key", None) == settings.project_key
+			and getattr(report, "branch", None) == settings.branch
+			and getattr(report, "analysis_id", None) == cached.analysis_id
+		)
+		report = _mark_sonar_cache_result(report, correlated)
+		return scan_result, report, True
+
+	scan_result = sonar.scan(delta, root)
+	scan_uploaded = bool(getattr(scan_result, "uploaded", False))
+	scan_ok = (
+		(
+			getattr(scan_result, "status", None) == "passed"
+			and getattr(scan_result, "confirmed", False)
+		)
+		or scan_uploaded
+	)
+	analysis_floor = None
+	if scan_ok and scan_result is not None:
+		analysis_floor = (
+			time.time() - max(float(getattr(scan_result, "duration_s", 0.0)), 0.0) - 30
+		)
+	report = sonar_report.run(
+		delta,
+		root,
+		source="pre-commit",
+		project_path=root,
+		project_key=settings.project_key,
+		server_url=mcp_server_url,
+		branch=settings.branch,
+		minimum_analysis_at=analysis_floor,
+	)
+	report = _mark_sonar_fresh(report, scan_ok)
+	if (
+		scan_ok
+		and report is not None
+		and report.status == "passed"
+	):
+		sonar_state.write(
+			root,
+			sonar_state.State(
+				digest=digest,
+				scope="staged",
+				repo_root=str(root),
+				project_key=settings.project_key,
+				host_url=settings.host_url,
+				branch=settings.branch,
+				status=report.status,
+				reason=report.reason,
+				violation_count=report.violation_count,
+				timestamp=time.time(),
+				scan_status=getattr(scan_result, "status", None),
+				task_id=getattr(scan_result, "task_id", None),
+				analysis_id=getattr(scan_result, "analysis_id", None),
+			),
+		)
+	return scan_result, report, False
+
+
+def _mcp_server_url() -> str | None:
+	"""Resolve only explicit MCP settings, never scanner project settings."""
+	explicit = (
+		os.environ.get("QUACK_SONAR_MCP_URL", "").strip()
+		or os.environ.get("SONARQUBE_URL", "").strip()
+	)
+	return explicit or None
+
+
+def _mark_sonar_cache_result(result, correlated: bool):
+	"""Never let an old cached violation count become a commit blocker."""
+	if result is None:
+		return None
+	if hasattr(result, "fresh"):
+		updated = replace(result, fresh=correlated)
+		if hasattr(updated, "correlated"):
+			updated = replace(updated, correlated=correlated)
+		if not correlated and getattr(updated, "reason", ""):
+			reason = (
+				f"{updated.reason}; current MCP result is unverified for the "
+				"cached staged analysis"
+			)
+			updated = replace(updated, reason=reason[:600])
+		return updated
+	return result
+
+
+def _mark_sonar_fresh(result, fresh: bool):
+	if result is None:
+		return None
+	if hasattr(result, "fresh"):
+		if result.fresh == fresh:
+			return result
+		return replace(result, fresh=fresh)
+	return result
 
 
 def _log_check_metrics(
@@ -285,7 +434,10 @@ def _render_watch_result(result: watch_mod.WatchResult) -> None:
 	if result.sonar_report is not None:
 		render.sonar_mcp(result.sonar_report)
 	if result.risk is not None:
-		render.metadata(f"reviewed {result.files} file(s) - risk: {result.risk}")
+		render.metadata(
+			f"AI review (advisory): reviewed {result.files} file(s) "
+			f"- risk: {result.risk}"
+		)
 	else:
 		render.metadata(f"review unavailable ({result.reason or 'unknown reason'})")
 
@@ -684,6 +836,34 @@ def model(model: str | None) -> None:
 )
 def install(use_local: bool) -> None:
 	"""Add the quack stanza to .pre-commit-config.yaml and install the hook."""
+	_install_hooks(use_local)
+	sys.exit(0)
+
+
+@main.command()
+@click.option(
+	"--local",
+	"use_local",
+	is_flag=True,
+	default=True,
+	help="Use the installed `quack` command in a local pre-commit stanza.",
+)
+def init(use_local: bool) -> None:
+	"""Initialize hooks and repo-scoped Sonar Copilot artifacts."""
+	_install_hooks(use_local)
+	for relative_path, content in templates.ARTIFACTS.items():
+		path = Path(relative_path)
+		if path.exists():
+			render.warning(f"quack init: preserving existing {path}")
+			continue
+		path.parent.mkdir(parents=True, exist_ok=True)
+		path.write_text(content, encoding="utf-8")
+		render.clean(f"quack init: created {path}")
+	sys.exit(0)
+
+
+def _install_hooks(use_local: bool) -> None:
+	"""Write hook configuration and best-effort install both hook types."""
 	render.install_banner()
 	config_path = Path(".pre-commit-config.yaml")
 	if use_local:
@@ -724,7 +904,6 @@ def install(use_local: bool) -> None:
 		render.clean(f"quack: {message}")
 	else:
 		render.warning(f"quack: gitleaks power mode unavailable - {message}")
-	sys.exit(0)
 
 
 @main.command("sonar-mcp")
@@ -768,6 +947,12 @@ def install(use_local: bool) -> None:
 	help="Print the complete MCP response as JSON when --tool is used.",
 )
 @click.option(
+	"--debug",
+	"debug_output",
+	is_flag=True,
+	help="Print the resolved MCP invocation and response diagnostics.",
+)
+@click.option(
 	"--ca-dir",
 	type=click.Path(
 		exists=True, file_okay=False, dir_okay=True, path_type=Path
@@ -788,6 +973,7 @@ def sonar_mcp(
 	tool_name: str | None,
 	tool_arguments: str,
 	json_output: bool,
+	debug_output: bool,
 	ca_dir: Path | None,
 	server_url: str | None,
 ) -> None:
@@ -839,6 +1025,7 @@ def sonar_mcp(
 			tool_name,
 			tool_arguments,
 			json_output,
+			debug_output,
 		)
 		sys.exit(0)
 	issue_tool = next(
@@ -930,14 +1117,28 @@ def _invoke_sonar_mcp_tool(
 	tool_name: str,
 	tool_arguments: str,
 	json_output: bool,
+	debug_output: bool,
 ) -> None:
 	"""Invoke one advertised read-only MCP tool from the explicit CLI."""
 	try:
-		arguments = json.loads(tool_arguments)
+		parsed_arguments = _parse_sonar_mcp_arguments(tool_arguments)
 	except (TypeError, ValueError) as exc:
-		raise click.UsageError("--arguments must contain valid JSON") from exc
-	if not isinstance(arguments, dict):
+		_emit_sonar_mcp_debug(
+			client,
+			tool_name,
+			arguments=None,
+			response=None,
+			raw_arguments=tool_arguments,
+			force=True,
+		)
+		raise click.UsageError(
+			"--arguments must contain valid JSON; quote object keys and "
+			'string values, for example \'{"projectKeys":["Operations.HMI.App.Alarms"],'
+			'"branch":"quack-sonar-violation","issueStatuses":["OPEN"]}\''
+		) from exc
+	if not isinstance(parsed_arguments, dict):
 		raise click.UsageError("--arguments must contain a JSON object")
+	arguments = parsed_arguments
 	resolved_name = client.resolve_tool_name(tool_name)
 	if resolved_name is None:
 		render.warning(
@@ -945,6 +1146,17 @@ def _invoke_sonar_mcp_tool(
 			f"{tool_name!r}"
 		)
 		sys.exit(1)
+	arguments = _normalise_sonar_mcp_arguments(
+		client, resolved_name, arguments
+	)
+	_emit_sonar_mcp_debug(
+		client,
+		resolved_name,
+		arguments=arguments,
+		response=None,
+		raw_arguments=tool_arguments,
+		force=debug_output,
+	)
 	try:
 		if json_output:
 			response = client.call_tool_response(resolved_name, arguments)
@@ -952,19 +1164,192 @@ def _invoke_sonar_mcp_tool(
 			with render.thinking(f"SonarQube MCP: invoking {resolved_name}"):
 				response = client.call_tool_response(resolved_name, arguments)
 	except sonarqube_mcp.SonarQubeMcpUnavailable as exc:
+		_emit_sonar_mcp_debug(
+			client,
+			resolved_name,
+			arguments=arguments,
+			response={"error": exc.reason},
+			raw_arguments=tool_arguments,
+			force=debug_output,
+		)
 		render.warning(f"quack sonar-mcp: {exc.reason}")
 		sys.exit(1)
+	_emit_sonar_mcp_debug(
+		client,
+		resolved_name,
+		arguments=arguments,
+		response=response,
+		raw_arguments=tool_arguments,
+		force=debug_output,
+	)
 	if response.get("isError"):
-		render.warning(
-			"quack sonar-mcp: tool returned an error: "
-			+ sonarqube_mcp.format_tool_result(response)
-		)
+		if json_output:
+			click.echo(json.dumps(response, indent=2, sort_keys=True))
+		else:
+			render.warning(
+				"quack sonar-mcp: tool returned an error: "
+				+ sonarqube_mcp.format_tool_result(response)
+			)
 		sys.exit(1)
 	if json_output:
 		click.echo(json.dumps(response, indent=2, sort_keys=True))
 	else:
 		render.clean(f"SonarQube MCP tool completed: {resolved_name}")
 		render.metadata(sonarqube_mcp.format_tool_result(response))
+
+
+def _emit_sonar_mcp_debug(
+	client: sonarqube_mcp.SonarQubeMcpClient,
+	tool_name: str,
+	*,
+	arguments: dict[str, object] | None,
+	response: dict[str, object] | None,
+	raw_arguments: str,
+	force: bool,
+) -> None:
+	"""Print safe diagnostics for one explicit MCP invocation."""
+	if not force:
+		return
+	config = getattr(client, "_config", None)
+	server_url = getattr(config, "url", "<unknown>")
+	project_path = getattr(config, "project_path", None)
+	project_key = getattr(client, "project_key", None) or "<unset>"
+	branch = getattr(client, "branch", None) or "<unset>"
+	command_builder = getattr(config, "podman_command", None)
+	invocation = (
+		json.dumps(command_builder(), separators=(",", ":"))
+		if callable(command_builder)
+		else "<unavailable>"
+	)
+	raw = _redact_sonar_debug_text(repr(raw_arguments))
+	lines = [
+		"[debug] SonarQube MCP invocation",
+		f"  server_url={server_url}",
+		f"  project_path={project_path or '<unset>'}",
+		f"  project_key={project_key}",
+		f"  configured_branch={branch}",
+		f"  invocation_argv={_redact_sonar_debug_text(invocation)}",
+		f"  tool={tool_name}",
+		f"  raw_arguments={raw}",
+	]
+	if arguments is None:
+		lines.append("  request=<not sent; argument parsing failed>")
+	else:
+		lines.append(
+			"  request_arguments="
+			+ _redact_sonar_debug_text(
+				json.dumps(arguments, separators=(",", ":"), sort_keys=True)
+			)
+		)
+	if response is None:
+		lines.append("  response=<none>")
+	else:
+		lines.append(
+			"  response="
+			+ _redact_sonar_debug_text(
+				json.dumps(response, separators=(",", ":"), sort_keys=True)
+			)
+		)
+	click.echo("\n".join(lines), err=True)
+
+
+def _redact_sonar_debug_text(value: str) -> str:
+	"""Redact environment tokens before writing diagnostics to a terminal."""
+	redacted = value
+	for name in ("SONARQUBE_TOKEN", "SQ_TOKEN", "SONAR_TOKEN"):
+		token = os.environ.get(name, "")
+		if token:
+			redacted = redacted.replace(token, "<redacted>")
+	return redacted
+
+
+def _parse_sonar_mcp_arguments(raw: str) -> object:
+	"""Parse JSON passed by native shells and launcher wrappers."""
+	text = raw.strip().lstrip("\ufeff")
+	candidates = [text]
+	if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+		candidates.append(text[1:-1])
+	for candidate in tuple(candidates):
+		if '\\"' in candidate:
+			candidates.append(candidate.replace('\\"', '"'))
+	for candidate in candidates:
+		try:
+			value = json.loads(candidate)
+		except (TypeError, ValueError):
+			continue
+		if isinstance(value, str):
+			nested = value.strip().lstrip("\ufeff")
+			if nested.startswith(("{", "[")):
+				try:
+					return json.loads(nested)
+				except (TypeError, ValueError):
+					pass
+		return value
+	for candidate in candidates:
+		restored = _restore_powershell_json_quotes(candidate)
+		if restored == candidate:
+			continue
+		try:
+			return json.loads(restored)
+		except (TypeError, ValueError):
+			continue
+	raise ValueError("--arguments must contain valid JSON")
+
+
+def _restore_powershell_json_quotes(text: str) -> str:
+	"""Restore simple quotes stripped by Windows PowerShell 5.1 argv rules."""
+	restored = re.sub(
+		r"([,{]\s*)([A-Za-z_][A-Za-z0-9_.-]*)(\s*:)",
+		r'\1"\2"\3',
+		text,
+	)
+
+	def quote_scalar(match: re.Match[str]) -> str:
+		prefix, token = match.group(1), match.group(2)
+		if token in {"true", "false", "null"}:
+			return prefix + token
+		return prefix + json.dumps(token)
+
+	return re.sub(
+		r"([:\[,]\s*)([A-Za-z_][A-Za-z0-9_.:/\\@+-]*)(?=\s*[,}\]])",
+		quote_scalar,
+		restored,
+	)
+
+
+def _normalise_sonar_mcp_arguments(
+	client: sonarqube_mcp.SonarQubeMcpClient,
+	resolved_name: str,
+	arguments: dict[str, object],
+) -> dict[str, object]:
+	"""Match common project-key spelling to the advertised MCP schema."""
+	try:
+		tools = client.tool_definitions()
+	except sonarqube_mcp.SonarQubeMcpUnavailable:
+		return arguments
+	properties: dict[str, object] | None = None
+	for tool in tools:
+		function = tool.get("function")
+		if not isinstance(function, dict):
+			continue
+		if function.get("name") != resolved_name:
+			continue
+		parameters = function.get("parameters")
+		if isinstance(parameters, dict) and isinstance(
+			parameters.get("properties"), dict
+		):
+			properties = parameters["properties"]
+		break
+	if (
+		properties is not None
+		and "projectKeys" in arguments
+		and "projects" in properties
+		and "projects" not in arguments
+	):
+		normalised = dict(arguments)
+		normalised["projects"] = normalised.pop("projectKeys")
+		return normalised
+	return arguments
 
 
 def _sonar_issue_value(
@@ -990,6 +1375,9 @@ def _upsert_local_stanza(config_path: Path) -> None:
 		data = {}
 
 	repos = data.setdefault("repos", [])
+	if not isinstance(repos, list):
+		repos = []
+		data["repos"] = repos
 	# Two surfaces: pre-commit runs local checks only; pre-push runs AI review
 	# (and the agent where the provider supports tool calling).
 	hooks_to_add = [
@@ -1012,18 +1400,52 @@ def _upsert_local_stanza(config_path: Path) -> None:
 		},
 	]
 
-	for repo in repos:
-		if isinstance(repo, dict) and repo.get("repo") == "local":
-			hooks = repo.setdefault("hooks", [])
-			for hook in hooks_to_add:
-				if not any(
-					isinstance(h, dict) and h.get("id") == hook["id"]
-					for h in hooks
-				):
-					hooks.append(hook)
-			break
-	else:
-		repos.append({"repo": "local", "hooks": hooks_to_add})
+	target = next(
+		(
+			repo
+			for repo in repos
+			if isinstance(repo, dict) and repo.get("repo") == "local"
+		),
+		None,
+	)
+	anchor = next(
+		(
+			index
+			for index, repo in enumerate(repos)
+			if isinstance(repo, dict)
+			and repo.get("repo") in {"local", QUACK_REPO_URL}
+		),
+		None,
+	)
+	if target is None:
+		target = {"repo": "local", "hooks": []}
+	existing_hooks = target.get("hooks", [])
+	if not isinstance(existing_hooks, list):
+		existing_hooks = []
+	preserved_hooks = [
+		hook
+		for hook in existing_hooks
+		if not (
+			isinstance(hook, dict)
+			and hook.get("id") in {"quack", "quack-agent"}
+		)
+	]
+	target["repo"] = "local"
+	target["hooks"] = preserved_hooks + hooks_to_add
+
+	filtered_repos: list[object] = []
+	for index, repo in enumerate(repos):
+		if anchor == index:
+			filtered_repos.append(target)
+		if isinstance(repo, dict) and repo.get("repo") in {
+			"local",
+			QUACK_REPO_URL,
+		}:
+			continue
+		filtered_repos.append(repo)
+	if anchor is None:
+		filtered_repos.append(target)
+	data["repos"] = filtered_repos
 
 	config_path.write_text(
 		yaml.safe_dump(data, sort_keys=False, default_flow_style=False),

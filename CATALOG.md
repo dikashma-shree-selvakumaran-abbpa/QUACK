@@ -10,9 +10,9 @@
 
 ## The one-liner
 
-> **quack is an AI-assisted git quality gate: deterministic local checks stop
-> secrets and merge markers before commit, while advisory AI review helps catch
-> regressions before push.**
+> **quack is an AI-assisted git quality gate: deterministic local checks and
+> confirmed current SonarQube findings stop unsafe commits, while advisory AI
+> review helps catch regressions before push.**
 
 ## The value
 
@@ -31,6 +31,8 @@ Tier 1: local deterministic checks ───────────────
 		   │
 		   ├─ optional local gitleaks scan ──────── advisory, fail-open
 		   │
+SonarQube: exact staged / working delta ─────────── blocks confirmed current findings
+		   │
 quack watch: redacted-diff AI review ────────────── advisory cache for commit time
 		   │
 quack agent: pre-push AI review ─────────────────── advisory review of unpushed commits
@@ -40,8 +42,8 @@ quack agent: pre-push AI review ────────────────
 
 | Surface | When | Network | Authority |
 |---|---|---|---|
-| `quack check` | Pre-commit | No | Blocks only secrets and merge markers |
-| `quack watch` | While working | Yes | Advisory cached review |
+| `quack check` | Pre-commit | Optional SonarQube API/scanner | Blocks secrets, merge markers, and confirmed current Sonar findings |
+| `quack watch` | While working | SonarQube plus optional AI | Sonar snapshot is deterministic; AI review is advisory |
 | `quack agent` | Pre-push | Yes | Advisory review and optional investigation |
 | `quack model` | On demand | Model discovery only | Diagnostics |
 | `quack metrics` | On demand | No | Local aggregate summary |
@@ -61,10 +63,12 @@ quack agent: pre-push AI review ────────────────
 
 ### Advisory review without commit latency
 
-- `quack check` is fully local: it has no provider call, token check, or network
-  fallback.
-- `quack watch` reviews staged or tracked working changes after a 30-second
-  quiet period by default and caches the redacted-diff result for up to 24 hours.
+- `quack check` makes no LLM call. Tier 1 remains offline, while configured
+  SonarQube checks analyze only the exact index and reuse only a matching fresh
+  staged result.
+- `quack watch` checks the combined staged plus unstaged tracked changes after a
+  30-second quiet period by default, runs the deterministic Sonar snapshot,
+  and then optionally caches the redacted-diff AI result for commit time.
 - A cache hit lets the commit hook render the review immediately; a miss simply
   says to run `quack watch`.
 - At pre-push, `quack agent` reviews staged changes or, when the index is empty,
@@ -84,7 +88,8 @@ quack agent: pre-push AI review ────────────────
 
 ## Live-demo beats
 
-1. Run `quack install --local` in a throwaway repository to show both hooks.
+1. Run `quack init` in a throwaway repository to show both hooks and the
+   repo-scoped Sonar artifacts.
 2. Commit a staged Azure DevOps PAT to show the deterministic block.
 3. Add `// quack: allow` to show the per-line escape hatch.
 4. Change real code and run `quack check` to show cross-package test guidance.
@@ -96,9 +101,9 @@ quack agent: pre-push AI review ────────────────
 
 | Question | Answer |
 |---|---|
-| Does it slow down commits? | The commit path is local only; AI runs via watch mode or at pre-push. |
-| Does it block because AI is unavailable? | No. AI, gitleaks, and the agent are advisory and fail open. |
-| Does code leave the machine at commit time? | No. At watch/pre-push, only the redacted diff is sent to the selected provider. |
+| Does it slow down commits? | Tier 1 is local; the staged scanner result is reused by identity, while MCP findings are revalidated; AI runs via watch mode or at pre-push. |
+| Does it block because AI is unavailable? | No. AI, gitleaks, and the agent fail open. Confirmed current Sonar findings remain independent deterministic evidence. |
+| Does code leave the machine at commit time? | Configured Sonar may upload the exact staged snapshot; AI sends only the redacted diff during watch/pre-push. |
 | Can the agent run with the default provider? | The default Copilot SDK provides review. The optional tool-calling loop requires `github_models` and `GITHUB_TOKEN`. |
 | Does it work in an IDE? | Yes. These are Git hooks, so they work with terminal and IDE Git clients. |
 

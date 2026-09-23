@@ -25,10 +25,15 @@ import time
 from pathlib import Path
 
 DEFAULT_TIMEOUT_S = 180
-SONAR_TIMEOUT_S = 60
+# FrontEnd scanners may download analyzers and embedded runtimes on the first
+# run; keep the default bounded long enough for that startup path.
+SONAR_TIMEOUT_S = 180
 MCP_TIMEOUT_S = 90.0
 _MCP_OUTPUT_LIMIT = 24000
-_MCP_RESPONSE_LIMIT = 128000
+# Sonar's metrics catalog can exceed 128 KB as one JSON-RPC line. Keep the
+# response bounded, but never cut a complete JSON response in the middle.
+_MCP_RESPONSE_LIMIT = 256000
+MCP_RESPONSE_TOO_LARGE = -2
 _MCP_CONTAINER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -57,7 +62,20 @@ def run_sonar_scanner(
 	timeout_s: int = SONAR_TIMEOUT_S,
 ) -> tuple[int, str]:
 	"""Run a validated SonarScanner argument list without a shell."""
+	if _is_dotnet_sonarscanner(scanner):
+		return (
+			126,
+			"<runner unavailable: dotnet-sonarscanner requires a build and is not "
+			"supported by the staged snapshot runner>",
+		)
+	if any(not isinstance(item, str) or not item.startswith("-D") for item in properties):
+		return (126, "<invalid SonarScanner property>")
 	return _run([str(scanner), *properties], timeout_s, cwd=str(cwd))
+
+
+def _is_dotnet_sonarscanner(scanner: str | Path) -> bool:
+	name = Path(scanner).name.casefold()
+	return "dotnet-sonarscanner" in name or "sonarscanner.msbuild" in name
 
 
 def run_sonarqube_mcp(
@@ -107,6 +125,7 @@ def run_sonarqube_mcp(
 	stdout_lines: list[str] = []
 	stderr_lines: list[str] = []
 	response_lines: list[str] = []
+	response_overflow = False
 	stdout_closed = False
 	stderr_closed = False
 	exit_code = 0
@@ -118,7 +137,7 @@ def run_sonarqube_mcp(
 			response_received = False
 
 			def wait_for_response(response_id: object) -> bool:
-				nonlocal stdout_closed, stderr_closed
+				nonlocal response_overflow, stdout_closed, stderr_closed
 				while True:
 					remaining = deadline - time.monotonic()
 					if remaining <= 0:
@@ -141,11 +160,13 @@ def run_sonarqube_mcp(
 
 					if stream == "stdout":
 						if _is_jsonrpc_response(line):
-							_append_bounded(
+							if not _append_bounded(
 								response_lines,
 								line,
 								limit=_MCP_RESPONSE_LIMIT,
-							)
+								preserve_line=True,
+							):
+								response_overflow = True
 						else:
 							_append_bounded(stdout_lines, line)
 						if _is_expected_response(line, response_id):
@@ -172,13 +193,13 @@ def run_sonarqube_mcp(
 					response_id = payload["id"]
 					response_received = wait_for_response(response_id)
 					if not response_received:
-						exit_code = -1
+						exit_code = _response_failure_code(process)
 						break
 
 			if exit_code == 0 and not response_received:
 				response_received = wait_for_response(expected_id)
 				if not response_received:
-					exit_code = -1
+					exit_code = _response_failure_code(process)
 
 			try:
 				process.stdin.close()
@@ -191,13 +212,18 @@ def run_sonarqube_mcp(
 		_stop_process(process)
 		for thread in threads:
 			thread.join(timeout=1.0)
-		_drain_mcp_events(
+		response_overflow = _drain_mcp_events(
 			events,
 			stdout_lines,
 			stderr_lines,
 			response_lines,
-		)
+		) or response_overflow
 		_cleanup_mcp_container(command)
+	if response_overflow:
+		return (
+			MCP_RESPONSE_TOO_LARGE,
+			"<MCP response exceeded the bounded output limit>",
+		)
 	return exit_code, _merge_mcp_output(
 		stdout_lines,
 		stderr_lines,
@@ -223,11 +249,17 @@ def _append_bounded(
 	line: str,
 	*,
 	limit: int = _MCP_OUTPUT_LIMIT,
-) -> None:
+	preserve_line: bool = False,
+) -> bool:
 	"""Keep enough subprocess output for diagnostics without unbounded growth."""
 	used = sum(len(item) for item in lines)
-	if used < limit:
-		lines.append(line[: limit - used])
+	if used >= limit:
+		return False
+	remaining = limit - used
+	if len(line) > remaining and preserve_line:
+		return False
+	lines.append(line[:remaining])
+	return len(line) <= remaining
 
 
 def _drain_mcp_events(
@@ -235,21 +267,24 @@ def _drain_mcp_events(
 	stdout_lines: list[str],
 	stderr_lines: list[str],
 	response_lines: list[str],
-) -> None:
+) -> bool:
 	"""Collect pipe lines that arrived while the response loop was stopping."""
+	response_overflow = False
 	while True:
 		try:
 			stream, line = events.get_nowait()
 		except queue.Empty:
-			return
+			return response_overflow
 		if line is None:
 			continue
 		if stream == "stdout" and _is_jsonrpc_response(line):
-			_append_bounded(
+			if not _append_bounded(
 				response_lines,
 				line,
 				limit=_MCP_RESPONSE_LIMIT,
-			)
+				preserve_line=True,
+			):
+				response_overflow = True
 		else:
 			_append_bounded(
 				stdout_lines if stream == "stdout" else stderr_lines,
@@ -295,6 +330,12 @@ def _is_expected_response(line: str, expected_id: object) -> bool:
 		return False
 	payload = json.loads(line)
 	return isinstance(payload, dict) and payload.get("id") == expected_id
+
+
+def _response_failure_code(process: subprocess.Popen) -> int:
+	"""Preserve a failed MCP process exit code instead of reporting a timeout."""
+	code = process.poll()
+	return code if code not in (None, 0) else -1
 
 
 def _stop_process(process: subprocess.Popen) -> None:

@@ -48,7 +48,9 @@ def test_watch_once_reviews_and_writes_cache(monkeypatch) -> None:
 	result = CliRunner().invoke(cli.main, ["watch", "--once"])
 
 	assert result.exit_code == 0
-	assert "reviewed 1 file(s) - risk: medium" in result.output
+	assert "AI review (advisory): reviewed 1 file(s) - risk: medium" in (
+		result.output
+	)
 	assert Path(written["repo_root"]) == Path("/repo")
 	assert written["digest"] == watch.reviewcache.diff_hash(delta.raw_diff)
 	assert written["payload"]["risk"] == "medium"

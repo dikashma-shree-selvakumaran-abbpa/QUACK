@@ -336,17 +336,16 @@ def _sonar_mcp_group(result) -> RenderableType | None:
 	message = f"SonarQube MCP: {reason}"
 	if report:
 		message += f" - report: {report}"
+	if getattr(result, "blocks_commit", False):
+		return Text(
+			f"SonarQube MCP: BLOCKED - {getattr(result, 'violation_count', 0)} "
+			"violation(s) detected"
+			+ (f" - report: {report}" if report else ""),
+			style=_BLOCK,
+			no_wrap=False,
+			overflow="fold",
+		)
 	if status == "passed":
-		violation_count = getattr(result, "violation_count", 0)
-		if violation_count:
-			return Text(
-				f"SonarQube MCP: BLOCKED - {violation_count} "
-				"violation(s) detected"
-				+ (f" - report: {report}" if report else ""),
-				style=_BLOCK,
-				no_wrap=False,
-				overflow="fold",
-			)
 		return Text(message, style=_CLEAN, no_wrap=False, overflow="fold")
 	if status == "skipped":
 		return Text(message, style=_META, no_wrap=False, overflow="fold")

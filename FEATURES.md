@@ -1,6 +1,7 @@
 # quack — Technical Feature Reference
 
-> An AI-assisted **pre-commit / pre-push quality gate** for git.
+> An AI-assisted **pre-commit / pre-push quality gate** for git, with a
+> deterministic SonarQube check that can block confirmed current violations.
 > Deterministic where it must block, AI-assisted where it can help, and
 > **fail-open** everywhere the AI is involved.
 
@@ -21,11 +22,20 @@ quack follows a **functional core / imperative shell** design.
 | Orchestration | `cli`, `tier2`, `agent` | Wire the pieces together; own exit codes and UX. |
 | Presentation | `render` | The single module that writes to the terminal. |
 
-**Design invariant:** only Tier 1 governs the exit code. gitleaks and the agent
-are advisory / fail-open and can never turn a passing commit into a failing one
-due to their own unavailability. **Commit time is fully local** — `quack check`
-makes no network calls and sends no code anywhere. AI runs in `quack watch`
-while the developer works or at pre-push via `quack agent`.
+**Design invariant:** Tier 1 and confirmed current staged SonarQube findings
+govern the exit code. gitleaks, AI, and unavailable Sonar infrastructure are
+advisory / fail-open. `quack check` never makes an LLM call; configured Sonar
+may upload the exact staged snapshot. AI runs in `quack watch` while the
+developer works or at pre-push via `quack agent`.
+
+The staged Sonar identity is built from the index-resolved project properties,
+validated environment overrides, scanner fingerprint, and all effective
+scanner settings. An unchanged local scanner result is reused only as an
+analysis artifact: `quack check` re-queries MCP and blocks only when the
+current finding response is correlated to that analysis. Missing correlation
+is explicitly unverified and fail-open. Generic `sonar-scanner` does not claim
+coverage for C#; BackEnd-only and mixed FrontEnd/BackEnd staged changes remain
+unverified.
 
 ---
 
@@ -33,8 +43,8 @@ while the developer works or at pre-push via `quack agent`.
 
 **Two hook surfaces.** quack installs two pre-commit-framework hooks:
 
-- **pre-commit (`quack`)** — local checks only (Tier 1 + gitleaks). No network,
-  no code leaves the machine.
+- **pre-commit (`quack`)** — Tier 1, exact staged SonarQube scanning, and
+  read-only SonarQube MCP checks. Sonar is fail-open when unavailable.
 - **pre-push (`quack-agent`)** — AI review, plus the investigative agent where
   the provider supports tool calling.
 
@@ -46,10 +56,11 @@ already-installed pre-commit checks active.
 
 | Command | Purpose | Exit-code authority |
 |---|---|---|
-| `quack check` | Full pre-commit gate on **staged** changes (what the hook runs). Fully local: **no network calls, sends no code anywhere.** | Tier 1 only |
-| `quack watch [--quiet-period 30] [--once]` | Review staged or tracked working changes and cache an advisory result for commit time. | Advisory (informational) |
+| `quack check` | Full pre-commit gate on the **exact staged** changes (what the hook runs). | Tier 1 and confirmed current SonarQube violations |
+| `quack watch [--quiet-period 30] [--once]` | Check staged plus unstaged tracked changes with SonarQube, then optionally cache an AI review. | Sonar snapshot deterministic; AI advisory |
 | `quack agent [--fly] [--model M]` | Pre-push Tier 2 review plus an investigative loop over staged changes or, when the index is empty, unpushed commits. `--fly` allows a proposed patch. | Advisory (informational) |
 | `quack install [--local]` | Write `.pre-commit-config.yaml` (both `quack` + `quack-agent` hooks), install both hook types, and best-effort bootstrap gitleaks. `--local` targets any repo without a published remote. | n/a |
+| `quack init` | Install hooks and create repo-scoped Sonar check/fix skills plus the Sonar code-review agent without overwriting existing files. | n/a |
 | `quack model [--model M]` | Report provider, availability, model resolution, timeout, and Copilot SDK model discovery. | n/a |
 | `quack metrics` | Summarize locally recorded aggregate metrics. | n/a |
 

@@ -106,12 +106,13 @@ agent fallback when no provider default can resolve.
 
 | Command | Current behavior |
 |---|---|
-| `quack check` | Local staged-delta checks, optional gitleaks, test guidance, and fail-open review-cache lookup. Exit 1 only for deterministic blockers. |
-| `quack watch [--quiet-period 30] [--once]` | Polls the working tree and performs Tier 2 reviews after a quiet period, or performs one review immediately. |
+| `quack check` | Tier 1/gitleaks checks, exact staged Sonar scanner/MCP validation, test guidance, and fail-open review-cache lookup. Exit 1 for Tier 1 blockers or a confirmed current Sonar violation. |
+| `quack watch [--quiet-period 30] [--once]` | Checks the combined staged plus unstaged tracked delta with deterministic Sonar MCP first, then optionally performs a Tier 2 review after a quiet period or immediately. |
 | `quack agent [--model M] [--fly]` | Pre-push Tier 2 review followed by the tool-calling investigation loop; always exits 0. |
 | `quack model [--model M]` | Read-only provider/auth/model/timeout diagnostic and, for Copilot SDK, reachable-model discovery. |
 | `quack metrics` | Summarizes locally recorded events. |
 | `quack install [--local]` | Writes both hook surfaces, installs pre-commit and pre-push hook types, and best-effort installs gitleaks. |
+| `quack init` | Installs hooks and creates non-destructive repo-scoped Sonar check/fix skills and the Sonar code-review agent. |
 
 `.pre-commit-hooks.yaml` exposes two hooks:
 
@@ -125,7 +126,7 @@ installation failure warns and does not undo a successful pre-commit install.
 
 ---
 
-## 5. `quack check`: fully local commit path
+## 5. `quack check`: exact staged commit path
 
 The live path is:
 
@@ -135,28 +136,42 @@ The live path is:
    inline allowlist, and merge findings.
 4. Block immediately only when a finding's check name is `secrets` or
    `merge_markers`.
-5. Build test guidance for an unblocked change.
-6. Redact built-in secret matches, hash the redacted diff, and perform one
+5. Resolve Sonar configuration from the index plus validated explicit
+   environment overrides, fingerprint the scanner and effective settings, and
+   compute the staged snapshot digest. Working-tree project properties and IDE
+   settings cannot affect this identity.
+6. Reuse only a matching completed staged scanner result; always re-query the
+   read-only MCP snapshot for cached results. A cached violation count is never
+   trusted without a matching analysis identifier.
+7. Block only a current correlated staged snapshot with open issues or security
+   hotspots on changed components. Scanner/MCP failures, unverified
+   correlation, and stale results remain fail-open.
+8. Build test guidance for an unblocked change.
+9. Redact built-in secret matches, hash the redacted diff, and perform one
    fail-open local cache lookup.
-7. Render a cached Tier 2 result with its age, or render the nudge
+10. Render a cached Tier 2 result with its age, or render the nudge
    `run quack watch` on a miss.
-8. Append a check metrics event and exit 0.
+11. Append a check metrics event and exit with the applicable blocker status.
 
-There is no token check, provider call, or network fallback in `quack check`.
-Tests replace Tier 2 with a function that raises and prove it is never called.
-A cache hit is rehydrated locally and cannot alter the exit code.
+`quack check` never calls an LLM. Tier 1 remains offline; configured Sonar
+scanner/MCP calls are bounded and fail-open. Tests replace Tier 2 with a
+function that raises and prove it is never called. A matching staged Sonar
+state is reused locally, while any index mutation changes the digest and
+forces a new scan. Unstaged edits and unstaged Sonar configuration are excluded
+from the scanner export. Generic `sonar-scanner` does not claim C# coverage:
+BackEnd-only and mixed FrontEnd/BackEnd staged changes are unverified.
 
 Exit codes are:
 
-- `1`: a deterministic `secrets` or `merge_markers` finding exists
-- `0`: clean, advisory, cache hit/miss, unavailable local tooling, or no staged
-  changes
+- `1`: a deterministic `secrets` or `merge_markers` finding exists, or a
+  confirmed current Sonar issue/security hotspot is present
+- `0`: clean, advisory, cache hit/miss, unavailable/stale Sonar tooling, or no
+  staged changes
 
 The code does contain `StagedDelta.triviality()` for no-change, docs-only,
 fewer-than-five-line, and generated/lockfile classification. **No production
-caller uses it.** Because commit-time check performs no AI call anyway, this
-has no check-path network consequence; watch and pre-push Tier 2 currently do
-not skip trivial deltas.
+caller uses it.** Sonar scanning is intentionally independent of that
+advisory triviality classification.
 
 ---
 

@@ -14,18 +14,19 @@ from . import delta
 from .delta import StagedDelta
 
 
-def _run_git(args: list[str]) -> str:
+def _run_git(args: list[str], *, cwd: str | Path | None = None) -> str:
 	"""Run a git command and return stdout, or "" if git/repo is unavailable."""
 	try:
 		result = subprocess.run(
 			["git", *args],
+			cwd=str(cwd) if cwd else None,
 			capture_output=True,
 			encoding="utf-8",
 			errors="replace",
 			bufsize=1024 * 1024,
 			check=True,
 		)
-	except (subprocess.CalledProcessError, FileNotFoundError):
+	except (subprocess.CalledProcessError, OSError):
 		return ""
 	return result.stdout
 
@@ -57,6 +58,37 @@ def staged_delta() -> StagedDelta:
 		staged_numstat(),
 		staged_diff(),
 	)
+
+
+def staged_file_text(
+	path: str, root: str | Path | None = None
+) -> str | None:
+	"""Read one text file from the index, never the working tree."""
+	normalised = path.replace("\\", "/").strip("/")
+	if (
+		not normalised
+		or normalised.startswith("-")
+		or any(part in {"", ".", ".."} for part in normalised.split("/"))
+	):
+		return None
+	try:
+		result = subprocess.run(
+			["git", "show", f":{normalised}"],
+			cwd=str(root) if root else None,
+			capture_output=True,
+			encoding="utf-8",
+			errors="replace",
+			check=False,
+		)
+	except (OSError, subprocess.SubprocessError):
+		return None
+	return result.stdout if result.returncode == 0 else None
+
+
+def staged_paths(root: str | Path | None = None) -> list[str]:
+	"""Return tracked paths exactly as represented by the current index."""
+	output = _run_git(["ls-files", "-z"], cwd=root)
+	return [item for item in output.split("\0") if item]
 
 
 def export_staged_snapshot(

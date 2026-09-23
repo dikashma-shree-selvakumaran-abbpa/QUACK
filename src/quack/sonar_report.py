@@ -2,9 +2,10 @@
 
 The MCP server is optional and fail-open when it cannot be reached. A
 completed snapshot reports open issues and security hotspots as blocking
-violations. This module keeps the integration independent from the model
-provider, runs the requested read-only tools for the current change, and
-writes one bounded Markdown report atomically.
+violations. Cached staged scanner results still query MCP; without a matching
+analysis identifier they remain unverified. This module keeps the integration
+independent from the model provider, runs the requested read-only tools for
+the current change, and writes one bounded Markdown report atomically.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -25,6 +26,10 @@ MAX_REPORT_BYTES = 250_000
 MAX_DUPLICATION_FILES = 20
 MAX_DETAIL_ROWS = 20
 MAX_METRICS = 500
+# Codescan rejects component-measure requests containing the entire metrics
+# catalog. Keep the request useful without forwarding every server metric.
+MAX_COMPONENT_MEASURE_METRICS = 100
+MAX_FINDING_PAGES = 10
 
 _PROJECT_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
 _METRIC_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
@@ -33,8 +38,9 @@ _TOKEN_RE = re.compile(
 	r"|[A-Za-z0-9_+/=-]{32,}"
 )
 
-# This is the offline fallback. When the server exposes search_metrics, its
-# catalog is preferred so custom metrics are included as well.
+# This is the stable metric set used by the component-measures endpoint. The
+# server catalog is reported separately but may contain edition-specific keys
+# that Codescan rejects for this project.
 DEFAULT_METRIC_KEYS = (
 	"alert_status",
 	"bugs",
@@ -126,6 +132,10 @@ METRIC_DESCRIPTIONS = {
 }
 
 _TOOL_ALIASES = {
+	"sonarqube_list_branches": (
+		"sonarqube_list_branches",
+		"list_branches",
+	),
 	"sonarqube_get_duplications": (
 		"sonarqube_get_duplications",
 		"get_duplications",
@@ -177,11 +187,20 @@ class SonarQubeReportResult:
 	report_path: Path | None = None
 	outcomes: tuple[ToolOutcome, ...] = ()
 	violation_count: int = 0
+	branch: str | None = None
+	fresh: bool = True
+	analysis_id: str | None = None
+	correlated: bool = True
 
 	@property
 	def blocks_commit(self) -> bool:
 		"""Return whether this completed snapshot contains open findings."""
-		return self.status == "passed" and self.violation_count > 0
+		return (
+			self.fresh
+			and self.correlated
+			and self.status in {"passed", "partial"}
+			and self.violation_count > 0
+		)
 
 
 def report_path(repo_root: str | Path) -> Path:
@@ -200,6 +219,13 @@ def run(
 	repo_root: str | Path,
 	*,
 	source: str = "unknown",
+	project_path: str | Path | None = None,
+	project_key: str | None = None,
+	server_url: str | None = None,
+	branch: str | None = None,
+	fresh: bool | None = None,
+	expected_analysis_id: str | None = None,
+	minimum_analysis_at: float | None = None,
 ) -> SonarQubeReportResult | None:
 	"""Run a bounded MCP snapshot and refresh the living report.
 
@@ -212,54 +238,87 @@ def run(
 	if not getattr(delta, "files", None):
 		return None
 	if not sonarqube_mcp.enabled():
-		return _result(
+		return _decorate(
+			_result(
 			"skipped",
 			"disabled by QUACK_SONAR_MCP",
 			started,
+			),
+			fresh,
 		)
 
 	try:
 		root = Path(repo_root).resolve()
 	except (OSError, RuntimeError, TypeError, ValueError):
-		return _result("failed", "repository path unavailable", started)
+		return _decorate(
+			_result("failed", "repository path unavailable", started), fresh
+		)
 
 	try:
 		configured_project_path = (
-			os.environ.get("QUACK_SONAR_MCP_PROJECT_PATH", "").strip()
-			or os.environ.get("SONARQUBE_PROJECT_PATH", "").strip()
+			str(project_path)
+			if project_path is not None
+			else (
+				os.environ.get("QUACK_SONAR_MCP_PROJECT_PATH", "").strip()
+				or os.environ.get("SONARQUBE_PROJECT_PATH", "").strip()
+			)
 		)
 		client, connection_reason = sonarqube_mcp.connection_from_environment(
 			project_path=configured_project_path or root,
+			project_key=project_key,
 			base_path=root,
+			server_url=server_url,
+			branch=branch,
 		)
 	except Exception as exc:
-		return _result("failed", _exception_reason(exc), started)
+		return _decorate(_result("failed", _exception_reason(exc), started), fresh)
 	if client is None:
-		return _result(
-			"skipped",
-			connection_reason or "SonarQube MCP configuration unavailable",
-			started,
+		return _decorate(
+			_result(
+				"skipped",
+				connection_reason or "SonarQube MCP configuration unavailable",
+				started,
+			),
+			fresh,
 		)
+	branch = branch or getattr(client, "branch", None)
 
 	try:
 		tools = client.tool_definitions()
 	except Exception as exc:
 		result = _result("failed", _exception_reason(exc), started)
+		result = _decorate(result, fresh)
 		return _with_report(result, root, source)
 
-	project_key = _project_key(client)
+	project_key = _project_key(client) or (
+		project_key
+		if isinstance(project_key, str)
+		and _PROJECT_KEY_RE.fullmatch(project_key.strip())
+		else None
+	)
 	if project_key is None:
 		result = _result(
 			"failed",
 			"SonarQube project key unavailable; set SONARQUBE_PROJECT_KEY",
 			started,
 		)
+		result = _decorate(result, fresh)
 		return _with_report(result, root, source)
 
 	try:
-		result = _collect(client, tools, delta, project_key, started)
+		result = _collect(
+			client,
+			tools,
+			delta,
+			project_key,
+			started,
+			branch,
+			expected_analysis_id,
+			minimum_analysis_at,
+		)
 	except Exception as exc:
 		result = _result("failed", _exception_reason(exc), started)
+	result = _decorate(result, fresh)
 	return _with_report(result, root, source)
 
 
@@ -269,15 +328,39 @@ def _collect(
 	delta: Any,
 	project_key: str,
 	started: float,
+	branch: str | None = None,
+	expected_analysis_id: str | None = None,
+	minimum_analysis_at: float | None = None,
 ) -> SonarQubeReportResult:
 	"""Collect all requested operations while keeping failures independent."""
 	tool_map = {
 		key: _find_tool(tools, aliases)
 		for key, aliases in _TOOL_ALIASES.items()
 	}
-	metric_keys = list(DEFAULT_METRIC_KEYS)
-	outcomes: list[ToolOutcome] = []
+	branch_outcome = _collect_branch_scope(
+		client,
+		tool_map["sonarqube_list_branches"],
+		project_key,
+		branch,
+		minimum_analysis_at,
+	)
+	outcomes: list[ToolOutcome] = [branch_outcome]
+	if branch and branch_outcome.status != "passed":
+		return SonarQubeReportResult(
+			status="failed",
+			reason=_safe_text(
+				"SonarQube MCP snapshot incomplete: "
+				+ branch_outcome.description,
+				600,
+			),
+			duration_s=perf_counter() - started,
+			project_key=project_key,
+			outcomes=tuple(outcomes),
+			branch=branch,
+			correlated=False,
+		)
 
+	metric_keys = list(DEFAULT_METRIC_KEYS)[:MAX_COMPONENT_MEASURE_METRICS]
 	metrics_tool = tool_map["sonarqube_search_metrics"]
 	if metrics_tool is not None:
 		metrics_outcome = _call_tool(
@@ -287,13 +370,9 @@ def _collect(
 			_page_arguments(metrics_tool, MAX_METRICS),
 		)
 		outcomes.append(metrics_outcome)
-		if metrics_outcome.status == "passed":
-			metric_keys = _merge_metric_keys(
-				metric_keys,
-				_extract_metric_keys(metrics_outcome.data),
-			)
 
 	duplication_tool = tool_map["sonarqube_get_duplications"]
+	changed_components = _changed_components(delta, project_key)
 	outcomes.append(
 		_collect_duplications(
 			client,
@@ -307,6 +386,12 @@ def _collect(
 	hotspot_args = {}
 	if hotspot_tool is not None:
 		_set_project_argument(hotspot_args, hotspot_tool, project_key)
+		_set_component_arguments(
+			hotspot_args, hotspot_tool, changed_components
+		)
+		_set_argument(
+			hotspot_args, hotspot_tool, ("branch",), branch, default="branch"
+		)
 		_set_argument(
 			hotspot_args,
 			hotspot_tool,
@@ -315,12 +400,18 @@ def _collect(
 			default="status",
 		)
 		hotspot_args.update(_page_arguments(hotspot_tool, 100))
+	hotspot_outcome = _collect_findings(
+		client,
+		"sonarqube_search_security_hotspot",
+		hotspot_tool,
+		hotspot_args,
+		("hotspots", "securityHotspots"),
+	)
 	outcomes.append(
-		_call_or_missing(
-			client,
-			"sonarqube_search_security_hotspot",
-			hotspot_tool,
-			hotspot_args,
+		_scope_findings(
+			hotspot_outcome,
+			changed_components,
+			("hotspots", "securityHotspots"),
 		)
 	)
 
@@ -333,6 +424,7 @@ def _collect(
 			project_key,
 			plural=True,
 		)
+		_set_component_arguments(issues_args, issues_tool, changed_components)
 		_set_argument(
 			issues_args,
 			issues_tool,
@@ -340,20 +432,28 @@ def _collect(
 			["OPEN"],
 			default="issueStatuses",
 		)
-		issues_args.update(_page_arguments(issues_tool, 100))
-	outcomes.append(
-		_call_or_missing(
-			client,
-			"sonarqube_search_sonar_issues_in_projects",
-			issues_tool,
-			issues_args,
+		_set_argument(
+			issues_args, issues_tool, ("branch",), branch, default="branch"
 		)
+		issues_args.update(_page_arguments(issues_tool, 100))
+	issues_outcome = _collect_findings(
+		client,
+		"sonarqube_search_sonar_issues_in_projects",
+		issues_tool,
+		issues_args,
+		("issues",),
+	)
+	outcomes.append(
+		_scope_findings(issues_outcome, changed_components, ("issues",))
 	)
 
 	measures_tool = tool_map["sonarqube_get_component_measures"]
 	measures_args = {"metricKeys": metric_keys}
 	if measures_tool is not None:
 		_set_project_argument(measures_args, measures_tool, project_key)
+		_set_argument(
+			measures_args, measures_tool, ("branch",), branch, default="branch"
+		)
 		# A configured server-side project key removes projectKey from the
 		# generated schema; the helper leaves it out in that case.
 	measure_outcome = _call_or_missing(
@@ -381,22 +481,69 @@ def _collect(
 		for outcome in outcomes
 		if outcome.name != "sonarqube_search_metrics"
 	]
-	failed = [outcome for outcome in required if outcome.status == "failed"]
-	if failed:
-		status = "failed"
-		reason = (
-			"SonarQube MCP snapshot incomplete: "
-			+ "; ".join(outcome.description for outcome in failed)
+	blocking_names = {
+		"sonarqube_search_security_hotspot",
+		"sonarqube_search_sonar_issues_in_projects",
+	}
+	blocking = [
+		outcome for outcome in required if outcome.name in blocking_names
+	]
+	blocking_failures = [
+		outcome for outcome in blocking if outcome.status != "passed"
+	]
+	if blocking_failures:
+		status = "partial" if any(
+			outcome.status == "passed" for outcome in blocking
+		) else "failed"
+		prefix = (
+			"SonarQube MCP snapshot partial: "
+			if status == "partial"
+			else "SonarQube MCP snapshot incomplete: "
+		)
+		reason = prefix + "; ".join(
+			outcome.description for outcome in blocking_failures
 		)
 	else:
 		status = "passed"
 		reason = (
 			"SonarQube MCP snapshot complete: "
-			+ "; ".join(outcome.description for outcome in required)
+			+ "; ".join(
+				outcome.description
+				for outcome in required
+				if outcome.status == "passed"
+			)
+		)
+	optional_failures = [
+		outcome
+		for outcome in required
+		if outcome.name not in blocking_names
+		and outcome.status not in {"passed", "skipped"}
+	]
+	if optional_failures:
+		if status == "passed":
+			status = "partial"
+			reason = reason.replace(
+				"SonarQube MCP snapshot complete:",
+				"SonarQube MCP snapshot partial:",
+				1,
+			)
+		reason += "; optional check gaps: " + "; ".join(
+			outcome.description for outcome in optional_failures
 		)
 	violation_count = _violation_count(outcomes)
 	if violation_count:
 		reason += f"; {violation_count} SonarQube violation(s) detected"
+	analysis_id = _analysis_id(outcomes)
+	branch_available = branch_outcome.status in {"passed", "skipped"}
+	correlated = (
+		branch_available
+		and (
+			expected_analysis_id is None
+			or analysis_id == expected_analysis_id
+		)
+	)
+	if expected_analysis_id is not None and not correlated:
+		reason += "; current MCP result could not be correlated to the staged analysis"
 	return SonarQubeReportResult(
 		status=status,
 		reason=_safe_text(reason, 600),
@@ -404,6 +551,102 @@ def _collect(
 		project_key=project_key,
 		outcomes=tuple(outcomes),
 		violation_count=violation_count,
+		branch=branch,
+		analysis_id=analysis_id,
+		correlated=correlated,
+	)
+
+
+def _collect_branch_scope(
+	client: Any,
+	tool: dict[str, Any] | None,
+	project_key: str,
+	branch: str | None,
+	minimum_analysis_at: float | None = None,
+) -> ToolOutcome:
+	"""Verify that a configured branch has an uploaded Sonar analysis."""
+	if not branch:
+		return ToolOutcome(
+			name="sonarqube_list_branches",
+			tool_name=_tool_name(tool) if tool else None,
+			status="skipped",
+			description="no explicit SonarQube branch was configured",
+		)
+	if tool is None:
+		return ToolOutcome(
+			name="sonarqube_list_branches",
+			tool_name=None,
+			status="unavailable",
+			description=(
+				"SonarQube branch inventory tool is unavailable; "
+				"configured branch cannot be verified"
+			),
+		)
+	arguments: dict[str, Any] = {}
+	_set_project_argument(arguments, tool, project_key)
+	outcome = _call_tool(
+		client,
+		"sonarqube_list_branches",
+		tool,
+		arguments,
+	)
+	if outcome.status != "passed" or not isinstance(outcome.data, dict):
+		return outcome
+	raw_branches = outcome.data.get("branches")
+	branches = (
+		[
+			item
+			for item in raw_branches
+			if isinstance(item, dict)
+			and isinstance(item.get("name"), str)
+			and item.get("name").strip()
+		]
+		if isinstance(raw_branches, list)
+		else []
+	)
+	matching = [
+		item for item in branches if item.get("name", "").strip() == branch
+	]
+	if not matching:
+		return ToolOutcome(
+			name=outcome.name,
+			tool_name=outcome.tool_name,
+			status="unavailable",
+			description=(
+				"configured SonarQube branch has no uploaded analysis: "
+				+ _safe_text(branch, 256)
+			),
+			data=outcome.data,
+		)
+	if minimum_analysis_at is not None:
+		analysis_times = [
+			_analysis_timestamp(item.get("analysisDate"))
+			for item in matching
+		]
+		if not any(
+			value is not None and value >= minimum_analysis_at - 30
+			for value in analysis_times
+		):
+			return ToolOutcome(
+				name=outcome.name,
+				tool_name=outcome.tool_name,
+				status="unavailable",
+				description=(
+					"configured SonarQube branch analysis is not newer than "
+					"the staged scan: "
+					+ _safe_text(branch, 256)
+				),
+				data=outcome.data,
+			)
+	return ToolOutcome(
+		name=outcome.name,
+		tool_name=outcome.tool_name,
+		status=outcome.status,
+		description=(
+			"configured SonarQube branch is present: "
+			+ _safe_text(branch, 256)
+		),
+		data=outcome.data,
 	)
 
 
@@ -415,7 +658,7 @@ def _collect_duplications(
 ) -> ToolOutcome:
 	"""Query duplications for each changed file and aggregate the results."""
 	if tool is None:
-		return _missing("sonarqube_get_duplications")
+		return _missing("sonarqube_get_duplications", required=False)
 
 	components = _changed_components(delta, project_key)
 	if not components:
@@ -444,8 +687,15 @@ def _collect_duplications(
 		)
 	truncated = len(components) > MAX_DUPLICATION_FILES
 	data = {"files": entries, "truncated": truncated}
-	if any(entry["status"] != "passed" for entry in entries):
-		status = "failed"
+	failures = [
+		entry for entry in entries if entry["status"] not in {"passed", "skipped"}
+	]
+	if failures:
+		status = (
+			"unavailable"
+			if all(entry["status"] == "unavailable" for entry in failures)
+			else "failed"
+		)
 	else:
 		status = "passed"
 	description = _describe_duplications(data, status)
@@ -465,8 +715,154 @@ def _call_or_missing(
 	arguments: dict[str, Any],
 ) -> ToolOutcome:
 	if tool is None:
-		return _missing(name)
+		return _missing(name, required=False)
 	return _call_tool(client, name, tool, arguments)
+
+
+def _collect_findings(
+	client: Any,
+	name: str,
+	tool: dict[str, Any] | None,
+	arguments: dict[str, Any],
+	item_keys: tuple[str, ...],
+) -> ToolOutcome:
+	"""Collect a bounded finding set before applying client-side scoping."""
+	if tool is None:
+		return _missing(name)
+	outcome = _call_tool(client, name, tool, arguments)
+	if outcome.status != "passed" or not isinstance(outcome.data, dict):
+		return outcome
+	if _has_component_argument(tool):
+		return outcome
+
+	item_key = next(
+		(key for key in item_keys if isinstance(outcome.data.get(key), list)),
+		None,
+	)
+	if item_key is None:
+		return ToolOutcome(
+			name=name,
+			tool_name=_tool_name(tool),
+			status="failed",
+			description="SonarQube finding response shape unavailable",
+		)
+	paging = outcome.data.get("paging")
+	total = paging.get("total") if isinstance(paging, dict) else None
+	items = outcome.data.get(item_key, [])
+	if not isinstance(total, int) or total <= len(items):
+		return outcome
+	if not _has_page_index(tool):
+		return ToolOutcome(
+			name=name,
+			tool_name=_tool_name(tool),
+			status="failed",
+			description="unscoped SonarQube findings exceed one page",
+		)
+
+	all_items = list(items)
+	for page in range(2, MAX_FINDING_PAGES + 1):
+		page_arguments = dict(arguments)
+		_set_page_index(page_arguments, tool, page)
+		page_outcome = _call_tool(client, name, tool, page_arguments)
+		if page_outcome.status != "passed" or not isinstance(
+			page_outcome.data, dict
+		):
+			return page_outcome
+		page_items = page_outcome.data.get(item_key, []) if item_key else []
+		if not isinstance(page_items, list):
+			break
+		all_items.extend(page_items)
+		if len(all_items) >= total or not page_items:
+			break
+
+	if len(all_items) < total:
+		return ToolOutcome(
+			name=name,
+			tool_name=_tool_name(tool),
+			status="failed",
+			description="unscoped SonarQube findings exceeded bounded pagination",
+		)
+	data = dict(outcome.data)
+	data[item_key] = all_items
+	paging = dict(paging)
+	paging["total"] = len(all_items)
+	data["paging"] = paging
+	return ToolOutcome(
+		name=name,
+		tool_name=_tool_name(tool),
+		status="passed",
+		description=_describe(name, data),
+		data=data,
+	)
+
+
+def _scope_findings(
+	outcome: ToolOutcome,
+	changed_components: list[str],
+	item_keys: tuple[str, ...],
+) -> ToolOutcome:
+	"""Keep only findings whose component is in the current changed set."""
+	if outcome.status != "passed" or not isinstance(outcome.data, dict):
+		return outcome
+	item_key = next(
+		(key for key in item_keys if isinstance(outcome.data.get(key), list)),
+		None,
+	)
+	if item_key is None:
+		return outcome
+	items = outcome.data[item_key]
+	if not isinstance(items, list):
+		return outcome
+	filtered = [
+		item
+		for item in items
+		if isinstance(item, dict)
+		and _component_matches(item.get("component"), changed_components)
+	]
+	data = dict(outcome.data)
+	data[item_key] = filtered
+	paging = data.get("paging")
+	if isinstance(paging, dict):
+		paging = dict(paging)
+		paging["total"] = len(filtered)
+		data["paging"] = paging
+	return ToolOutcome(
+		name=outcome.name,
+		tool_name=outcome.tool_name,
+		status=outcome.status,
+		description=_describe(outcome.name, data),
+		data=data,
+	)
+
+
+def _has_component_argument(tool: dict[str, Any]) -> bool:
+	properties = _properties(tool)
+	return bool(
+		properties
+		and any(
+			key in properties
+			for key in ("components", "componentKeys", "componentKey", "component")
+		)
+	)
+
+
+def _has_page_index(tool: dict[str, Any]) -> bool:
+	properties = _properties(tool)
+	return properties is None or any(
+		key in properties for key in ("p", "pageIndex")
+	)
+
+
+def _set_page_index(
+	arguments: dict[str, Any],
+	tool: dict[str, Any],
+	page: int,
+) -> None:
+	properties = _properties(tool)
+	if properties is None or "p" in properties:
+		arguments["p"] = page
+	elif "pageIndex" in properties:
+		arguments["pageIndex"] = page
 
 
 def _call_tool(
@@ -482,7 +878,7 @@ def _call_tool(
 		return ToolOutcome(
 			name=name,
 			tool_name=_tool_name(tool),
-			status="failed",
+			status="unavailable" if _is_http_404(exc) else "failed",
 			description=_exception_reason(exc),
 		)
 	if not isinstance(data, dict):
@@ -502,12 +898,16 @@ def _call_tool(
 	)
 
 
-def _missing(name: str) -> ToolOutcome:
+def _missing(name: str, *, required: bool = True) -> ToolOutcome:
 	return ToolOutcome(
 		name=name,
 		tool_name=None,
-		status="failed",
-		description="required MCP tool is unavailable",
+		status="failed" if required else "unavailable",
+		description=(
+			"required MCP tool is unavailable"
+			if required
+			else "optional MCP tool is unavailable"
+		),
 	)
 
 
@@ -533,6 +933,10 @@ def _with_report(
 		report_path=path,
 		outcomes=result.outcomes,
 		violation_count=result.violation_count,
+		branch=result.branch,
+		fresh=result.fresh,
+		analysis_id=result.analysis_id,
+		correlated=result.correlated,
 	)
 
 
@@ -571,6 +975,7 @@ def _markdown(result: SonarQubeReportResult, source: str) -> str:
 		f"- Updated (UTC): `{updated}`",
 		f"- Trigger: `{_safe_text(source, 80)}`",
 		f"- Project: `{_safe_text(result.project_key or 'unknown', 256)}`",
+		f"- Branch: `{_safe_text(result.branch or 'default', 256)}`",
 		f"- Status: **{result.status.upper()}**",
 		f"- Snapshot duration: `{result.duration_s:.1f}s`",
 		"",
@@ -748,6 +1153,8 @@ def _describe_duplications(data: Any, status: str) -> str:
 			file_groups, file_blocks = _duplication_counts(entry.get("result"))
 			groups += file_groups
 			blocks += file_blocks
+	if status == "unavailable":
+		return f"duplication query unavailable for at least one of {file_count} file(s)"
 	if status != "passed":
 		return f"duplication query failed for at least one of {file_count} file(s)"
 	if groups == 0:
@@ -800,6 +1207,43 @@ def _violation_count(outcomes: list[ToolOutcome]) -> int:
 				("hotspots", "securityHotspots"),
 			)
 	return count
+
+
+def _analysis_id(outcomes: list[ToolOutcome]) -> str | None:
+	"""Extract an analysis identifier when the MCP server returns one."""
+	def find(value: Any, depth: int = 0) -> set[str]:
+		if depth > 6:
+			return set()
+		if isinstance(value, dict):
+			found: set[str] = set()
+			for key in ("analysisId", "analysis_id"):
+				candidate = value.get(key)
+				if isinstance(candidate, str) and candidate.strip():
+					found.add(candidate.strip())
+			for child in value.values():
+				found.update(find(child, depth + 1))
+			return found
+		elif isinstance(value, list):
+			found = set()
+			for child in value[:100]:
+				found.update(find(child, depth + 1))
+			return found
+		return set()
+
+	identifiers: set[str] = set()
+	for outcome in outcomes:
+		identifiers.update(find(outcome.data))
+	return next(iter(identifiers)) if len(identifiers) == 1 else None
+
+
+def _analysis_timestamp(value: Any) -> float | None:
+	"""Parse Sonar's branch analysis timestamp without trusting its text."""
+	if not isinstance(value, str) or not value.strip():
+		return None
+	try:
+		return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).timestamp()
+	except (TypeError, ValueError, OverflowError):
+		return None
 
 
 def _measure_values(data: Any) -> list[dict[str, str]]:
@@ -916,19 +1360,6 @@ def _extract_metric_keys(data: Any) -> list[str]:
 	return keys[:MAX_METRICS]
 
 
-def _merge_metric_keys(*groups: list[str]) -> list[str]:
-	keys: list[str] = []
-	for group in groups:
-		for key in group:
-			if (
-				isinstance(key, str)
-				and _METRIC_KEY_RE.fullmatch(key)
-				and key not in keys
-			):
-				keys.append(key)
-	return keys[:MAX_METRICS]
-
-
 def _changed_components(delta: Any, project_key: str) -> list[str]:
 	components: list[str] = []
 	for item in getattr(delta, "files", []) or []:
@@ -944,6 +1375,42 @@ def _changed_components(delta: Any, project_key: str) -> list[str]:
 		if component not in components:
 			components.append(component)
 	return components
+
+
+def _set_component_arguments(
+	arguments: dict[str, Any],
+	tool: dict[str, Any],
+	components: list[str],
+) -> None:
+	"""Pass changed component keys only when the MCP schema advertises them."""
+	if not components:
+		return
+	properties = _properties(tool)
+	if properties is None:
+		return
+	for candidate in ("components", "componentKeys", "componentKey", "component"):
+		if candidate not in properties:
+			continue
+		arguments[candidate] = (
+			components
+			if candidate in {"components", "componentKeys"}
+			else (components[0] if components else "")
+		)
+		return
+
+
+def _component_matches(value: Any, changed_components: list[str]) -> bool:
+	if not isinstance(value, str) or not value.strip():
+		return False
+	component = value.strip().replace("\\", "/")
+	for changed in changed_components:
+		target = changed.replace("\\", "/")
+		if component == target:
+			return True
+		path = target.rsplit(":", 1)[-1]
+		if component == path or component.endswith(":" + path):
+			return True
+	return False
 
 
 def _find_tool(
@@ -992,6 +1459,8 @@ def _set_argument(
 	*,
 	default: str,
 ) -> None:
+	if value is None:
+		return
 	properties = _properties(tool)
 	if properties is None:
 		arguments[default.split("=", 1)[-1]] = value
@@ -1000,7 +1469,6 @@ def _set_argument(
 		if candidate in properties:
 			arguments[candidate] = value
 			return
-	arguments[default.split("=", 1)[-1]] = value
 
 
 def _set_project_argument(
@@ -1064,8 +1532,28 @@ def _result(
 	)
 
 
+def _decorate(
+	result: SonarQubeReportResult, fresh: bool | None
+) -> SonarQubeReportResult:
+	return result if fresh is None else replace(result, fresh=fresh)
+
+
 def _exception_reason(exc: Exception) -> str:
-	return f"{type(exc).__name__}: {_safe_text(str(exc), 240)}"
+	reason = f"{type(exc).__name__}: {_safe_text(str(exc), 200)}"
+	if _is_http_404(exc):
+		reason += (
+			"; HTTP 404 usually means the project key, branch, component, "
+			"permissions, or endpoint is unavailable"
+		)
+	return _safe_text(reason, 360)
+
+
+def _is_http_404(exc: Exception) -> bool:
+	text = str(exc).casefold()
+	return bool(
+		re.search(r"\b404\b", text)
+		and any(marker in text for marker in ("http", "status", "error"))
+	)
 
 
 def _safe_text(value: Any, limit: int = 240) -> str:

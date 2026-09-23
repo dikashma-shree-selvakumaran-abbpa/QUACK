@@ -43,13 +43,16 @@ A healthy result includes:
 
 ## Daily use
 
-- `git commit` runs local checks automatically. It also runs the optional local
-  SonarQube scan and SonarQube MCP snapshot when their credentials and
-  runtimes are available. Both are advisory and fail-open.
+- `git commit` runs deterministic checks automatically. When configured, it
+  scans the exact staged snapshot and queries the read-only SonarQube MCP
+  report; a confirmed current issue or hotspot on a changed component blocks.
+  Missing or stale Sonar infrastructure fails open.
 - `quack watch` is a foreground process you keep running while you work. It
-  refreshes the SonarQube MCP report and reviews after 30 seconds without file
-  changes by default, then caches the result for commit time. Use
-  `quack watch --once` to review immediately.
+  checks the combined staged plus unstaged tracked delta with SonarQube before
+  optionally reviewing it with AI, refreshes the report after 30 seconds
+  without file changes by default, and caches the AI result for commit time.
+  Use `quack watch --once` to review immediately; the Sonar check itself does
+  not require an LLM.
 - `git push` runs an advisory AI review on unpushed commits. The default
   `copilot_sdk` provider uses the Copilot CLI's stored OAuth login.
 - The optional tool-calling investigation loop requires
@@ -67,11 +70,28 @@ $env:QUACK_SONAR_HOST_URL = "http://127.0.0.1:9002"
 ```
 
 Quack automatically finds a repository-local scanner under
-`tools\sonar-scanner-*\bin` or a scanner on `PATH`. It scans a temporary export
-of the staged index, so unstaged source changes are excluded. SonarQube
-analysis is advisory and never changes Quack's blocking exit code. Use
+the target repository's or Quack's `tools\sonar-scanner-*\bin`, or a scanner on
+`PATH`. It scans a temporary export
+of the exact staged index, so unstaged source and Sonar configuration changes
+are excluded. `sonar-project.properties` is read from the index; `.vscode`
+settings and other working-tree discovery cannot change `quack check`. Use
+validated explicit environment overrides when necessary. The scanner task must
+produce completion metadata before Quack records a fresh staged result. The
+staged identity includes the scanner fingerprint and effective source/test
+roots, exclusions, project, host, branch, and related settings. Use
+`QUACK_SONAR_HOST_URL`, `QUACK_SONAR_PROJECT_KEY`, `QUACK_SONAR_BRANCH`,
+`QUACK_SONAR_SOURCES`, `QUACK_SONAR_TESTS`, `QUACK_SONAR_EXCLUSIONS`, and
+`QUACK_SONAR_SCANNER` for project-specific settings. Tokens may be supplied as
+`SONAR_TOKEN`, `SQ_TOKEN`, or `SONARQUBE_TOKEN`.
+
+The generic `sonar-scanner` path is suitable for the Alarms FrontEnd analysis.
+BackEnd-only and mixed FrontEnd/BackEnd changes are explicitly unverified;
+Quack fails open rather than falsely claiming that a generic scan analyzed C#.
+The build-integrated `dotnet-sonarscanner` begin/build/end flow is outside this
+staged snapshot path.
+SonarQube failures and unavailable infrastructure are fail-open. Use
 `QUACK_SONAR=off` to disable it or `QUACK_SONAR_TIMEOUT_S` to set a bounded
-timeout (maximum 120 seconds).
+timeout (maximum 300 seconds; the default is 180 seconds).
 
 ## SonarQube MCP server
 
@@ -91,10 +111,25 @@ The adapter in `src\quack\mcp\sonarqube.py` starts
 and bounds each request. It defaults to `https://codescan.abb.com` with IDE
 port `64120`. `quack watch` and the staged `quack check` hook use this adapter
 to collect a bounded snapshot and refresh
-`docs\SONARQUBE_REPORT.md`.
+`docs\SONARQUBE_REPORT.md`. Issue and hotspot counts are filtered to changed
+components, and branch/project values are forwarded when supported by the
+advertised MCP schema.
 `SONARQUBE_TOKEN` can be used instead of `SQ_TOKEN`. Use a SonarQube user
 token. If the project workspace is outside the repository being reviewed,
 configure it explicitly so Podman can mount it read-only:
+
+The MCP endpoint is independent from the local scanner endpoint. Set
+`QUACK_SONAR_MCP_URL` for an explicit MCP server; otherwise `SONARQUBE_URL`
+or the adapter default (`https://codescan.abb.com`) is used. A local scanner
+default (`http://127.0.0.1:9002`) is never forwarded to MCP accidentally.
+The staged check and watch also bind the MCP workspace to the current
+repository root, preventing an inherited external-workspace setting from
+cross-contaminating separate worktrees.
+
+An unchanged staged index reuses the local scanner result, but `quack check`
+still re-queries MCP for current findings. A cached finding count is never
+trusted by itself; if MCP cannot return the matching analysis identifier, the
+snapshot is shown as unverified and remains fail-open.
 
 ```powershell
 $env:QUACK_SONAR_MCP_PROJECT_PATH = "C:\Dev\Workspace\alarms\main\prestine\Operations.HMI.App.Alarms"
@@ -136,6 +171,24 @@ quack sonar-mcp --toolset sources,measures --tool get_component_measures `
 always starts the container with `SONARQUBE_READ_ONLY=true`, so write-capable
 tools remain unavailable.
 
+## Repository initialization
+
+Run:
+
+```powershell
+quack init
+```
+
+This installs the existing Quack hooks and creates:
+
+- `.github\skills\sonar-check\SKILL.md`
+- `.github\skills\sonar-fixes\SKILL.md`
+- `.github\agents\sonar-code-review.agent.md`
+
+The command is idempotent and preserves an existing file instead of
+overwriting it. Use `quack install` when hook installation is needed without
+the repo-scoped Sonar artifacts.
+
 ## Troubleshooting
 
 | Problem | Cause | Fix |
@@ -149,6 +202,7 @@ tools remain unavailable.
 | `AI review unavailable` | The provider could not authenticate or complete the advisory request. | The commit/push still proceeds. Run `quack model`, then sign in with `copilot` and `/login` if needed. |
 | `SSLHandshakeException` or `certificate_unknown` | The corporate proxy/CA is trusted by Windows but not by Java inside the container. | Copy the public CA as `.crt`/`.pem` under `%LOCALAPPDATA%\quack\sonarqube-mcp\certs` or pass `--ca-dir <folder>`, then retry. |
 | `quack sonar-mcp: SonarQube MCP server timed out` | Podman was waiting for a long-lived MCP process to exit, or the server cannot reach SonarQube. | If the message says `Not authorized`, create a new SonarQube user token and set `SQ_TOKEN` or `SONARQUBE_TOKEN`. Otherwise update Quack with `python -m pip install --editable . --upgrade`, verify `podman image exists mcp/sonarqube`, and retry `quack sonar-mcp --project-path <folder>`. Increase `QUACK_SONAR_MCP_TIMEOUT_S` only up to 180 seconds. |
+| `SonarQube answered with Error 404` for hotspots, measures, or duplications | The project key, branch, or changed component is not visible on Codescan, or the endpoint is unavailable for that server edition. | Set `SONARQUBE_PROJECT_KEY` exactly, unset `SONARQUBE_BRANCH` unless the branch already exists, and run `quack sonar-mcp --project-key <key>` to validate the same scope. Quack reports optional duplication/measure 404s as diagnostic gaps and keeps missing issue/hotspot evidence fail-open. |
 
 ## What quack does NOT need
 
@@ -157,5 +211,6 @@ or config file: the Copilot CLI login is sufficient. The separate, optional
 tool-calling agent loop requires `QUACK_PROVIDER=github_models` and a
 `GITHUB_TOKEN` with access to GitHub Models.
 
-For a complete live walkthrough, see [DEMO.md](DEMO.md). For the full v0.3.0
+For a complete live walkthrough, see [DEMO.md](DEMO.md). For the Alarms Sonar
+workflow, see [HOW-TO-USE-SONAR.md](HOW-TO-USE-SONAR.md). For the full v0.3.0
 implementation snapshot, see [CURRENT_STATE.md](CURRENT_STATE.md).

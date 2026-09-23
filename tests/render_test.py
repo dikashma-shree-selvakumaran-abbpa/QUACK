@@ -269,6 +269,21 @@ def test_quack_alarm_absent_when_not_blocked(capsys) -> None:
 	assert "QUACK!!!!" not in capsys.readouterr().out
 
 
+def test_partial_sonar_snapshot_with_confirmed_finding_blocks(capsys) -> None:
+	render.sonar_mcp(
+		SimpleNamespace(
+			status="partial",
+			reason="one finding endpoint unavailable",
+			violation_count=1,
+			blocks_commit=True,
+		)
+	)
+
+	assert "SonarQube MCP: BLOCKED - 1 violation(s) detected" in (
+		capsys.readouterr().out
+	)
+
+
 def test_sonar_status_is_rendered_as_advisory(capsys) -> None:
 	render.report(
 		files=1,
@@ -300,6 +315,7 @@ def test_sonar_mcp_violations_are_rendered_as_blocking(capsys) -> None:
 			status="passed",
 			reason="1 SonarQube violation(s) detected",
 			violation_count=1,
+			blocks_commit=True,
 			report_path="docs/SONARQUBE_REPORT.md",
 		),
 		ai=None,
@@ -309,6 +325,31 @@ def test_sonar_mcp_violations_are_rendered_as_blocking(capsys) -> None:
 	out = capsys.readouterr().out
 	assert "BLOCKED - 1 violation(s) detected" in out
 	assert "docs/SONARQUBE_REPORT.md" in out
+
+
+def test_stale_sonar_mcp_violations_are_not_rendered_as_blocking(
+	capsys,
+) -> None:
+	render.report(
+		files=1,
+		added=1,
+		removed=0,
+		findings=[],
+		plan=None,
+		sonar_mcp=SimpleNamespace(
+			status="passed",
+			reason="stale SonarQube violation(s) detected",
+			violation_count=1,
+			blocks_commit=False,
+			report_path=None,
+		),
+		ai=None,
+		blocked=False,
+	)
+
+	out = capsys.readouterr().out
+	assert "BLOCKED" not in out
+	assert "stale SonarQube violation(s) detected" in out
 
 
 def test_install_banner_prints_wordmark(capsys) -> None:

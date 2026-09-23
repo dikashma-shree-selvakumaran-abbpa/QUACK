@@ -54,34 +54,47 @@ No apparent replacement code restoring delegates elsewhere in this path
 
 | Surface | When it runs | What it does | Network |
 |---|---|---|---|
-| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, test guidance, optional local SonarQube analysis, and an optional SonarQube MCP snapshot. | Tier 1 remains offline; the local scanner is advisory, while a completed MCP snapshot blocks on open issues or security hotspots and remains fail-open when unavailable. |
-| `quack watch` | Alongside development | Reviews changes while you work, refreshes the SonarQube MCP report, and caches a verdict for commit time. | Yes, when the configured MCP/provider services are available. |
+| `quack check` | Pre-commit | Checks secrets, merge markers, debug code, test guidance, and the exact staged SonarQube snapshot. | Tier 1 is offline; a confirmed current SonarQube MCP result can block on changed-file issues or hotspots. Unavailable Sonar infrastructure fails open. |
+| `quack watch` | Alongside development | Checks the complete tracked working delta with SonarQube, then optionally reviews it with AI and caches that AI verdict. | SonarQube and AI are used only when configured; the deterministic Sonar check does not require an LLM. |
 | `quack agent` | Pre-push | Reviews unpushed commits. Its optional investigative loop can run tests and propose fixes with `QUACK_PROVIDER=github_models`. | Yes, when a provider is available. |
 
-Secrets, merge markers, and completed SonarQube MCP snapshots with open issues
-or security hotspots block. AI and the local scanner remain advisory; missing
-credentials, offline operation, a slow provider, or rate limiting never
-prevents a commit.
+Secrets, merge markers, and a confirmed current staged SonarQube snapshot with
+open issues or security hotspots block. AI and the local scanner remain
+advisory; an unavailable Sonar connection, stale analysis, offline operation,
+a slow provider, or rate limiting never prevents a commit.
 
 ## SonarQube integration
 
-When the local SonarQube server and scanner are available, `quack check` exports
-the staged Git index to a temporary directory and submits a Python analysis to
-SonarQube. Unstaged edits are not scanned, scanner output is not printed, and
-SonarQube failures never block a commit.
+When configured, `quack check` exports the exact staged Git index to a temporary
+directory and submits the project-specific analysis to SonarQube. Unstaged
+source and Sonar configuration are never included: project properties are read
+from the index, IDE settings are ignored, and only validated explicit
+environment overrides are accepted. The staged identity includes the scanner
+path/content fingerprint and the complete effective scanner settings,
+including source/test roots, exclusions, project, host, and branch. Any index
+or configuration change forces a new local scan.
 
 The default server is `http://127.0.0.1:9002`. Set a local analysis token before
 using the integration:
 
 ```powershell
-$env:SONAR_TOKEN = "<TOKEN>"
+$env:SONAR_TOKEN = "<TOKEN>" # SONAR_TOKEN, SQ_TOKEN, or SONARQUBE_TOKEN
 ```
 
-Quack discovers `sonar-scanner` on `PATH` or under `tools\sonar-scanner-*\bin`.
-Use `QUACK_SONAR_HOST_URL`, `QUACK_SONAR_PROJECT_KEY`, and
-`QUACK_SONAR_SCANNER` to override the defaults. Set `QUACK_SONAR=off` (or
-`QUACK_DISABLE_SONAR=1`) to disable the advisory scan; the timeout is bounded
-by `QUACK_SONAR_TIMEOUT_S` and capped at 120 seconds.
+Quack discovers `sonar-scanner` on `PATH`, under the target repository's
+`tools\sonar-scanner-*\bin`, or under Quack's own `tools\sonar-scanner-*\bin`.
+An invalid `QUACK_SONAR_SCANNER` override no longer prevents that fallback.
+Use `QUACK_SONAR_HOST_URL`, `QUACK_SONAR_PROJECT_KEY`,
+`QUACK_SONAR_BRANCH`, `QUACK_SONAR_SOURCES`, `QUACK_SONAR_TESTS`,
+`QUACK_SONAR_EXCLUSIONS`, and `QUACK_SONAR_SCANNER` for explicit overrides.
+The generic scanner is used for FrontEnd-style sources. BackEnd-only and mixed
+FrontEnd/BackEnd staged changes remain unverified because generic
+`sonar-scanner` does not analyze C#; they fail open rather than claiming
+coverage. A build-integrated `dotnet-sonarscanner` begin/build/end flow is
+outside this staged snapshot path.
+Set `QUACK_SONAR=off` (or `QUACK_DISABLE_SONAR=1`) to disable the scan; the
+timeout is bounded by `QUACK_SONAR_TIMEOUT_S` and capped at 300 seconds. The default is 180 seconds
+because the first FrontEnd scan may download language analyzers and runtimes.
 
 ### SonarQube MCP server
 
@@ -95,13 +108,17 @@ without modifying the target repository. Watch report updates are atomic and
 the generated file is excluded from watch change detection.
 
 Each snapshot calls the requested duplication, security-hotspot, open-issue,
-and component-measure operations. Component measures include every metric
-advertised by the server when metric discovery is available, plus the required
-`cognitive_complexity`, `ncloc`, and `reliability_rating` fields. The report and terminal descriptions explain whether duplicate blocks, hotspots,
-open issues, and metric values were found. A completed snapshot with open
-issues or security hotspots blocks `quack check`; missing credentials, Podman,
-unavailable tools, timeouts, and malformed responses are recorded as
-fail-open outcomes and do not block the commit.
+and component-measure operations. Issue and hotspot results are filtered to
+the changed Sonar components, and component arguments are sent when the MCP
+schema advertises them. Component measures include every metric advertised by
+the server when metric discovery is available, plus the required
+`cognitive_complexity`, `ncloc`, and `reliability_rating` fields. A matching
+local scanner result still re-runs the MCP finding query; its old violation
+count is never trusted. If the server does not return a matching analysis
+identifier, that cached MCP result is explicitly unverified and fails open.
+Only a current correlated snapshot with open issues or security hotspots blocks
+`quack check`; missing credentials, Podman, unavailable tools, timeouts, stale
+reports, and malformed responses do not block the commit.
 
 ```powershell
 $env:SQ_TOKEN = "<TOKEN>"
@@ -146,7 +163,9 @@ Tool names may be the displayed `sonarqube_*` name or the native MCP name.
 `--json` prints the complete successful MCP response for scripting. Quack
 keeps the container in read-only mode, so write-capable tools are not exposed.
 The MCP snapshot is used by watch and pre-commit; the staged local scanner
-remains an additional pre-commit check. The optional `quack agent`
+remains an additional pre-commit check. Watch reviews staged plus unstaged
+tracked changes, while pre-commit uses only the exact index. The optional
+`quack agent`
 investigation can use the same read-only MCP capability during pre-push
 analysis.
 
@@ -165,6 +184,7 @@ Options:
 Commands:
   agent    Run the agentic pre-push analysis loop.
   check    Run the pre-commit quality checks on staged changes.
+  init     Initialize hooks and repo-scoped Sonar Copilot artifacts.
   install  Add the quack stanza to .pre-commit-config.yaml and install...
   metrics  Summarize local metrics without network access.
   model    Report model configuration and connectivity without changing it.
@@ -176,9 +196,13 @@ Commands:
 
 1. `pipx install git+https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK`
 2. Run `copilot`, enter `/login`, complete the browser flow, then exit.
-3. In your repository, run `quack install`.
+3. In your repository, run `quack init` to install hooks and create the
+   repo-scoped Sonar check/fix skills and code-review agent. Existing artifact
+   files are preserved; `quack install` remains available when only hooks are
+   needed.
 
-See [SETUP.md](SETUP.md) for details and troubleshooting and [CURRENT_STATE.md](CURRENT_STATE.md) for the
+See [SETUP.md](SETUP.md) for details and troubleshooting, [HOW-TO-USE-SONAR.md](HOW-TO-USE-SONAR.md)
+for the complete Alarms Sonar walkthrough, and [CURRENT_STATE.md](CURRENT_STATE.md) for the
 code-grounded v0.3.0 architecture snapshot.
 
 ## Status

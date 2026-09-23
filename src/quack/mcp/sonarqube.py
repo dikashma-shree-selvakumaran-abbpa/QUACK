@@ -39,6 +39,38 @@ _DISABLED_VALUES = {"0", "false", "no", "off"}
 _TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@-]*$")
 _PROJECT_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,256}$")
+_BRANCH_MAX_LENGTH = 256
+_PROXY_ENV_NAMES = (
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
+)
+# Stable Sonar report operations remain safe when the server omits annotations.
+_READ_ONLY_TOOL_NAMES = frozenset(
+	{
+		"get_component_measures",
+		"get_duplications",
+		"list_branches",
+		"search_metrics",
+		"search_security_hotspot",
+		"search_security_hotspots",
+		"search_sonar_issues_in_projects",
+		"security_hotspot_search",
+		"security_hotspots_search",
+		"sonarqube_get_component_measures",
+		"sonarqube_get_duplications",
+		"sonarqube_list_branches",
+		"sonarqube_search_metrics",
+		"sonarqube_search_security_hotspot",
+		"sonarqube_search_security_hotspots",
+		"sonarqube_search_sonar_issues_in_projects",
+		"sonarqube_security_hotspot_search",
+		"sonarqube_security_hotspots_search",
+	}
+)
 
 
 def _new_container_name() -> str:
@@ -67,6 +99,7 @@ class SonarQubeMcpConfig:
 	ca_dir: Path | None = None
 	image: str = DEFAULT_IMAGE
 	timeout_s: float = DEFAULT_TIMEOUT_S
+	branch: str | None = None
 	container_name: str = field(default_factory=_new_container_name, repr=False)
 
 	@classmethod
@@ -79,6 +112,7 @@ class SonarQubeMcpConfig:
 		ca_dir: str | Path | None = None,
 		server_url: str | None = None,
 		base_path: str | Path | None = None,
+		branch: str | None = None,
 	) -> SonarQubeMcpConfig | None:
 		"""Build configuration from the generated MCP environment contract."""
 		if not enabled():
@@ -87,7 +121,9 @@ class SonarQubeMcpConfig:
 		if not token:
 			return None
 		url = _normalise_url(
-			server_url or os.environ.get("SONARQUBE_URL", DEFAULT_URL)
+			server_url
+			or os.environ.get("QUACK_SONAR_MCP_URL")
+			or os.environ.get("SONARQUBE_URL", DEFAULT_URL)
 		)
 		if url is None:
 			raise SonarQubeMcpUnavailable("invalid SonarQube URL")
@@ -100,9 +136,24 @@ class SonarQubeMcpConfig:
 		resolved_project_path = _resolve_project_path(raw_project_path, base_path)
 		raw_ca_dir = _configured_ca_dir(ca_dir)
 		resolved_ca_dir = _resolve_ca_dir(raw_ca_dir, base_path)
+		raw_branch = (
+			branch
+			or os.environ.get("QUACK_SONAR_BRANCH")
+			or os.environ.get("SONARQUBE_BRANCH")
+			or os.environ.get("SONAR_BRANCH")
+			or _discover_branch(resolved_project_path)
+		)
+		branch_value = raw_branch.strip() if raw_branch else ""
+		if (
+			len(branch_value) > _BRANCH_MAX_LENGTH
+			or any(ord(char) < 32 or ord(char) == 127 for char in branch_value)
+		):
+			raise SonarQubeMcpUnavailable("invalid SonarQube branch")
 		raw_project_key = (
 			project_key
 			or os.environ.get("SONARQUBE_PROJECT_KEY")
+			or os.environ.get("QUACK_SONAR_PROJECT_KEY")
+			or os.environ.get("SONAR_PROJECT_KEY")
 			or _discover_project_key(resolved_project_path)
 		)
 		if raw_project_key and not _PROJECT_KEY_RE.fullmatch(raw_project_key.strip()):
@@ -125,6 +176,7 @@ class SonarQubeMcpConfig:
 			ca_dir=resolved_ca_dir,
 			image=image,
 			timeout_s=_timeout_seconds(),
+			branch=branch_value or None,
 		)
 
 	def podman_command(self) -> list[str]:
@@ -152,6 +204,11 @@ class SonarQubeMcpConfig:
 			command += ["-e", "SONARQUBE_PROJECT_KEY"]
 		if self.toolsets:
 			command += ["-e", "SONARQUBE_TOOLSETS"]
+		if self.branch:
+			command += ["-e", "SONARQUBE_BRANCH"]
+		for name in _PROXY_ENV_NAMES:
+			if os.environ.get(name):
+				command += ["-e", name]
 		if self.project_path:
 			command += [
 				"-v",
@@ -177,6 +234,8 @@ class SonarQubeMcpConfig:
 			environment["SONARQUBE_PROJECT_KEY"] = self.project_key
 		if self.toolsets:
 			environment["SONARQUBE_TOOLSETS"] = ",".join(self.toolsets)
+		if self.branch:
+			environment["SONARQUBE_BRANCH"] = self.branch
 		return environment
 
 
@@ -242,6 +301,11 @@ class SonarQubeMcpClient:
 	def project_key(self) -> str | None:
 		"""Return the configured project scope without exposing credentials."""
 		return self._config.project_key
+
+	@property
+	def branch(self) -> str | None:
+		"""Return the configured branch scope without exposing credentials."""
+		return self._config.branch
 
 	def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
 		"""Call an advertised tool and return bounded model-readable content."""
@@ -361,6 +425,10 @@ class SonarQubeMcpClient:
 			timeout_s=self._config.timeout_s,
 		)
 		if exit_code != 0:
+			if exit_code == runio.MCP_RESPONSE_TOO_LARGE:
+				raise SonarQubeMcpUnavailable(
+					"SonarQube MCP response exceeded the bounded output limit"
+				)
 			if exit_code == -1:
 				diagnostic = _server_diagnostic(output, self._config.token)
 				if diagnostic:
@@ -402,6 +470,7 @@ def client_from_environment(
 	ca_dir: str | Path | None = None,
 	server_url: str | None = None,
 	base_path: str | Path | None = None,
+	branch: str | None = None,
 ) -> SonarQubeMcpClient | None:
 	"""Create a client when the provider, Podman, and token are available."""
 	client, _reason = connection_from_environment(
@@ -412,6 +481,7 @@ def client_from_environment(
 		ca_dir=ca_dir,
 		server_url=server_url,
 		base_path=base_path,
+		branch=branch,
 	)
 	return client
 
@@ -425,6 +495,7 @@ def connection_from_environment(
 	ca_dir: str | Path | None = None,
 	server_url: str | None = None,
 	base_path: str | Path | None = None,
+	branch: str | None = None,
 ) -> tuple[SonarQubeMcpClient | None, str | None]:
 	"""Return a client and an actionable reason when setup is incomplete."""
 	if not enabled():
@@ -445,6 +516,7 @@ def connection_from_environment(
 			ca_dir=ca_dir,
 			server_url=server_url,
 			base_path=base_path,
+			branch=branch,
 		)
 	except SonarQubeMcpUnavailable as exc:
 		return None, exc.reason
@@ -626,6 +698,23 @@ def _discover_project_key(project_path: Path | None) -> str | None:
 	return None
 
 
+def _discover_branch(project_path: Path | None) -> str | None:
+	"""Read an optional Sonar branch from a project properties file."""
+	if project_path is None:
+		return None
+	properties_path = project_path / "sonar-project.properties"
+	try:
+		lines = properties_path.read_text(encoding="utf-8").splitlines()
+	except (OSError, UnicodeError):
+		return None
+	for line in lines:
+		key, separator, value = line.partition("=")
+		if separator and key.strip() in {"sonar.branch.name", "sonar.branch"}:
+			value = value.strip()
+			return value or None
+	return None
+
+
 def _normalise_url(raw: str) -> str | None:
 	try:
 		parts = urlsplit(raw.strip())
@@ -728,9 +817,17 @@ def format_tool_result(result: dict[str, Any]) -> str:
 
 def _is_read_only(tool: dict[str, Any]) -> bool:
 	annotations = tool.get("annotations")
-	if isinstance(annotations, dict) and annotations.get("readOnlyHint") is False:
-		return False
-	return True
+	if isinstance(annotations, dict):
+		read_only_hint = annotations.get("readOnlyHint")
+		if read_only_hint is True:
+			return True
+		if read_only_hint is False:
+			return False
+	name = tool.get("name")
+	return (
+		isinstance(name, str)
+		and name.casefold() in _READ_ONLY_TOOL_NAMES
+	)
 
 
 def _openai_tool_name(name: str, used_names: set[str]) -> str:
