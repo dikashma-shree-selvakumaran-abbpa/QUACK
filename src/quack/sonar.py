@@ -356,7 +356,7 @@ def scan(
 
 			properties = _scanner_properties(settings, snapshot)
 			sonar_debug.emit(
-				"SonarQube scanner request",
+				"SonarQube CLI input",
 				{
 					"scanner": scanner,
 					"snapshot_scope": snapshot_scope,
@@ -390,7 +390,7 @@ def scan(
 					os.environ.pop("SONAR_TOKEN", None)
 			task_id, analysis_id = _analysis_metadata(snapshot)
 			sonar_debug.emit(
-				"SonarQube scanner response",
+				"SonarQube CLI output",
 				{
 					"exit_code": exit_code,
 					"output": scanner_output,
@@ -427,7 +427,7 @@ def scan(
 		)
 		analysis_id = completed_analysis_id or analysis_id
 		sonar_debug.emit(
-			"SonarQube analysis result",
+			"SonarQube CLI analysis output",
 			{
 				"status": "passed" if completed else "pending",
 				"project_key": project_key,
