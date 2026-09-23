@@ -220,8 +220,9 @@ quack watch
 ```
 
 Use `Ctrl+C` to stop it. `quack watch --once` reports the Sonar status and
-refreshes `docs\SONARQUBE_REPORT.md`. The report is generated output; review it
-locally and do not stage it as application source.
+prints each returned violation with its rule, severity, component, line, and
+message. It also refreshes `docs\SONARQUBE_REPORT.md`. The report is generated
+output; review it locally and do not stage it as application source.
 
 The separate `AI review (advisory): ... risk: ...` line is a model-dependent
 Tier 2 signal, not a Sonar finding or a commit decision. A `medium` or `high`
@@ -243,6 +244,7 @@ Expected behavior for the deliberate fixture is a Sonar message similar to:
 
 ```text
 SonarQube MCP: BLOCKED - <n> violation(s) detected
+[HOTSPOT] <rule> [<severity>] <component>:<line> - <message>
 review unavailable (no model configured)
 ```
 

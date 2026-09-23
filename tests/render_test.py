@@ -327,6 +327,46 @@ def test_sonar_mcp_violations_are_rendered_as_blocking(capsys) -> None:
 	assert "docs/SONARQUBE_REPORT.md" in out
 
 
+def test_sonar_mcp_prints_violation_details(capsys) -> None:
+	render.sonar_mcp(
+		SimpleNamespace(
+			status="passed",
+			reason="1 SonarQube violation(s) detected",
+			violation_count=1,
+			blocks_commit=True,
+			outcomes=(
+				SimpleNamespace(
+					name="sonarqube_search_security_hotspot",
+					status="passed",
+					data={
+						"hotspots": [
+							{
+								"ruleKey": "typescript:S1523",
+								"vulnerabilityProbability": "MEDIUM",
+								"component": (
+									"Operations.HMI.App.Alarms:"
+									"FrontEnd/packages/alarms/src/quack-sonar-violation.ts"
+								),
+								"textRange": {"startLine": 6},
+								"message": (
+									"dynamic injection/execution requires safety review"
+								),
+							}
+						]
+					},
+				),
+			),
+		)
+	)
+
+	out = capsys.readouterr().out
+	assert "SonarQube violation details:" in out
+	assert "[HOTSPOT] typescript:S1523 [MEDIUM]" in out
+	assert "quack-sonar-violation.ts" in out
+	assert ":6 - dynamic injection/execution" in out
+	assert "dynamic injection/execution requires safety review" in out
+
+
 def test_stale_sonar_mcp_violations_are_not_rendered_as_blocking(
 	capsys,
 ) -> None:
