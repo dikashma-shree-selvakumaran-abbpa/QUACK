@@ -26,6 +26,13 @@ interface CheckResponse {
     aiError: string | null;
 }
 
+interface ReviewResponse {
+    schemaVersion: number;
+    status: "reviewed" | "skipped" | "error";
+    diffHash?: string;
+    reason?: string;
+}
+
 interface AgentStages {
     tier1: { blocked: boolean; findings: Finding[]; note?: string } | null;
     tier2: {
@@ -187,6 +194,58 @@ async function runCheck(): Promise<void> {
     await refreshStatus();
     void checkInstallPlan();
     void fetchMetrics();
+}
+
+async function runReview(): Promise<void> {
+    const root = workspaceRoot();
+    if (!root) {
+        vscode.window.showWarningMessage("quack: open a folder first.");
+        return;
+    }
+
+    const model = selectedModel();
+    let data: ReviewResponse;
+    try {
+        data = await vscode.window.withProgress(
+            {
+                location: vscode.ProgressLocation.Notification,
+                title: "quack: reviewing changes",
+                cancellable: false,
+            },
+            async () => {
+                return (await post(
+                    "/review",
+                    model ? { repo_path: root, model } : { repo_path: root }
+                )) as ReviewResponse;
+            }
+        );
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        vscode.window.showErrorMessage(
+            message.includes("fetch")
+                ? `quack: no server at ${serverUrl()} - run 'quack serve'`
+                : `quack: ${message}`
+        );
+        await refreshStatus();
+        return;
+    }
+
+    if (data.status === "reviewed") {
+        vscode.window.showInformationMessage(
+            "quack: AI review cached. It will appear on your next commit check."
+        );
+        await refreshStatus();
+        void checkInstallPlan();
+        void fetchMetrics();
+    } else if (data.status === "skipped") {
+        vscode.window.showInformationMessage(
+            `quack: ${data.reason || "nothing to review"}.`
+        );
+    } else {
+        vscode.window.showWarningMessage(
+            `quack: AI review failed — ${data.reason || "unknown error"}.`
+        );
+    }
 }
 
 interface ModelsResponse {
@@ -660,6 +719,7 @@ class QuackProvider implements vscode.TreeDataProvider<QuackNode> {
         };
         node.children = [
             make("Check staged changes", "check", "quack.check"),
+            make("Review changes now", "eye", "quack.review"),
             make("Run AI review", "play", "quack.agent"),
             make("Select model", "settings-gear", "quack.selectModel"),
         ];
@@ -840,6 +900,7 @@ export function activate(context: vscode.ExtensionContext): void {
         diagnostics,
         statusBar,
         vscode.commands.registerCommand("quack.check", runCheck),
+        vscode.commands.registerCommand("quack.review", runReview),
         vscode.commands.registerCommand("quack.agent", runAgent),
         vscode.commands.registerCommand("quack.selectModel", selectModel),
         vscode.commands.registerCommand("quack.install", runInstall),

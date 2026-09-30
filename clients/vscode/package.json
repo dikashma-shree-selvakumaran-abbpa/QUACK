@@ -36,12 +36,22 @@
         "title": "QUACK: Check staged changes"
       },
       {
+        "command": "quack.review",
+        "title": "quack: Review changes now",
+        "category": "quack"
+      },
+      {
         "command": "quack.agent",
         "title": "QUACK: Run AI review and investigation"
       },
       {
         "command": "quack.selectModel",
         "title": "QUACK: Select model"
+      },
+      {
+        "command": "quack.install",
+        "title": "quack: Install git hooks",
+        "category": "quack"
       }
     ],
     "configuration": {
