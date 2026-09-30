@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MAX_AGE_S = 24 * 60 * 60
-MAX_ENTRIES = 40
+MAX_ENTRIES_PER_REPO = 5
+MAX_ENTRIES = 100
 MAX_FILE_SIZE = 1_000_000
 _FILENAME = "sonar-state.json"
 
@@ -186,8 +187,13 @@ def write(
 	state: State,
 	*,
 	path_override: Path | None = None,
+	max_entries: int = MAX_ENTRIES,
+	max_entries_per_repo: int = MAX_ENTRIES_PER_REPO,
 ) -> None:
 	"""Persist one state record atomically and fail open on all I/O errors."""
+	# Known limitation: two concurrent writers can lose an update because sonar state
+	# writes use a read-modify-write pattern with atomic replace. Per-repository capping
+	# reduces cross-repo retention collisions, but does not eliminate concurrent write races.
 	try:
 		state_path = path_override or path()
 		entries = _read_entries(state_path)
@@ -218,9 +224,26 @@ def write(
 			)
 		]
 		entries.insert(0, encoded_state)
+
+		by_repo: dict[str, list[dict]] = {}
+		for item in entries:
+			rk = str(item.get("repo_root", ""))
+			by_repo.setdefault(rk, []).append(item)
+
+		pruned: list[dict] = []
+		for repo_entries in by_repo.values():
+			sorted_repo = sorted(
+				repo_entries,
+				key=lambda item: float(item.get("timestamp", 0)),
+				reverse=True,
+			)[:max_entries_per_repo]
+			pruned.extend(sorted_repo)
+
 		entries = sorted(
-			entries, key=lambda item: float(item.get("timestamp", 0)), reverse=True
-		)[:MAX_ENTRIES]
+			pruned,
+			key=lambda item: float(item.get("timestamp", 0)),
+			reverse=True,
+		)[:max_entries]
 		encoded = json.dumps({"entries": entries}, separators=(",", ":"))
 		if len(encoded.encode("utf-8")) > MAX_FILE_SIZE:
 			return
