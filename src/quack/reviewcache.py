@@ -15,7 +15,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-MAX_ENTRIES = 20
+MAX_ENTRIES_PER_REPO = 5
+MAX_ENTRIES = 100
+MAX_GLOBAL_ENTRIES = MAX_ENTRIES
 MAX_AGE_S = 24 * 60 * 60
 MAX_FILE_SIZE = 1_000_000
 REPLACE_ATTEMPTS = 3
@@ -91,8 +93,12 @@ def write(
 	path: Path | None = None,
 	timestamp: float | None = None,
 	max_entries: int = MAX_ENTRIES,
+	max_entries_per_repo: int = MAX_ENTRIES_PER_REPO,
 ) -> None:
 	"""Store a review atomically, silently doing nothing on any error."""
+	# Known limitation: two concurrent writers can lose an update because review cache
+	# writes use a read-modify-write pattern with atomic replace. Per-repository capping
+	# reduces cross-repo retention collisions, but does not eliminate concurrent write races.
 	try:
 		cache_file = path or cache_path()
 		repo_key = _repo_key(repo_root)
@@ -116,8 +122,24 @@ def write(
 				"review_payload": review_payload,
 			}
 		)
+		by_repo: dict[str, list[dict]] = {}
+		for entry in entries:
+			rk = str(entry.get("repo_root", ""))
+			by_repo.setdefault(rk, []).append(entry)
+
+		pruned: list[dict] = []
+		for repo_entries in by_repo.values():
+			sorted_repo = sorted(
+				repo_entries,
+				key=lambda entry: float(entry.get("timestamp", 0)),
+				reverse=True,
+			)[:max_entries_per_repo]
+			pruned.extend(sorted_repo)
+
 		entries = sorted(
-			entries, key=lambda entry: float(entry.get("timestamp", 0)), reverse=True
+			pruned,
+			key=lambda entry: float(entry.get("timestamp", 0)),
+			reverse=True,
 		)[:max_entries]
 		encoded = _encode_bounded(entries)
 		if encoded is None:
