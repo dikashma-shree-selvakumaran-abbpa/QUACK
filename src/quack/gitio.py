@@ -57,6 +57,13 @@ def _run_git(args: list[str], *, cwd: str | None = None) -> str:
 	return result.stdout
 
 
+def _is_valid_git_ref(ref: str, *, root: str | None = None) -> bool:
+	"""Return True if ref resolves to a valid git commit/object in repo."""
+	if not ref or not isinstance(ref, str):
+		return False
+	return bool(_run_git(["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=root).strip())
+
+
 def repo_root(*, root: str | None = None) -> str:
 	"""Absolute path to the repository top level, or "" if unavailable."""
 	return _run_git(["rev-parse", "--show-toplevel"], cwd=root).strip()
@@ -240,10 +247,15 @@ def resolve_push_range(
 	4. Remote default branch (e.g. origin/main)..HEAD
 	"""
 	pushed_refs = parse_prepush_stdin(stdin_text) if stdin_text else []
-	if not pushed_refs:
+	if not pushed_refs and os.environ.get("PRE_COMMIT") == "1":
 		from_ref = os.environ.get("PRE_COMMIT_FROM_REF")
 		to_ref = os.environ.get("PRE_COMMIT_TO_REF")
-		if from_ref and to_ref:
+		if (
+			from_ref
+			and to_ref
+			and _is_valid_git_ref(from_ref, root=root)
+			and _is_valid_git_ref(to_ref, root=root)
+		):
 			pushed_refs = [
 				PushedRef(
 					local_ref="HEAD",

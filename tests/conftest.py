@@ -21,6 +21,17 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_pre_commit_env(monkeypatch):
+	"""Clear ambient pre-commit environment variables for all tests."""
+	monkeypatch.delenv("PRE_COMMIT", raising=False)
+	monkeypatch.delenv("PRE_COMMIT_FROM_REF", raising=False)
+	monkeypatch.delenv("PRE_COMMIT_TO_REF", raising=False)
+	monkeypatch.delenv("PRE_COMMIT_SOURCE", raising=False)
+	monkeypatch.delenv("PRE_COMMIT_ORIGIN", raising=False)
+	yield
+
+
+@pytest.fixture(autouse=True)
 def _block_unmocked_provider_calls(request, monkeypatch, tmp_path):
 	"""Prevent tests from reaching a real provider unless explicitly opted in."""
 	monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))

@@ -653,11 +653,84 @@ def test_agent_falls_back_to_unpushed_range(monkeypatch) -> None:
 	)
 	_stub_agent_loop(monkeypatch)
 
+	# Must pass with ambient pre-commit env vars unset
 	result = CliRunner().invoke(cli.main, ["agent"])
-
 	assert result.exit_code == 0
 	assert captured["base"] == "origin/main"
 	assert "analyzing 3 unpushed commit(s)" in result.output
+
+	# Must also pass when pre-commit env vars are set in environment
+	monkeypatch.setenv("PRE_COMMIT_FROM_REF", "deadbeef")
+	monkeypatch.setenv("PRE_COMMIT_TO_REF", "cafebabe")
+	captured.clear()
+	result_with_env = CliRunner().invoke(cli.main, ["agent"])
+	assert result_with_env.exit_code == 0
+	assert captured["base"] == "origin/main"
+	assert "analyzing 3 unpushed commit(s)" in result_with_env.output
+
+
+def test_agent_manual_invocation_ignores_stray_pre_commit_env(monkeypatch) -> None:
+	"""Manual invocation without PRE_COMMIT=1 must ignore PRE_COMMIT_* refs."""
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	captured: dict = {}
+
+	def fake_range_delta(base, head="HEAD", *, root=None):
+		captured["base"] = base
+		return _plain_delta()
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setenv("PRE_COMMIT_FROM_REF", "deadbeef")
+	monkeypatch.setenv("PRE_COMMIT_TO_REF", "cafebabe")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_delta", fake_range_delta)
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 3)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+	assert result.exit_code == 0
+	assert captured["base"] == "origin/main"
+
+
+def test_agent_pre_commit_hook_consumes_valid_pre_commit_refs(monkeypatch) -> None:
+	"""When running under pre-commit (PRE_COMMIT=1), valid refs are consumed."""
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	captured: dict = {}
+
+	def fake_range_delta(base, head="HEAD", *, root=None):
+		captured["base"] = base
+		captured["head"] = head
+		return _plain_delta()
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setenv("PRE_COMMIT", "1")
+	monkeypatch.setenv("PRE_COMMIT_FROM_REF", "1111111111111111111111111111111111111111")
+	monkeypatch.setenv("PRE_COMMIT_TO_REF", "2222222222222222222222222222222222222222")
+	monkeypatch.setattr(cli.gitio, "_is_valid_git_ref", lambda ref, *, root=None: True)
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_delta", fake_range_delta)
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 2)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+	assert result.exit_code == 0
+	assert captured["base"] == "1111111111111111111111111111111111111111"
+	assert captured["head"] == "2222222222222222222222222222222222222222"
 
 
 def test_agent_exits_cleanly_when_nothing_staged_or_unpushed(monkeypatch) -> None:
