@@ -2,8 +2,7 @@
 
 This walkthrough builds Quack from source, initializes the two retained Alarms
 validation worktrees, runs the deterministic Sonar check with `quack watch`,
-uses the generated Sonar skills with the read-only SonarQube MCP tools, and
-verifies the pre-commit gate.
+uses the generated Sonar skills, and verifies the pre-commit gate.
 
 The worktrees used by this walkthrough are:
 
@@ -38,12 +37,10 @@ Verify the source checkout before using it from another repository:
 python -m pytest -q
 quack --help
 pre-commit --version
-podman --version
 ```
 
-The Quack test suite should pass. Podman is required for the Sonar MCP
-adapter, while `pre-commit` is required for the Git hook. The optional AI
-review also requires a signed-in Copilot CLI:
+The Quack test suite should pass. `pre-commit` is required for the Git hook.
+The optional AI review also requires a signed-in Copilot CLI:
 
 ```text
 copilot
@@ -59,7 +56,7 @@ install the branch explicitly:
 
 ```powershell
 python -m pip install --upgrade `
-  "git+https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK.git@feat/sonar-mcp-integration"
+  "git+https://github.com/ABB-AU-PCP/QUACK.git@sonar/rebased-onto-v0.3.6"
 ```
 
 Use `pip install --editable .` while testing local changes, or push and
@@ -68,7 +65,7 @@ CLI before running the worktree checks:
 
 ```powershell
 python -c "import quack; print(quack.__file__)"
-quack sonar-mcp --help
+quack --help
 ```
 
 ## 2. Initialize both Alarms worktrees
@@ -121,10 +118,10 @@ loose equality:
 FrontEnd/packages/alarms/src/quack-sonar-violation.ts
 ```
 
-## 3. Configure SonarQube and Podman
+## 3. Configure SonarQube
 
-Use a SonarQube user token. Do not put the token in `.vscode\mcp.json`,
-`.pre-commit-config.yaml`, source files, or a committed PowerShell script.
+Use a SonarQube user token. Do not put the token in `.pre-commit-config.yaml`,
+source files, or a committed PowerShell script.
 The following variables live only in the current PowerShell process:
 
 ```powershell
@@ -133,7 +130,6 @@ $env:QUACK_SONAR_HOST_URL = "https://codescan.abb.com"
 $env:SONARQUBE_PROJECT_KEY = "Operations.HMI.App.Alarms"
 $env:QUACK_SONAR_PROJECT_KEY = "Operations.HMI.App.Alarms"
 $env:SQ_TOKEN = "<TOKEN>"
-$env:QUACK_SONAR_MCP = "auto"
 $env:QUACK_SONAR_TIMEOUT_S = "180"
 ```
 
@@ -162,23 +158,14 @@ An invalid explicit scanner path falls back to these discovered locations.
 
 The scanner must produce `.scannerwork\report-task.txt` and a completed
 server-side task before Quack records a fresh staged result. Watch and check
-then query the Sonar Web API directly; Podman and MCP are not used by these
-automatic checks. The standalone `quack sonar-mcp` command still requires
-Podman when you explicitly use it:
+then query the Sonar Web API directly.
 
-```powershell
-podman machine start
-podman pull mcp/sonarqube
-```
-
-The MCP adapter mounts the selected repository read-only and exposes only
-read-only Sonar tools. If Codescan supports project branches, run the two
-worktrees serially with distinct branch names:
+If Codescan supports project branches, run the two worktrees serially with
+distinct branch names:
 
 ```powershell
 $env:QUACK_SONAR_BRANCH = "quack-sonar-clean"
 $env:SONARQUBE_BRANCH = "quack-sonar-clean"
-$env:QUACK_SONAR_MCP_PROJECT_PATH = $clean
 ```
 
 For the violation worktree, use `quack-sonar-violation` instead. If branch
@@ -187,9 +174,11 @@ worktrees one at a time; do not run competing analyses concurrently.
 When switching worktrees in one PowerShell session, set both branch variables
 again because `QUACK_SONAR_BRANCH` takes precedence over
 `SONARQUBE_BRANCH`. `quack watch` and `quack check` scan the current worktree
-snapshot and query the configured Sonar host directly. `--project-path` and
-`QUACK_SONAR_MCP_PROJECT_PATH` apply only to the standalone `quack sonar-mcp`
-command.
+snapshot and query the configured Sonar host directly.
+
+> **Note on editor MCP tools**: For interactive Sonar tool-calling in VS Code
+> or GitHub Copilot, use SonarSource's official SonarQube MCP Server rather
+> than container-wrapped local adapters.
 
 ## 4. Run Sonar with `quack watch`
 
@@ -212,7 +201,6 @@ Run a one-shot check in the clean worktree:
 Set-Location $clean
 $env:QUACK_SONAR_BRANCH = "quack-sonar-clean"
 $env:SONARQUBE_BRANCH = "quack-sonar-clean"
-$env:QUACK_SONAR_MCP_PROJECT_PATH = $clean
 quack watch --once
 ```
 
@@ -240,7 +228,7 @@ values are redacted; normal Watch output does not print these payloads.
 
 ### Sonar timing and performance
 
-`quack watch --once --debug` now prints integer-millisecond timings for the
+`quack watch --once --debug` prints integer-millisecond timings for the
 snapshot export, scanner process, server analysis wait, every direct API
 request, the total API phase, and the total Watch call. A validation run of
 the Alarms violation worktree measured:
@@ -279,12 +267,7 @@ To reduce elapsed time without weakening correctness:
 4. Set `QUACK_PROVIDER=disabled` when measuring Sonar alone. This removes the
    optional AI review from the remainder, but does not shorten the scanner or
    Codescan processing time.
-5. Use the direct CLI/API path for Watch and pre-commit. Standalone
-   `quack sonar-mcp` is intended for explicit agent/user queries, not the
-   automatic gate. A measured `list_branches` invocation took 19.4 s wall
-   time: the tool exchange was 9.6 s and the remaining time was primarily the
-   separate safe tool-discovery/container exchange. `--debug` now prints the
-   tool exchange `duration_ms`.
+5. Use the direct CLI/API path for Watch and pre-commit.
 6. Set `QUACK_SONAR_TIMEOUT_S` high enough for observed server latency (for
    this project, 300 seconds is safer than 180). Raising it prevents false
    timeouts; it does not make successful scans faster.
@@ -308,7 +291,6 @@ Run the violation worktree serially:
 Set-Location $violations
 $env:QUACK_SONAR_BRANCH = "quack-sonar-violation"
 $env:SONARQUBE_BRANCH = "quack-sonar-violation"
-$env:QUACK_SONAR_MCP_PROJECT_PATH = $violations
 quack watch --once
 ```
 
@@ -323,7 +305,7 @@ review unavailable (no model configured)
 The watcher exits successfully because watch is a reporting surface. The
 blocking decision is enforced by `quack check` during pre-commit.
 
-## 5. Use the Sonar MCP skill to find issues
+## 5. Use the Sonar skill to find issues
 
 `quack init` installs the `sonar-check` skill. Start Copilot from the target
 worktree so the repository-scoped `.github` artifacts are loaded:
@@ -338,94 +320,15 @@ worktree before asking for a review. Ask Copilot to use the generated skill:
 
 ```text
 Use the repository-scoped sonar-check skill. For project
-Operations.HMI.App.Alarms and branch quack-sonar-violation, use only the
-read-only SonarQube MCP tools. Check the current changed components, verify
-analysis freshness and correlation, and report each confirmed open issue or
-security hotspot with its key, rule, severity, file, and line. Do not modify
-files and do not expose credentials.
+Operations.HMI.App.Alarms and branch quack-sonar-violation, check the current
+changed components, verify analysis freshness and correlation, and report each
+confirmed open issue or security hotspot with its key, rule, severity, file,
+and line. Do not modify files and do not expose credentials.
 ```
 
 The skill must distinguish a current correlated analysis from stale,
 unavailable, or unverified server data. It must not ask an LLM to decide
 whether a Sonar response contains a violation.
-
-For direct MCP discovery outside Copilot, use Quack's read-only adapter:
-
-```powershell
-quack sonar-mcp `
-  --project-path $violations `
-  --project-key "Operations.HMI.App.Alarms"
-```
-
-This lists the advertised MCP tools. A specific read-only tool can be invoked
-with JSON arguments:
-
-```powershell
-quack sonar-mcp `
-  --project-path $violations `
-  --project-key "Operations.HMI.App.Alarms" `
-  --tool list_branches `
-  --arguments '{}' `
-  --json
-
-quack sonar-mcp `
-  --project-path $violations `
-  --project-key "Operations.HMI.App.Alarms" `
-  --tool search_sonar_issues_in_projects `
-  --arguments '{"projects":["Operations.HMI.App.Alarms"],"branch":"quack-sonar-violation","issueStatuses":["OPEN"]}' `
-  --json
-```
-
-Run `list_branches` first and use a branch that appears in its `branches`
-array. SonarQube can return HTTP 200 with an empty `issues` array for a branch
-that has never been analyzed; that is not evidence that the source is clean.
-The deliberate `quack-sonar-violation` worktree must be scanned and uploaded
-before its branch can return findings. The current Alarms project has `main`
-and other analyzed branches, but a local Git worktree name does not create a
-Codescan branch.
-
-Tool names may be the native MCP name or the displayed `sonarqube_*` name.
-Use the advertised `projects` field for the issue-search tool; Quack also
-normalizes `projectKeys` to `projects` when Codescan advertises that schema.
-The value passed to `--arguments` must be JSON: object keys and string values
-need double quotes. For example, `{projectKeys:["..."]}` is not valid JSON;
-use `{"projectKeys":["..."]}` as shown above. PowerShell's outer single quotes
-only protect the JSON from the shell and are not part of the JSON payload.
-PowerShell normally removes the single quotes around the JSON, but Quack
-accepts the same payload if a launcher retains those outer quote characters or
-escapes the inner quotes. If the shell still rewrites inline arguments, let
-PowerShell generate the JSON as one native argument:
-
-```powershell
-$sonarArguments = [ordered]@{
-    projects = @("Operations.HMI.App.Alarms")
-    branch = "quack-sonar-violation"
-    issueStatuses = @("OPEN")
-} | ConvertTo-Json -Compress
-
-quack sonar-mcp `
-  --project-path $violations `
-  --project-key "Operations.HMI.App.Alarms" `
-  --tool search_sonar_issues_in_projects `
-  --arguments $sonarArguments `
-  --json
-```
-
-Windows PowerShell 5.1 can strip the inner JSON quotes before a native
-launcher reaches Python. Quack accepts the resulting simple, quote-stripped
-object only after safely reconstructing and validating it as JSON. Add
-`--debug` to print the exact received argument, normalized request, and
-redacted MCP response; diagnostics go to stderr so `--json` stdout remains
-machine-readable.
-
-Write-capable tools are rejected and are not exposed to the generated skill or
-agent.
-
-With `--json`, Quack prints the complete MCP response even when the tool
-returns `isError: true`; the process exits `1` for that tool error. A
-successful request exits `0` whether the returned issue list is empty or
-contains findings, so scripts must inspect `isError`, `structuredContent`, and
-`paging.total` rather than using the exit code as the finding count.
 
 ## 6. Use the Sonar fixes skill to remediate issues
 
@@ -540,11 +443,9 @@ Common diagnostics:
 | Symptom | Action |
 |---|---|
 | `Not authorized` | Create a valid SonarQube user token and set `SQ_TOKEN` or `SONARQUBE_TOKEN` in the current process. |
-| `SonarQube answered with Error 404` or `snapshot incomplete` for hotspots, measures, or duplications | Codescan cannot resolve the configured project/branch/component, the token cannot see the project, or that endpoint is unavailable for the server edition. Set `SONARQUBE_PROJECT_KEY` to the exact Codescan key, unset `SONARQUBE_BRANCH` unless that branch already exists, and verify the same project with `quack sonar-mcp --project-key ...`. Quack treats missing optional duplication/measure data as a diagnostic gap and does not call it a clean result; missing issue/hotspot data remains fail-open. |
-| `SonarQube MCP response not received` | Run the exact read-only call with `quack sonar-mcp --debug --json` and inspect the returned JSON. Quack invokes the fixed `podman run ... mcp/sonarqube` command and never creates a Sonar response. Large valid responses are preserved within a bounded 256 KB budget; a larger response is reported explicitly as `response exceeded the bounded output limit` rather than being truncated or treated as clean. |
+| `SonarQube answered with Error 404` or `snapshot incomplete` for hotspots, measures, or duplications | Codescan cannot resolve the configured project/branch/component, the token cannot see the project, or that endpoint is unavailable for the server edition. Set `SONARQUBE_PROJECT_KEY` to the exact Codescan key, unset `SONARQUBE_BRANCH` unless that branch already exists. Quack treats missing optional duplication/measure data as a diagnostic gap and does not call it a clean result; missing issue/hotspot data remains fail-open. |
 | `scanner not found` | Install `sonar-scanner` or set `QUACK_SONAR_SCANNER` to its executable. |
-| `Podman could not start` | Start the Podman machine and verify `podman image exists mcp/sonarqube`. |
-| `analysis unverified` | Check project/branch settings and confirm the MCP response includes the same analysis identifier as the scanner task. |
+| `analysis unverified` | Check project/branch settings and confirm the Web API response includes the same analysis identifier as the scanner task. |
 | `review unavailable (no model configured)` | This is expected for the deterministic Sonar-only path; Sonar still runs. |
 
 Finally, verify that the original dirty checkout was not modified:
