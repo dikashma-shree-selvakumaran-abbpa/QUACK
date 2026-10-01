@@ -668,17 +668,27 @@ def test_agent_exits_cleanly_when_nothing_staged_or_unpushed(monkeypatch) -> Non
 	def no_agent(*a, **k):
 		raise AssertionError("agent must not run when there is nothing to analyze")
 
+	list_models_called = {"called": False}
+
+	def spy_list_models():
+		list_models_called["called"] = True
+		return ["claude-sonnet-5"]
+
 	monkeypatch.setenv("GITHUB_TOKEN", "t")
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
 	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
-	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: None)
-	monkeypatch.setattr(cli.llmio, "list_models", lambda: ["claude-sonnet-5"])
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_delta", lambda *a, **k: _empty_delta())
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 0)
+	monkeypatch.setattr(cli.gitio, "read_prepush_stdin", lambda: None)
+	monkeypatch.setattr(cli.llmio, "list_models", spy_list_models)
 	monkeypatch.setattr("quack.cli.agent_mod.run", no_agent)
 
 	result = CliRunner().invoke(cli.main, ["agent"])
 
 	assert result.exit_code == 0
 	assert "nothing to analyze" in result.output
+	assert list_models_called["called"] is False
 
 
 def test_agent_range_path_blocks_a_secret_before_transmission(monkeypatch) -> None:
