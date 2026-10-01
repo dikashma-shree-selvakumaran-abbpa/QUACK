@@ -728,6 +728,279 @@ def test_agent_range_path_blocks_a_secret_before_transmission(monkeypatch) -> No
 	assert "args" not in captured
 
 
+# ---------------------------------------------------------------------------
+# Pre-push range resolution & upper bounds
+# ---------------------------------------------------------------------------
+
+
+def test_agent_new_branch_without_upstream_reviews_against_remote_default(
+	monkeypatch,
+) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	captured: dict = {}
+
+	def fake_range_delta(base, head="HEAD", *, root=None):
+		captured["base"] = base
+		captured["head"] = head
+		return _plain_delta()
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: None)
+	monkeypatch.setattr(
+		cli.gitio, "remote_default_branch", lambda remote="origin", *, root=None: "origin/main"
+	)
+	monkeypatch.setattr(cli.gitio, "range_delta", fake_range_delta)
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 2)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	stdin_line = (
+		"refs/heads/feature-x 1111111111111111111111111111111111111111 "
+		"refs/heads/feature-x 0000000000000000000000000000000000000000\n"
+	)
+	result = CliRunner().invoke(cli.main, ["agent"], input=stdin_line)
+
+	assert result.exit_code == 0
+	assert captured["base"] == "origin/main"
+	assert captured["head"] == "1111111111111111111111111111111111111111"
+	assert "analyzing 2 unpushed commit(s)" in result.output
+
+
+def test_agent_branch_tracking_unrelated_ref_uses_pushed_range(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	captured: dict = {}
+
+	def fake_range_delta(base, head="HEAD", *, root=None):
+		captured["base"] = base
+		captured["head"] = head
+		return _plain_delta()
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	# Tracking ref points to an old/unrelated branch
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/old-base")
+	monkeypatch.setattr(cli.gitio, "range_delta", fake_range_delta)
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 1)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	stdin_line = (
+		"refs/heads/feat 2222222222222222222222222222222222222222 "
+		"refs/heads/feat 3333333333333333333333333333333333333333\n"
+	)
+	result = CliRunner().invoke(cli.main, ["agent"], input=stdin_line)
+
+	assert result.exit_code == 0
+	assert captured["base"] == "3333333333333333333333333333333333333333"
+	assert captured["head"] == "2222222222222222222222222222222222222222"
+	assert "analyzing 1 unpushed commit(s)" in result.output
+
+
+def test_agent_pushing_to_different_remote_uses_pushed_range(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	captured: dict = {}
+
+	def fake_range_delta(base, head="HEAD", *, root=None):
+		captured["base"] = base
+		captured["head"] = head
+		return _plain_delta()
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	# Tracking personal/main
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "personal/main")
+	monkeypatch.setattr(cli.gitio, "range_delta", fake_range_delta)
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 1)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	# But pushing to origin/main which is at commit 5555...
+	stdin_line = (
+		"refs/heads/main 4444444444444444444444444444444444444444 "
+		"refs/heads/main 5555555555555555555555555555555555555555\n"
+	)
+	result = CliRunner().invoke(cli.main, ["agent"], input=stdin_line)
+
+	assert result.exit_code == 0
+	assert captured["base"] == "5555555555555555555555555555555555555555"
+	assert captured["head"] == "4444444444444444444444444444444444444444"
+
+
+def test_agent_range_exceeding_commit_limit_warns_and_skips(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	def no_agent(*a, **k):
+		raise AssertionError("agent loop must not run when range exceeds limit")
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setenv("QUACK_MAX_PREPUSH_COMMITS", "5")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 10)
+	_stub_agent_loop(monkeypatch)
+	monkeypatch.setattr("quack.cli.agent_mod.run", no_agent)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "contains 10 commits (limit: 5)" in result.output
+	assert "skipping AI analysis" in result.output
+
+
+def test_agent_range_exceeding_diff_size_warns_and_skips(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+	from quack.delta import StagedDelta, StagedFile
+
+	def no_agent(*a, **k):
+		raise AssertionError("agent loop must not run when diff size exceeds limit")
+
+	huge_diff = "+\n" * 600_000
+	huge_delta = StagedDelta(
+		files=[StagedFile(path="big.py", status="M", added=600000, removed=0)],
+		raw_diff=huge_diff,
+	)
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setenv("QUACK_MAX_PREPUSH_DIFF_BYTES", "50000")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 2)
+	monkeypatch.setattr(cli.gitio, "range_delta", lambda *a, **k: huge_delta)
+	_stub_agent_loop(monkeypatch)
+	monkeypatch.setattr("quack.cli.agent_mod.run", no_agent)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "skipping AI analysis" in result.output
+
+
+def test_agent_stdin_absent_falls_back_to_remote_default_when_no_upstream(
+	monkeypatch,
+) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	captured: dict = {}
+
+	def fake_range_delta(base, head="HEAD", *, root=None):
+		captured["base"] = base
+		captured["head"] = head
+		return _plain_delta()
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: None)
+	monkeypatch.setattr(
+		cli.gitio, "remote_default_branch", lambda remote="origin", *, root=None: "origin/main"
+	)
+	monkeypatch.setattr(cli.gitio, "range_delta", fake_range_delta)
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 3)
+	monkeypatch.setattr(
+		cli.tier2, "review_with_reason", lambda *a, **k: (None, "x")
+	)
+	_stub_agent_loop(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert captured["base"] == "origin/main"
+	assert captured["head"] == "HEAD"
+	assert "analyzing 3 unpushed commit(s)" in result.output
+
+
+def test_agent_unable_to_determine_range_states_what_was_checked(
+	monkeypatch,
+) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	def no_agent(*a, **k):
+		raise AssertionError("agent loop must not run when range cannot be determined")
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: None)
+	monkeypatch.setattr(
+		cli.gitio, "remote_default_branch", lambda remote="origin", *, root=None: None
+	)
+	_stub_agent_loop(monkeypatch)
+	monkeypatch.setattr("quack.cli.agent_mod.run", no_agent)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "unable to determine pre-push range" in result.output
+	assert "checked tracking branch @{u} and remote default branch" in result.output
+
+
+def test_gitio_parse_prepush_stdin_and_resolve_range(monkeypatch) -> None:
+	from quack import gitio
+
+	# Empty / none
+	assert gitio.parse_prepush_stdin("") == []
+	assert gitio.parse_prepush_stdin(None) == []
+
+	# Normal update
+	lines = "refs/heads/feat abc1234 refs/heads/feat def5678"
+	refs = gitio.parse_prepush_stdin(lines)
+	assert len(refs) == 1
+	assert refs[0].local_sha == "abc1234"
+	assert refs[0].remote_sha == "def5678"
+	assert not refs[0].is_delete
+	assert not refs[0].is_new_branch
+
+	# Delete ref
+	del_line = "(delete) 0000000000000000000000000000000000000000 refs/heads/old 1111111111111111111111111111111111111111"
+	del_refs = gitio.parse_prepush_stdin(del_line)
+	assert len(del_refs) == 1
+	assert del_refs[0].is_delete
+
+	# New branch
+	new_line = "refs/heads/new 1111111111111111111111111111111111111111 refs/heads/new 0000000000000000000000000000000000000000"
+	new_refs = gitio.parse_prepush_stdin(new_line)
+	assert len(new_refs) == 1
+	assert not new_refs[0].is_delete
+	assert new_refs[0].is_new_branch
+
+	monkeypatch.setattr(
+		gitio, "remote_default_branch", lambda remote="origin", *, root=None: "origin/main"
+	)
+	base, head, desc = gitio.resolve_push_range(new_line)
+	assert base == "origin/main"
+	assert head == "1111111111111111111111111111111111111111"
+
+
+
 def test_agent_blocks_push_when_tier1_finds_a_secret(monkeypatch) -> None:
 	# Tier 1 is deterministic, so it gates. The AI verdict stays advisory.
 	from click.testing import CliRunner

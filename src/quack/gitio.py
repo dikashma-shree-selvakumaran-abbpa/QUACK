@@ -6,10 +6,38 @@ Everything else should take data in and return data out.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
+from dataclasses import dataclass
 
 from . import delta
 from .delta import StagedDelta
+
+
+@dataclass(frozen=True)
+class PushedRef:
+	"""One ref being pushed, parsed from git's pre-push stdin line."""
+
+	local_ref: str
+	local_sha: str
+	remote_ref: str
+	remote_sha: str
+
+	@property
+	def is_delete(self) -> bool:
+		return (
+			self.local_ref == "(delete)"
+			or self.local_sha == "0" * 40
+			or (len(self.local_sha) >= 4 and set(self.local_sha) == {"0"})
+		)
+
+	@property
+	def is_new_branch(self) -> bool:
+		return (
+			self.remote_sha == "0" * 40
+			or (len(self.remote_sha) >= 4 and set(self.remote_sha) == {"0"})
+		)
 
 
 def _run_git(args: list[str], *, cwd: str | None = None) -> str:
@@ -99,6 +127,44 @@ def upstream_ref(*, root: str | None = None) -> str | None:
 	return ref or None
 
 
+def remote_default_branch(
+	remote: str = "origin", *, root: str | None = None
+) -> str | None:
+	"""Return the best remote default branch ref (e.g. 'origin/main'), or None."""
+	candidates = [
+		f"{remote}/HEAD",
+		f"{remote}/main",
+		f"{remote}/master",
+	]
+	if remote != "origin":
+		candidates.extend(["origin/HEAD", "origin/main", "origin/master"])
+
+	for cand in candidates:
+		if _run_git(["rev-parse", "--verify", "--quiet", cand], cwd=root).strip():
+			return cand
+
+	remotes = [
+		r.strip()
+		for r in _run_git(["remote"], cwd=root).splitlines()
+		if r.strip()
+	]
+	for r in remotes:
+		if r not in (remote, "origin"):
+			for cand in [f"{r}/HEAD", f"{r}/main", f"{r}/master"]:
+				if _run_git(
+					["rev-parse", "--verify", "--quiet", cand], cwd=root
+				).strip():
+					return cand
+
+	for local_cand in ["main", "master"]:
+		if _run_git(
+			["rev-parse", "--verify", "--quiet", local_cand], cwd=root
+		).strip():
+			return local_cand
+
+	return None
+
+
 def range_commit_count(base: str, head: str = "HEAD", *, root: str | None = None) -> int:
 	"""Number of commits in ``base..head``, or 0 on any git failure."""
 	out = _run_git(["rev-list", "--count", f"{base}..{head}"], cwd=root).strip()
@@ -120,3 +186,99 @@ def staged_files(*, root: str | None = None) -> list[str]:
 		).splitlines()
 		if line.strip()
 	]
+
+
+def parse_prepush_stdin(text: str | None) -> list[PushedRef]:
+	"""Parse lines in git pre-push stdin format:
+	<local-ref> <local-sha1> <remote-ref> <remote-sha1>
+	"""
+	if not text:
+		return []
+	refs: list[PushedRef] = []
+	for raw_line in text.splitlines():
+		line = raw_line.strip()
+		if not line:
+			continue
+		parts = line.split()
+		if len(parts) == 4:
+			refs.append(
+				PushedRef(
+					local_ref=parts[0],
+					local_sha=parts[1],
+					remote_ref=parts[2],
+					remote_sha=parts[3],
+				)
+			)
+	return refs
+
+
+def read_prepush_stdin() -> str | None:
+	"""Read git pre-push ref lines from sys.stdin if piped, or None if a tty."""
+	try:
+		if sys.stdin is not None and not sys.stdin.isatty():
+			content = sys.stdin.read()
+			return content if content.strip() else None
+	except Exception:
+		return None
+	return None
+
+
+def resolve_push_range(
+	stdin_text: str | None = None,
+	*,
+	remote: str = "origin",
+	root: str | None = None,
+) -> tuple[str | None, str, str | None]:
+	"""Determine the (base, head, description) to analyze for pre-push.
+
+	Priority:
+	1. Git stdin ref lines (<local-ref> <local-sha1> <remote-ref> <remote-sha1>)
+	   - Existing branch update: remote_sha..local_sha
+	   - New branch: remote_default_branch..local_sha
+	2. Pre-commit environment variables (PRE_COMMIT_FROM_REF / PRE_COMMIT_TO_REF)
+	3. Tracking branch @{u}..HEAD
+	4. Remote default branch (e.g. origin/main)..HEAD
+	"""
+	pushed_refs = parse_prepush_stdin(stdin_text) if stdin_text else []
+	if not pushed_refs:
+		from_ref = os.environ.get("PRE_COMMIT_FROM_REF")
+		to_ref = os.environ.get("PRE_COMMIT_TO_REF")
+		if from_ref and to_ref:
+			pushed_refs = [
+				PushedRef(
+					local_ref="HEAD",
+					local_sha=to_ref,
+					remote_ref="remote",
+					remote_sha=from_ref,
+				)
+			]
+
+	for ref in pushed_refs:
+		if ref.is_delete:
+			continue
+		head = ref.local_sha
+		if not ref.is_new_branch:
+			return ref.remote_sha, head, f"{ref.remote_sha[:7]}..{head[:7]}"
+		default_branch = remote_default_branch(remote=remote, root=root)
+		if default_branch:
+			return (
+				default_branch,
+				head,
+				f"{default_branch}..{head[:7]} (new branch)",
+			)
+		return None, head, None
+
+	upstream = upstream_ref(root=root)
+	if upstream:
+		return upstream, "HEAD", f"{upstream}..HEAD"
+
+	default_branch = remote_default_branch(remote=remote, root=root)
+	if default_branch:
+		return (
+			default_branch,
+			"HEAD",
+			f"{default_branch}..HEAD (no upstream tracking branch)",
+		)
+
+	return None, "HEAD", None
+

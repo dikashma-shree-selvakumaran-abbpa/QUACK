@@ -417,7 +417,13 @@ def _resolve_completion_model(cli_model: str | None) -> str | None:
 	)
 
 
-@main.command()
+MAX_PREPUSH_COMMITS = 50
+MAX_PREPUSH_DIFF_BYTES = 500_000
+
+
+@main.command(
+	context_settings={"ignore_unknown_options": True, "allow_extra_args": True}
+)
 @click.option(
 	"--model",
 	default=None,
@@ -471,27 +477,92 @@ def agent(model: str | None, fly: bool) -> None:
 		)
 		sys.exit(0)
 
-	delta = gitio.staged_delta()
+	delta = gitio.staged_delta(root=root)
 	target = "staged"
 	# Choose the analysis target. quack agent runs both manually (where
 	# staged changes are the right target) and as a pre-push hook (where the
-	# index is empty and the real target is the unpushed range @{u}..HEAD).
-	# Prefer staged changes to preserve the manual/demo flow; otherwise fall
-	# back to the unpushed range.
+	# index is empty and the real target is the unpushed range).
+	# Prefer staged changes to preserve the manual/demo flow; otherwise determine
+	# the push range from stdin ref lines, tracking upstream, or remote default branch.
 	if delta.files:
 		render.metadata("analyzing staged changes")
 	else:
 		target = "range"
-		upstream = gitio.upstream_ref()
-		unpushed = gitio.range_delta(upstream) if upstream else None
+		stdin_content = gitio.read_prepush_stdin()
+		base, head, range_desc = gitio.resolve_push_range(stdin_content, root=root)
+
+		if base is None:
+			target = "none"
+			render.metadata(
+				"quack: unable to determine pre-push range "
+				"(checked tracking branch @{u} and remote default branch); "
+				"skipping AI analysis"
+			)
+			_log_agent_metrics(
+				started,
+				provider,
+				resolved_model,
+				target=target,
+				agent_failure="unable to determine push range",
+			)
+			sys.exit(0)
+
+		count = gitio.range_commit_count(base, head=head, root=root)
+		try:
+			max_commits = int(
+				os.environ.get("QUACK_MAX_PREPUSH_COMMITS", str(MAX_PREPUSH_COMMITS))
+			)
+		except ValueError:
+			max_commits = MAX_PREPUSH_COMMITS
+
+		try:
+			max_diff_bytes = int(
+				os.environ.get("QUACK_MAX_PREPUSH_DIFF_BYTES", str(MAX_PREPUSH_DIFF_BYTES))
+			)
+		except ValueError:
+			max_diff_bytes = MAX_PREPUSH_DIFF_BYTES
+
+		if count > max_commits:
+			target = "none"
+			render.warning(
+				f"range {range_desc or f'{base}..{head}'} contains {count} commits "
+				f"(limit: {max_commits}); skipping AI analysis"
+			)
+			_log_agent_metrics(
+				started,
+				provider,
+				resolved_model,
+				target=target,
+				agent_failure=f"commit count {count} exceeds limit {max_commits}",
+			)
+			sys.exit(0)
+
+		unpushed = gitio.range_delta(base, head=head, root=root)
+		raw_diff_len = len(getattr(unpushed, "raw_diff", "").encode("utf-8"))
+		if raw_diff_len > max_diff_bytes:
+			target = "none"
+			size_kb = raw_diff_len // 1024
+			limit_kb = max_diff_bytes // 1024
+			render.warning(
+				f"range {range_desc or f'{base}..{head}'} diff is {size_kb} KB "
+				f"(limit: {limit_kb} KB); skipping AI analysis"
+			)
+			_log_agent_metrics(
+				started,
+				provider,
+				resolved_model,
+				target=target,
+				agent_failure=f"diff size {size_kb}KB exceeds limit {limit_kb}KB",
+			)
+			sys.exit(0)
+
 		if unpushed and unpushed.files:
 			delta = unpushed
-			count = gitio.range_commit_count(upstream)
 			render.metadata(f"analyzing {count} unpushed commit(s)")
 		else:
 			target = "none"
 			render.clean(
-				"nothing to analyze: no staged changes and nothing unpushed"
+				"nothing to analyze: range has no unpushed changes"
 			)
 			_log_agent_metrics(
 				started,
