@@ -8,6 +8,8 @@ actually proves something).
 
 from __future__ import annotations
 
+import io
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -108,6 +110,18 @@ def test_primitives_plain_under_no_color(monkeypatch, capsys) -> None:
 	assert ANSI not in out
 	assert "all clean" in out
 	assert "pytest -x" in out
+
+
+def test_console_reconfigures_windows_stream_for_unicode(monkeypatch) -> None:
+	raw = io.BytesIO()
+	stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+	monkeypatch.setattr(sys, "stdout", stream)
+
+	render.warning("⚠ warning from SonarQube")
+	stream.flush()
+
+	output = raw.getvalue().decode("utf-8").replace("\r\n", "\n")
+	assert output == "⚠ warning from SonarQube\n"
 
 
 def test_thinking_yields_and_returns_normally(capsys) -> None:
@@ -257,6 +271,129 @@ def test_quack_alarm_absent_when_not_blocked(capsys) -> None:
 	assert "QUACK!!!!" not in capsys.readouterr().out
 
 
+def test_partial_sonar_snapshot_with_confirmed_finding_blocks(capsys) -> None:
+	render.sonar_cli(
+		SimpleNamespace(
+			status="partial",
+			reason="one finding endpoint unavailable",
+			violation_count=1,
+			blocks_commit=True,
+		)
+	)
+
+	assert "SonarQube CLI: BLOCKED - 1 violation(s) detected" in (
+		capsys.readouterr().out
+	)
+
+
+def test_sonar_status_is_rendered_as_advisory(capsys) -> None:
+	render.report(
+		files=1,
+		added=1,
+		removed=0,
+		findings=[],
+		plan=None,
+		sonar=SimpleNamespace(
+			status="passed",
+			reason="analysis uploaded",
+			dashboard_url="http://127.0.0.1:9002/dashboard?id=quack-local",
+		),
+		ai=None,
+	)
+
+	out = capsys.readouterr().out
+	assert "SonarQube: analysis uploaded" in out
+	assert "dashboard?id=quack-local" in out
+
+
+def test_sonar_cli_violations_are_rendered_as_blocking(capsys) -> None:
+	render.report(
+		files=1,
+		added=1,
+		removed=0,
+		findings=[],
+		plan=None,
+		sonar_cli=SimpleNamespace(
+			status="passed",
+			reason="1 SonarQube violation(s) detected",
+			violation_count=1,
+			blocks_commit=True,
+			report_path="docs/SONARQUBE_REPORT.md",
+		),
+		ai=None,
+		blocked=True,
+	)
+
+	out = capsys.readouterr().out
+	assert "BLOCKED - 1 violation(s) detected" in out
+	assert "docs/SONARQUBE_REPORT.md" in out
+
+
+def test_sonar_cli_prints_violation_details(capsys) -> None:
+	render.sonar_cli(
+		SimpleNamespace(
+			status="passed",
+			reason="1 SonarQube violation(s) detected",
+			violation_count=1,
+			blocks_commit=True,
+			outcomes=(
+				SimpleNamespace(
+					name="sonarqube_search_security_hotspot",
+					status="passed",
+					data={
+						"hotspots": [
+							{
+								"ruleKey": "typescript:S1523",
+								"vulnerabilityProbability": "MEDIUM",
+								"component": (
+									"Operations.HMI.App.Alarms:"
+									"FrontEnd/packages/alarms/src/quack-sonar-violation.ts"
+								),
+								"textRange": {"startLine": 6},
+								"message": (
+									"dynamic injection/execution requires safety review"
+								),
+							}
+						]
+					},
+				),
+			),
+		)
+	)
+
+	out = capsys.readouterr().out
+	assert "SonarQube violation details:" in out
+	assert "[HOTSPOT] typescript:S1523 [MEDIUM]" in out
+	assert "quack-sonar-violation.ts" in out
+	assert ":6 - dynamic injection/execution" in out
+	assert "dynamic injection/execution requires safety review" in out
+
+
+def test_stale_sonar_cli_violations_are_not_rendered_as_blocking(
+	capsys,
+) -> None:
+	render.report(
+		files=1,
+		added=1,
+		removed=0,
+		findings=[],
+		plan=None,
+		sonar_cli=SimpleNamespace(
+			status="passed",
+			reason="stale SonarQube violation(s) detected",
+			violation_count=1,
+			blocks_commit=False,
+			report_path=None,
+		),
+		ai=None,
+		blocked=False,
+	)
+
+	out = capsys.readouterr().out
+	assert "BLOCKED" not in out
+	assert "stale SonarQube violation(s) detected" in out
+
+
 def test_install_banner_prints_wordmark(capsys) -> None:
 	render.install_banner()
 	out = capsys.readouterr().out
@@ -271,3 +408,4 @@ def test_install_banner_no_ansi_under_no_color(monkeypatch, capsys) -> None:
 	out = capsys.readouterr().out
 	assert ANSI not in out
 	assert "QUACK" in out
+

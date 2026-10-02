@@ -5,18 +5,21 @@ Subcommands:
 	agent   agentic pre-push loop (stub)
 	model   model/config utilities (stub)
 	install wire quack into .pre-commit-config.yaml and run `pre-commit install`
+	init    install hooks and scaffold repo-scoped Sonar Copilot skills/agent
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
 from collections import Counter
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 from statistics import median
 
@@ -33,6 +36,10 @@ from . import (
 	metrics as metrics_mod,
 	render,
 	reviewcache,
+	sonar,
+	sonar_cli,
+	sonar_state,
+	templates,
 	testmap,
 	tier2,
 	watch as watch_mod,
@@ -44,6 +51,9 @@ from .tier1 import run as tier1_run
 from .tier1 import should_block
 
 QUACK_REPO_URL = "https://github.com/ABB-AU-PCP/QUACK"
+_LEGACY_QUACK_REPO_URL = (
+	"https://github.com/dikashma-shree-selvakumaran-abbpa/QUACK"
+)
 
 
 def _version_string() -> str:
@@ -75,9 +85,11 @@ def main() -> None:
 def check(as_json: bool) -> None:
 	"""Run the pre-commit quality checks on staged changes.
 
-	Commit time is fully local: Tier 1 deterministic checks (plus gitleaks when
-	installed) and test guidance only. No network calls, no token, no AI. All
-	AI analysis runs at pre-push via ``quack agent``.
+	Commit time runs local Tier 1 checks (plus gitleaks when installed), test
+	guidance, and an optional local SonarQube analysis with HTTPS Web API
+	verification. Unresolved SonarQube quality gates block the commit when
+	verified against the current analysis; unavailable SonarQube integrations
+	remain fail-open. All AI analysis runs at pre-push via ``quack agent``.
 	"""
 	# Measures in-process work only, excluding Python interpreter startup.
 	started = time.perf_counter()
@@ -156,6 +168,15 @@ def check(as_json: bool) -> None:
 		_log_check_metrics(started, delta, findings=findings, blocked=True, exit_code=1)
 		sys.exit(1)
 
+	root = gitio.repo_root() or os.getcwd()
+
+	sonar_result, sonar_cli_result, _sonar_cache_hit = _run_staged_sonar_check(
+		delta, root
+	)
+	blocked = blocked or bool(
+		getattr(sonar_cli_result, "blocks_commit", False)
+	)
+
 	# Test guidance (only worth computing on an unblocked commit).
 	plan = testmap.build_plan(delta)
 	json_test_guidance = []
@@ -222,7 +243,7 @@ def check(as_json: bool) -> None:
 		payload = {
 			"schemaVersion": 1,
 			"repository": root,
-			"blocked": False,
+			"blocked": blocked,
 			"findings": json_findings,
 			"testGuidance": json_test_guidance,
 			"aiReview": ai_review,
@@ -237,9 +258,11 @@ def check(as_json: bool) -> None:
 			findings=findings,
 			plan=plan,
 			ai=ai,
+			sonar=sonar_result,
+			sonar_cli=sonar_cli_result,
 			model=cached_model,
 			ai_note=cache_note,
-			blocked=False,
+			blocked=blocked,
 			duration=time.perf_counter() - started,
 		)
 	_log_check_metrics(
@@ -249,9 +272,156 @@ def check(as_json: bool) -> None:
 		plan=plan,
 		cache_hit=cached_review is not None,
 		risk=cached_review.risk if cached_review is not None else None,
-		exit_code=0,
+		sonar_result=sonar_result,
+		sonar_cli_result=sonar_cli_result,
+		blocked=blocked,
+		exit_code=1 if blocked else 0,
 	)
-	sys.exit(0)
+	sys.exit(1 if blocked else 0)
+
+
+def _run_staged_sonar_check(delta, root):
+	"""Check the exact index and revalidate any locally cached server result."""
+	settings = sonar.configuration(root, staged=True)
+	identity = sonar.effective_identity(root, settings=settings)
+	digest = sonar_state.snapshot_digest(
+		delta,
+		scope="staged",
+		repo_root=root,
+		project_key=settings.project_key,
+		host_url=settings.host_url,
+		branch=settings.branch,
+		config_identity=identity,
+	)
+	cached = sonar_state.read(
+		root,
+		digest,
+		scope="staged",
+		project_key=settings.project_key,
+		host_url=settings.host_url,
+		branch=settings.branch,
+	)
+	if cached is not None:
+		scan_result = sonar.ScanResult(
+			status="passed",
+			reason="reused completed staged analysis",
+			duration_s=0.0,
+			dashboard_url=(
+				f"{settings.host_url}/dashboard?id={settings.project_key}"
+			),
+			project_key=settings.project_key,
+			branch=settings.branch,
+			task_id=cached.task_id,
+			analysis_id=cached.analysis_id,
+			confirmed=True,
+		)
+		report = sonar_cli.run(
+			delta,
+			root,
+			source="pre-commit",
+			project_key=settings.project_key,
+			host_url=settings.host_url,
+			branch=settings.branch,
+			expected_analysis_id=cached.analysis_id,
+		)
+		correlated = (
+			cached.analysis_id is not None
+			and report is not None
+			and getattr(report, "status", None) == "passed"
+			and getattr(report, "project_key", None) == settings.project_key
+			and getattr(report, "branch", None) == settings.branch
+			and getattr(report, "analysis_id", None) == cached.analysis_id
+		)
+		report = _mark_sonar_cache_result(report, correlated)
+		if correlated:
+			return scan_result, report, True
+		# Watch or another branch upload may have replaced the latest analysis.
+		# Re-scan the exact index instead of trusting or failing open on stale data.
+
+	scan_result = sonar.scan(delta, root)
+	scan_uploaded = bool(getattr(scan_result, "uploaded", False))
+	scan_ok = (
+		(
+			getattr(scan_result, "status", None) == "passed"
+			and getattr(scan_result, "confirmed", False)
+		)
+		or scan_uploaded
+	)
+	analysis_floor = None
+	if scan_ok and scan_result is not None:
+		analysis_floor = (
+			time.time() - max(float(getattr(scan_result, "duration_s", 0.0)), 0.0) - 30
+		)
+	report = sonar_cli.run(
+		delta,
+		root,
+		source="pre-commit",
+		project_key=settings.project_key,
+		host_url=settings.host_url,
+		branch=settings.branch,
+		minimum_analysis_at=analysis_floor,
+	)
+	report = _mark_sonar_fresh(report, scan_ok)
+	if (
+		scan_ok
+		and report is not None
+		and report.status == "passed"
+	):
+		sonar_state.write(
+			root,
+			sonar_state.State(
+				digest=digest,
+				scope="staged",
+				repo_root=str(root),
+				project_key=settings.project_key,
+				host_url=settings.host_url,
+				branch=settings.branch,
+				status=report.status,
+				reason=report.reason,
+				violation_count=report.violation_count,
+				timestamp=time.time(),
+				scan_status=getattr(scan_result, "status", None),
+				task_id=getattr(scan_result, "task_id", None),
+				analysis_id=getattr(scan_result, "analysis_id", None),
+			),
+		)
+	return scan_result, report, False
+
+
+def _mark_sonar_cache_result(result, correlated: bool):
+	"""Never let an old cached violation count become a commit blocker."""
+	if result is None:
+		return None
+	if hasattr(result, "fresh"):
+		updated = replace(result, fresh=correlated)
+		if hasattr(updated, "correlated"):
+			updated = replace(updated, correlated=correlated)
+		if not correlated and getattr(updated, "reason", ""):
+			reason = (
+				f"{updated.reason}; current Sonar API result is unverified for the "
+				"cached staged analysis"
+			)
+			updated = replace(updated, reason=reason[:600])
+		return updated
+	return result
+
+
+def _mark_sonar_fresh(result, fresh: bool):
+	if result is None:
+		return None
+	if hasattr(result, "fresh"):
+		if result.fresh == fresh:
+			return result
+		if fresh:
+			return replace(result, fresh=True)
+		reason = getattr(result, "reason", "")
+		if "unverified" not in reason.casefold():
+			reason = (
+				f"{reason}; current local Sonar scan is unavailable; "
+				"Sonar API result is unverified"
+			)
+		return replace(result, fresh=False, reason=reason[:600])
+	return result
 
 
 def _log_check_metrics(
@@ -263,26 +433,47 @@ def _log_check_metrics(
 	blocked: bool = False,
 	cache_hit: bool = False,
 	risk: str | None = None,
+	sonar_result=None,
+	sonar_cli_result=None,
 	exit_code: int,
 ) -> None:
 	try:
-		metrics_mod.log(
-			{
-				"ts": metrics_mod.timestamp(),
-				"command": "check",
-				"duration_ms": int((time.perf_counter() - started) * 1000),
-				"files": len(delta.files),
-				"lines_added": delta.total_added,
-				"lines_removed": delta.total_removed,
-				"tier1_findings": dict(Counter(item.check for item in findings)),
-				"blocked": blocked,
-				"tests_mapped": len(plan.runner_commands) if plan is not None else 0,
-				"untested_sources": len(plan.untested_sources) if plan is not None else 0,
-				"review_cache": "hit" if cache_hit else "miss",
-				"risk": risk,
-				"exit": exit_code,
-			}
-		)
+		event = {
+			"ts": metrics_mod.timestamp(),
+			"command": "check",
+			"duration_ms": int((time.perf_counter() - started) * 1000),
+			"files": len(delta.files),
+			"lines_added": delta.total_added,
+			"lines_removed": delta.total_removed,
+			"tier1_findings": dict(Counter(item.check for item in findings)),
+			"blocked": blocked,
+			"tests_mapped": len(plan.runner_commands) if plan is not None else 0,
+			"untested_sources": len(plan.untested_sources) if plan is not None else 0,
+			"review_cache": "hit" if cache_hit else "miss",
+			"risk": risk,
+			"exit": exit_code,
+		}
+		if sonar_result is not None:
+			event.update(
+				{
+					"sonar_status": sonar_result.status,
+					"sonar_duration_ms": int(sonar_result.duration_s * 1000),
+				}
+			)
+			if sonar_result.status != "passed":
+				event["sonar_failure"] = sonar_result.reason
+		if sonar_cli_result is not None:
+			event.update(
+				{
+					"sonar_cli_status": sonar_cli_result.status,
+					"sonar_cli_duration_ms": int(
+						sonar_cli_result.duration_s * 1000
+					),
+				}
+			)
+			if sonar_cli_result.status != "passed":
+				event["sonar_cli_failure"] = sonar_cli_result.reason
+		metrics_mod.log(event)
 	except Exception:
 		pass
 
@@ -331,7 +522,12 @@ def _format_age(timestamp: float) -> str:
 	default=False,
 	help="Emit machine-readable review result as JSON (requires --once).",
 )
-def watch(quiet_period: float, once: bool, as_json: bool) -> None:
+@click.option(
+	"--debug",
+	is_flag=True,
+	help="Print redacted Sonar CLI/API inputs and complete bounded outputs.",
+)
+def watch(quiet_period: float, once: bool, as_json: bool, debug: bool) -> None:
 	"""Review changes in the background and cache the result for commits."""
 	root = gitio.repo_root()
 	if not root:
@@ -346,21 +542,33 @@ def watch(quiet_period: float, once: bool, as_json: bool) -> None:
 		render.metadata("quack watch: not a git repository")
 		return
 	if once:
-		res = watch_mod.review_once(root, quiet=as_json)
+		res = watch_mod.review_once(root, quiet=as_json, debug=debug)
 		if as_json:
 			_emit_watch_json(res)
 		else:
 			_render_watch_result(res)
 		return
 	try:
-		watch_mod.run(root, quiet_period, _render_watch_result)
+		watch_mod.run(
+			root,
+			quiet_period,
+			_render_watch_result,
+			debug=debug,
+		)
 	except KeyboardInterrupt:
 		return
 
 
 def _render_watch_result(result: watch_mod.WatchResult) -> None:
+	if result.sonar_scan is not None:
+		render.sonar(result.sonar_scan)
+	if result.sonar_cli is not None:
+		render.sonar_cli(result.sonar_cli)
 	if result.risk is not None:
-		render.metadata(f"reviewed {result.files} file(s) - risk: {result.risk}")
+		render.metadata(
+			f"AI review (advisory): reviewed {result.files} file(s) "
+			f"- risk: {result.risk}"
+		)
 	else:
 		render.metadata(f"review unavailable ({result.reason or 'unknown reason'})")
 
@@ -1003,6 +1211,71 @@ def serve(port: int, host: str) -> None:
 )
 def install(use_local: bool, assume_yes: bool, quack_path: str | None) -> None:
 	"""Add the quack stanza to .pre-commit-config.yaml and install the hook."""
+	_install_hooks(
+		use_local,
+		assume_yes=assume_yes,
+		quack_path=quack_path,
+	)
+	sys.exit(0)
+
+
+def _configure_sonar_for_git_clients(root: Path) -> None:
+	"""Persist local Sonar settings so GUI Git clients match the terminal."""
+	explicit_project = (
+		os.environ.get("QUACK_SONAR_PROJECT_KEY", "").strip()
+		or os.environ.get("SONARQUBE_PROJECT_KEY", "").strip()
+		or os.environ.get("SONAR_PROJECT_KEY", "").strip()
+		or gitio.config_get("quack.sonar.projectKey", root)
+	)
+	if not explicit_project and not (root / "sonar-project.properties").is_file():
+		return
+
+	settings = sonar.configuration(root)
+	branch = gitio.current_branch(root) or settings.branch
+	if not settings.valid or not branch:
+		return
+	if not gitio.config_set("extensions.worktreeConfig", "true", root):
+		return
+
+	configured = all(
+		(
+			gitio.config_set(
+				"quack.sonar.hostUrl", settings.host_url, root, worktree=True
+			),
+			gitio.config_set(
+				"quack.sonar.projectKey", settings.project_key, root, worktree=True
+			),
+			gitio.config_set("quack.sonar.branch", branch, root, worktree=True),
+		)
+	)
+	if not configured:
+		render.warning("quack: could not save worktree-local Sonar settings")
+		return
+	render.clean("quack: Sonar settings saved for terminal and IDE commits")
+
+	token = sonar.environment_token()
+	if not token:
+		return
+	username = "quack"
+	if gitio.credential_approve(settings.host_url, username, token, root):
+		gitio.config_set(
+			"quack.sonar.credentialUsername", username, root, worktree=True
+		)
+		render.clean("quack: Sonar token saved in the Git credential helper")
+	else:
+		render.warning(
+			"quack: could not save the Sonar token for IDE commits; "
+			"configure a Git credential helper and rerun `quack init`"
+		)
+
+
+def _install_hooks(
+	use_local: bool,
+	*,
+	assume_yes: bool = False,
+	quack_path: str | None = None,
+) -> None:
+	"""Write hook configuration and best-effort install both hook types."""
 	# Quote: Windows paths have spaces.
 	quack_cmd = f'"{quack_path}"' if quack_path else "quack"
 	# Detect husky (or any core.hooksPath) BEFORE writing config: when git reads
@@ -1047,7 +1320,7 @@ def install(use_local: bool, assume_yes: bool, quack_path: str | None) -> None:
 		render.clean(f"quack: {commit_action} quack check in .husky/pre-commit")
 		render.clean(f"quack: {push_action} quack agent in .husky/pre-push")
 		render.metadata("  commit these files so your team gets the same hooks")
-		sys.exit(0)
+		return
 
 	config_path = Path(".pre-commit-config.yaml")
 	render.install_banner()
@@ -1056,6 +1329,8 @@ def install(use_local: bool, assume_yes: bool, quack_path: str | None) -> None:
 	else:
 		_upsert_precommit_stanza(config_path)
 	render.clean(f"quack: updated {config_path}")
+
+	_configure_sonar_for_git_clients(Path.cwd())
 
 	if shutil.which("pre-commit"):
 		try:
@@ -1108,6 +1383,27 @@ def install(use_local: bool, assume_yes: bool, quack_path: str | None) -> None:
 				"failure": f"gitleaks bootstrap: {message}",
 			}
 		)
+
+
+@main.command()
+@click.option(
+	"--local",
+	"use_local",
+	is_flag=True,
+	default=True,
+	help="Use the installed `quack` command in a local pre-commit stanza.",
+)
+def init(use_local: bool) -> None:
+	"""Initialize hooks and repo-scoped Sonar Copilot artifacts."""
+	_install_hooks(use_local)
+	for relative_path, content in templates.ARTIFACTS.items():
+		path = Path(relative_path)
+		if path.exists():
+			render.warning(f"quack init: preserving existing {path}")
+			continue
+		path.parent.mkdir(parents=True, exist_ok=True)
+		path.write_text(content, encoding="utf-8")
+		render.clean(f"quack init: created {path}")
 	sys.exit(0)
 
 
@@ -1194,6 +1490,9 @@ def _upsert_local_stanza(config_path: Path, quack_path: str | None = None) -> No
 		data = {}
 
 	repos = data.setdefault("repos", [])
+	if not isinstance(repos, list):
+		repos = []
+		data["repos"] = repos
 	# Quote: Windows paths have spaces.
 	quack_cmd = f'"{quack_path}"' if quack_path else "quack"
 	# Two surfaces: pre-commit runs local checks only; pre-push runs AI review
@@ -1218,18 +1517,54 @@ def _upsert_local_stanza(config_path: Path, quack_path: str | None = None) -> No
 		},
 	]
 
-	for repo in repos:
-		if isinstance(repo, dict) and repo.get("repo") == "local":
-			hooks = repo.setdefault("hooks", [])
-			for hook in hooks_to_add:
-				if not any(
-					isinstance(h, dict) and h.get("id") == hook["id"]
-					for h in hooks
-				):
-					hooks.append(hook)
-			break
-	else:
-		repos.append({"repo": "local", "hooks": hooks_to_add})
+	target = next(
+		(
+			repo
+			for repo in repos
+			if isinstance(repo, dict) and repo.get("repo") == "local"
+		),
+		None,
+	)
+	anchor = next(
+		(
+			index
+			for index, repo in enumerate(repos)
+			if isinstance(repo, dict)
+			and repo.get("repo")
+			in {"local", QUACK_REPO_URL, _LEGACY_QUACK_REPO_URL}
+		),
+		None,
+	)
+	if target is None:
+		target = {"repo": "local", "hooks": []}
+	existing_hooks = target.get("hooks", [])
+	if not isinstance(existing_hooks, list):
+		existing_hooks = []
+	preserved_hooks = [
+		hook
+		for hook in existing_hooks
+		if not (
+			isinstance(hook, dict)
+			and hook.get("id") in {"quack", "quack-agent"}
+		)
+	]
+	target["repo"] = "local"
+	target["hooks"] = preserved_hooks + hooks_to_add
+
+	filtered_repos: list[object] = []
+	for index, repo in enumerate(repos):
+		if anchor == index:
+			filtered_repos.append(target)
+		if isinstance(repo, dict) and repo.get("repo") in {
+			"local",
+			QUACK_REPO_URL,
+			_LEGACY_QUACK_REPO_URL,
+		}:
+			continue
+		filtered_repos.append(repo)
+	if anchor is None:
+		filtered_repos.append(target)
+	data["repos"] = filtered_repos
 
 	config_path.write_text(
 		yaml.safe_dump(data, sort_keys=False, default_flow_style=False),
@@ -1270,4 +1605,3 @@ def _upsert_precommit_stanza(config_path: Path) -> None:
 
 if __name__ == "__main__":
 	main()
-

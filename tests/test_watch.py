@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
@@ -37,6 +39,7 @@ def test_watch_once_reviews_and_writes_cache(monkeypatch) -> None:
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda: "/repo")
 	monkeypatch.setattr(watch.gitio, "staged_delta", lambda *, root=None: delta)
 	monkeypatch.setattr(watch.gitio, "working_delta", lambda *, root=None: StagedDelta())
+	monkeypatch.setattr(watch.sonar, "scan", lambda *args, **kwargs: None)
 	monkeypatch.setattr(watch.testmap, "build_plan", lambda *args, **kwargs: TestPlan())
 	monkeypatch.setattr(watch.instructions, "load", lambda root: "local guidance")
 	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: "test-model")
@@ -59,7 +62,9 @@ def test_watch_once_reviews_and_writes_cache(monkeypatch) -> None:
 	result = CliRunner().invoke(cli.main, ["watch", "--once"])
 
 	assert result.exit_code == 0
-	assert "reviewed 1 file(s) - risk: medium" in result.output
+	assert "AI review (advisory): reviewed 1 file(s) - risk: medium" in (
+		result.output
+	)
 	assert Path(written["repo_root"]) == Path("/repo")
 	assert written["digest"] == watch.reviewcache.diff_hash(delta.raw_diff)
 	assert written["payload"]["risk"] == "medium"
@@ -70,6 +75,7 @@ def test_watch_once_surfaces_actionable_review_failure(monkeypatch) -> None:
 	delta = _delta()
 	monkeypatch.setattr(watch.gitio, "staged_delta", lambda *, root=None: delta)
 	monkeypatch.setattr(watch.gitio, "working_delta", lambda *, root=None: StagedDelta())
+	monkeypatch.setattr(watch.sonar, "scan", lambda *args, **kwargs: None)
 	monkeypatch.setattr(watch.testmap, "build_plan", lambda *args, **kwargs: TestPlan())
 	monkeypatch.setattr(watch.instructions, "load", lambda root: None)
 	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: "test-model")
@@ -85,3 +91,70 @@ def test_watch_once_surfaces_actionable_review_failure(monkeypatch) -> None:
 
 	assert result.reason == "some actionable reason"
 	assert result.reason != "AI analysis unavailable"
+
+
+def test_watch_debug_flag_is_forwarded_and_scoped(monkeypatch) -> None:
+	seen: dict[str, object] = {}
+	monkeypatch.delenv("QUACK_SONAR_DEBUG", raising=False)
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda: "/repo")
+
+	def fake_review_once(root, model=None, quiet=False, *, debug=False):
+		seen.update(root=root, model=model, quiet=quiet, debug=debug)
+		return watch.WatchResult(files=0, reason="no changes")
+
+	monkeypatch.setattr(cli.watch_mod, "review_once", fake_review_once)
+
+	result = CliRunner().invoke(cli.main, ["watch", "--once", "--debug"])
+
+	assert result.exit_code == 0
+	assert seen == {
+		"root": "/repo",
+		"model": None,
+		"quiet": False,
+		"debug": True,
+	}
+	assert "QUACK_SONAR_DEBUG" not in os.environ
+
+
+def test_watch_uses_scanner_correlated_direct_sonar_api(monkeypatch, capsys) -> None:
+	delta = _delta()
+	captured: dict[str, object] = {}
+	settings = SimpleNamespace(
+		project_key="demo",
+		host_url="https://sonar.example",
+		branch="feature",
+	)
+	scan_result = SimpleNamespace(
+		status="passed",
+		analysis_id="analysis-1",
+		duration_s=0.2,
+	)
+	cli_result = SimpleNamespace(
+		status="passed",
+		reason="no changed-file violations",
+		duration_s=0.1,
+		violation_count=0,
+		blocks_commit=False,
+	)
+	monkeypatch.setattr(watch.gitio, "working_delta", lambda root=None: delta)
+	monkeypatch.setattr(watch.sonar, "configuration", lambda *args, **kwargs: settings)
+	monkeypatch.setattr(watch.sonar, "scan", lambda *args, **kwargs: scan_result)
+
+	def direct_run(current, root, **kwargs):
+		captured.update(kwargs)
+		return cli_result
+
+	monkeypatch.setattr(watch.sonar_cli, "run", direct_run)
+	monkeypatch.setattr(watch.llmio, "default_model", lambda kind: None)
+
+	result = watch.review_once("/repo", debug=True)
+
+	assert result.sonar_cli is cli_result
+	debug = capsys.readouterr().err
+	assert "[debug] SonarQube Watch timing" in debug
+	assert "total_watch_ms=" in debug
+	assert "scanner_total_ms=200" in debug
+	assert "api_total_ms=100" in debug
+	assert "other_review_ms=" in debug
+	assert captured["host_url"] == "https://sonar.example"
+	assert captured["expected_analysis_id"] == "analysis-1"

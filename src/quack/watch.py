@@ -21,7 +21,20 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from . import gitio, instructions, llmio, metrics, render, reviewcache, testmap, tier2
+from . import (
+	gitio,
+	instructions,
+	llmio,
+	metrics,
+	render,
+	reviewcache,
+	sonar,
+	sonar_cli,
+	sonar_debug,
+	testmap,
+	tier2,
+)
+from .sonar_cli import SonarCliResult
 from .tier1 import Tier1Config
 from .tier1 import redact as tier1_redact
 from .tier1 import run as tier1_run
@@ -37,27 +50,71 @@ class WatchResult:
 	risk: str | None = None
 	reason: str | None = None
 	diff_hash: str | None = None
+	sonar_scan: sonar.ScanResult | None = None
+	sonar_cli: SonarCliResult | None = None
 
 
 def review_once(
 	repo_root: str | Path,
 	model: str | None = None,
 	quiet: bool = False,
+	*,
+	debug: bool = False,
 ) -> WatchResult:
-	"""Review the staged delta, or tracked working changes when unstaged."""
+	"""Review the staged delta, or the complete working delta when changed."""
 	started = time.perf_counter()
-	result = _review_once(repo_root, model, quiet=quiet)
-	try:
-		metrics.log(
+	with sonar_debug.scope(debug):
+		result = _review_once(repo_root, model, quiet=quiet)
+		total_ms = int((time.perf_counter() - started) * 1000)
+		scanner_ms = int(getattr(result.sonar_scan, "duration_s", 0.0) * 1000)
+		api_ms = int(getattr(result.sonar_cli, "duration_s", 0.0) * 1000)
+		sonar_debug.emit(
+			"SonarQube Watch timing",
 			{
-				"ts": metrics.timestamp(),
-				"command": "watch",
-				"duration_ms": int((time.perf_counter() - started) * 1000),
-				"files": result.files,
-				"risk": result.risk,
-				"failure": result.reason,
-			}
+				"total_watch_ms": total_ms,
+				"scanner_total_ms": scanner_ms,
+				"api_total_ms": api_ms,
+				"other_review_ms": max(0, total_ms - scanner_ms - api_ms),
+			},
 		)
+	try:
+		event = {
+			"ts": metrics.timestamp(),
+			"command": "watch",
+			"duration_ms": int((time.perf_counter() - started) * 1000),
+			"files": result.files,
+			"risk": result.risk,
+			"failure": result.reason,
+		}
+		if result.sonar_cli is not None:
+			event.update(
+				{
+					"sonar_cli_status": result.sonar_cli.status,
+					"sonar_cli_duration_ms": int(
+						result.sonar_cli.duration_s * 1000
+					),
+					"sonar_cli_failure": (
+						result.sonar_cli.reason
+						if result.sonar_cli.status != "passed"
+						else None
+					),
+				}
+			)
+		if result.sonar_scan is not None:
+			event.update(
+				{
+					"sonar_status": result.sonar_scan.status,
+					"sonar_duration_ms": int(
+						result.sonar_scan.duration_s * 1000
+					),
+					"sonar_failure": (
+						result.sonar_scan.reason
+						if result.sonar_scan.status != "passed"
+						else None
+					),
+				}
+			)
+		metrics.log(event)
 	except Exception:
 		pass
 	return result
@@ -69,12 +126,42 @@ def _review_once(
 	quiet: bool = False,
 ) -> WatchResult:
 	root = Path(repo_root)
-	delta = gitio.staged_delta(root=str(root))
+	sonar_scan: sonar.ScanResult | None = None
+	sonar_result: SonarCliResult | None = None
+	# Watch must represent the working tree developers are looking at.
+	# working_delta() includes staged, unstaged, and new non-ignored edits;
+	# pre-commit path remains the only path that uses the exact index.
+	delta = gitio.working_delta(root=str(root))
 	if not delta.files:
-		delta = gitio.working_delta(root=str(root))
+		delta = gitio.staged_delta(root=str(root))
 	if not delta.files:
 		return WatchResult(files=0, reason="no changes")
 
+	sonar_settings = sonar.configuration(root, staged=False)
+	scan_started_at = time.time()
+	sonar_scan = sonar.scan(
+		delta,
+		root,
+		config=sonar_settings,
+		snapshot_scope="working",
+	)
+	sonar_result = sonar_cli.run(
+		delta,
+		root,
+		source="watch",
+		project_key=sonar_settings.project_key,
+		host_url=sonar_settings.host_url,
+		branch=sonar_settings.branch,
+		fresh=bool(sonar_scan and sonar_scan.status == "passed"),
+		expected_analysis_id=(
+			sonar_scan.analysis_id if sonar_scan else None
+		),
+		minimum_analysis_at=(
+			scan_started_at
+			if sonar_scan and sonar_scan.status == "passed"
+			else None
+		),
+	)
 	findings = tier1_run(delta, Tier1Config())
 	redacted = tier1_redact(delta, findings)
 	plan = testmap.build_plan(delta, root=root)
@@ -90,12 +177,28 @@ def _review_once(
 		message = str(exc)[:160].replace("\n", " ")
 		return WatchResult(
 			files=len(delta.files),
-			reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+			reason=(
+				f"{type(exc).__name__}: {message}"
+				if message
+				else type(exc).__name__
+			),
+			sonar_scan=sonar_scan,
+			sonar_cli=sonar_result,
 		)
 	if not resolved_model:
-		return WatchResult(files=len(delta.files), reason="no model configured")
+		return WatchResult(
+			files=len(delta.files),
+			reason="no model configured",
+			sonar_scan=sonar_scan,
+			sonar_cli=sonar_result,
+		)
 	if availability:
-		return WatchResult(files=len(delta.files), reason=availability)
+		return WatchResult(
+			files=len(delta.files),
+			reason=availability,
+			sonar_scan=sonar_scan,
+			sonar_cli=sonar_result,
+		)
 
 	if quiet:
 		try:
@@ -111,7 +214,13 @@ def _review_once(
 			message = str(exc)[:160].replace("\n", " ")
 			return WatchResult(
 				files=len(delta.files),
-				reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+				reason=(
+					f"{type(exc).__name__}: {message}"
+					if message
+					else type(exc).__name__
+				),
+				sonar_scan=sonar_scan,
+				sonar_cli=sonar_result,
 			)
 	else:
 		with render.thinking("reviewing changes..."):
@@ -129,22 +238,28 @@ def _review_once(
 				return WatchResult(
 					files=len(delta.files),
 					reason=f"{type(exc).__name__}: {message}" if message else type(exc).__name__,
+					sonar_scan=sonar_scan,
+					sonar_cli=sonar_result,
 				)
 	if review is None:
 		return WatchResult(
 			files=len(delta.files),
 			reason=reason or availability or "AI analysis unavailable",
+			sonar_scan=sonar_scan,
+			sonar_cli=sonar_result,
 		)
 
 	payload = asdict(review)
 	payload["model"] = resolved_model
 	d_hash = reviewcache.diff_hash(redacted.raw_diff)
-	reviewcache.write(
-		root,
-		d_hash,
-		payload,
-		)
-	return WatchResult(files=len(delta.files), risk=review.risk, diff_hash=d_hash)
+	reviewcache.write(root, d_hash, payload)
+	return WatchResult(
+		files=len(delta.files),
+		risk=review.risk,
+		diff_hash=d_hash,
+		sonar_scan=sonar_scan,
+		sonar_cli=sonar_result,
+	)
 
 
 def run(
@@ -153,6 +268,7 @@ def run(
 	on_review: Callable[[WatchResult], None],
 	*,
 	poll_interval_s: float = POLL_INTERVAL_S,
+	debug: bool = False,
 ) -> None:
 	"""Poll until interrupted, reviewing after each filesystem quiet period."""
 	root = Path(repo_root)
@@ -167,7 +283,7 @@ def run(
 			dirty = True
 			last_change = time.monotonic()
 		if dirty and time.monotonic() - last_change >= quiet_period_s:
-			on_review(review_once(root))
+			on_review(review_once(root, debug=debug))
 			dirty = False
 
 
@@ -181,8 +297,11 @@ def snapshot(repo_root: str | Path) -> dict[str, tuple[int, int]]:
 			for filename in filenames:
 				path = Path(dirpath) / filename
 				try:
+					relative = path.relative_to(root).as_posix()
+					if sonar_cli.is_report_file(relative):
+						continue
 					stat = path.stat()
-					state[path.relative_to(root).as_posix()] = (
+					state[relative] = (
 						stat.st_mtime_ns,
 						stat.st_size,
 					)

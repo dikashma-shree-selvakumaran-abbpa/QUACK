@@ -1,8 +1,8 @@
 """The ``quack agent`` pre-push loop.
 
 A plain, inspectable tool-calling loop -- no agent frameworks. The model is
-given three read-only tools (``read_file``, ``list_dir``, ``run_tests``) and
-must INVESTIGATE the staged delta, then emit a single JSON verdict.
+given three local read-only tools (``read_file``, ``list_dir``, ``run_tests``),
+then must INVESTIGATE the staged delta and emit a single JSON verdict.
 
 Safety invariants enforced here, not by the model:
 
@@ -295,7 +295,10 @@ def _tool_exit_code(output: str) -> int | None:
 
 
 def _dispatch(
-	root: Path, name: str, args: dict, run_tests_budget: int
+	root: Path,
+	name: str,
+	args: dict,
+	run_tests_budget: int,
 ) -> tuple[str, int]:
 	"""Execute one tool call. Returns (result_text, run_tests_consumed)."""
 	if name == "read_file":
