@@ -32,6 +32,27 @@ def _isolate_pre_commit_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_sonar_env(monkeypatch):
+	"""Clear ambient Sonar environment variables for all tests."""
+	monkeypatch.delenv("QUACK_SONAR_AT_COMMIT", raising=False)
+	monkeypatch.delenv("QUACK_SONAR_BRANCH", raising=False)
+	monkeypatch.delenv("SONARQUBE_BRANCH", raising=False)
+	monkeypatch.delenv("SONAR_BRANCH", raising=False)
+	monkeypatch.delenv("QUACK_SONAR_PROJECT_KEY", raising=False)
+	monkeypatch.delenv("SONARQUBE_PROJECT_KEY", raising=False)
+	monkeypatch.delenv("SONAR_PROJECT_KEY", raising=False)
+	monkeypatch.delenv("QUACK_SONAR_SOURCES", raising=False)
+	monkeypatch.delenv("SONAR_SOURCES", raising=False)
+	monkeypatch.delenv("QUACK_SONAR_TESTS", raising=False)
+	monkeypatch.delenv("SONAR_TESTS", raising=False)
+	monkeypatch.delenv("QUACK_SONAR_TIMEOUT_S", raising=False)
+	monkeypatch.delenv("QUACK_SONAR_SCANNER", raising=False)
+	monkeypatch.delenv("QUACK_TOOLS_DIR", raising=False)
+	monkeypatch.delenv("SONAR_TOKEN", raising=False)
+	yield
+
+
+@pytest.fixture(autouse=True)
 def _block_unmocked_provider_calls(request, monkeypatch, tmp_path):
 	"""Prevent tests from reaching a real provider unless explicitly opted in."""
 	monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
