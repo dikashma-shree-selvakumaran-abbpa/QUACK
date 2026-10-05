@@ -154,6 +154,7 @@ def test_check_cache_miss_renders_watch_nudge(monkeypatch) -> None:
 
 
 def test_check_passes_sonar_result_to_report(monkeypatch) -> None:
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
 	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
@@ -187,6 +188,7 @@ def test_check_nothing_staged(monkeypatch) -> None:
 
 
 def test_check_reuses_matching_completed_sonar_state(monkeypatch, tmp_path) -> None:
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	cached = sonar_state.State(
 		digest="matching",
@@ -239,6 +241,7 @@ def test_check_reuses_matching_completed_sonar_state(monkeypatch, tmp_path) -> N
 def test_check_ignores_mcp_url_and_uses_scanner_host(
 	monkeypatch, tmp_path
 ) -> None:
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	cached = sonar_state.State(
 		digest="matching",
@@ -282,6 +285,7 @@ def test_check_ignores_mcp_url_and_uses_scanner_host(
 def test_check_uses_custom_scanner_url_for_direct_api(
 	monkeypatch, tmp_path
 ) -> None:
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
 	monkeypatch.setattr(cli.gitio, "repo_root", lambda: str(tmp_path))
@@ -317,6 +321,7 @@ def test_check_uses_custom_scanner_url_for_direct_api(
 def test_check_rescans_when_cached_analysis_no_longer_correlates(
 	monkeypatch, tmp_path
 ) -> None:
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	cached = sonar_state.State(
 		digest="matching",
@@ -385,6 +390,7 @@ def test_check_rescans_when_cached_analysis_no_longer_correlates(
 def test_check_blocks_revalidated_cached_violation_when_analysis_correlates(
 	monkeypatch, tmp_path
 ) -> None:
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	cached = sonar_state.State(
 		digest="matching",
@@ -426,6 +432,7 @@ def test_check_blocks_revalidated_cached_violation_when_analysis_correlates(
 def test_check_writes_sonar_state_only_after_confirmed_scan(
 	monkeypatch, tmp_path
 ) -> None:
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	writes: list[sonar_state.State] = []
 	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
@@ -468,6 +475,7 @@ def test_check_writes_sonar_state_only_after_confirmed_scan(
 def test_check_does_not_block_on_unverified_sonar_cli_result(
 	monkeypatch, tmp_path
 ) -> None:
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
 	delta = _delta("src/app.py", _hunk("x = 1"))
 	captured: dict = {}
 	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
@@ -494,5 +502,87 @@ def test_check_does_not_block_on_unverified_sonar_cli_result(
 
 	assert result.exit_code == 0
 	assert captured["blocked"] is False
+
+
+def test_check_sonar_disabled_by_default_never_calls_sonar(monkeypatch) -> None:
+	delta = _delta("src/app.py", _hunk("x = 1"))
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
+
+	def boom(*args, **kwargs):
+		raise AssertionError("_run_staged_sonar_check must not be called when disabled")
+
+	monkeypatch.setattr(cli, "_run_staged_sonar_check", boom)
+	result = CliRunner().invoke(cli.main, ["check"])
+	assert result.exit_code == 0
+
+
+def test_check_sonar_enabled_via_env(monkeypatch) -> None:
+	delta = _delta("src/app.py", _hunk("x = 1"))
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "1")
+	called = []
+	monkeypatch.setattr(
+		cli,
+		"_run_staged_sonar_check",
+		lambda delta, root: called.append(True) or (None, None, False),
+	)
+	result = CliRunner().invoke(cli.main, ["check"])
+	assert result.exit_code == 0
+	assert len(called) == 1
+
+
+def test_check_sonar_enabled_via_git_config(monkeypatch) -> None:
+	delta = _delta("src/app.py", _hunk("x = 1"))
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
+	monkeypatch.setattr(
+		cli.gitio,
+		"config_get",
+		lambda key, root=None: "true" if key == "quack.sonar.atCommit" else "",
+	)
+	called = []
+	monkeypatch.setattr(
+		cli,
+		"_run_staged_sonar_check",
+		lambda delta, root: called.append(True) or (None, None, False),
+	)
+	result = CliRunner().invoke(cli.main, ["check"])
+	assert result.exit_code == 0
+	assert len(called) == 1
+
+
+def test_check_sonar_env_zero_overrides_git_config_true(monkeypatch) -> None:
+	delta = _delta("src/app.py", _hunk("x = 1"))
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda: delta)
+	monkeypatch.setenv("QUACK_DISABLE_GITLEAKS", "1")
+	monkeypatch.setenv("QUACK_SONAR_AT_COMMIT", "0")
+	monkeypatch.setattr(
+		cli.gitio,
+		"config_get",
+		lambda key, root=None: "true" if key == "quack.sonar.atCommit" else "",
+	)
+
+	def boom(*args, **kwargs):
+		raise AssertionError("_run_staged_sonar_check must not be called when env is 0")
+
+	monkeypatch.setattr(cli, "_run_staged_sonar_check", boom)
+	result = CliRunner().invoke(cli.main, ["check"])
+	assert result.exit_code == 0
+
+
+def test_check_sonar_disabled_with_staged_secret_still_blocks(monkeypatch) -> None:
+	secret = "AKIA" + "A" * 16
+	delta = _delta("src/config.py", _hunk(f'AWS_KEY = "{secret}"'))
+	monkeypatch.setattr(cli.gitio, "staged_delta", lambda *, root=None: delta)
+
+	def boom(*args, **kwargs):
+		raise AssertionError("_run_staged_sonar_check must not be called")
+
+	monkeypatch.setattr(cli, "_run_staged_sonar_check", boom)
+	result = CliRunner().invoke(cli.main, ["check"])
+	assert result.exit_code == 1
+	assert "BLOCKED" in result.output
 
 

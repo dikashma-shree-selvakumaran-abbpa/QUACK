@@ -170,9 +170,12 @@ def check(as_json: bool) -> None:
 
 	root = gitio.repo_root() or os.getcwd()
 
-	sonar_result, sonar_cli_result, _sonar_cache_hit = _run_staged_sonar_check(
-		delta, root
-	)
+	if _sonar_at_commit(root):
+		sonar_result, sonar_cli_result, _sonar_cache_hit = _run_staged_sonar_check(
+			delta, root
+		)
+	else:
+		sonar_result, sonar_cli_result, _sonar_cache_hit = None, None, False
 	blocked = blocked or bool(
 		getattr(sonar_cli_result, "blocks_commit", False)
 	)
@@ -278,6 +281,16 @@ def check(as_json: bool) -> None:
 		exit_code=1 if blocked else 0,
 	)
 	sys.exit(1 if blocked else 0)
+
+
+def _sonar_at_commit(root) -> bool:
+	raw = os.environ.get("QUACK_SONAR_AT_COMMIT")
+	if raw is None or raw == "":
+		try:
+			raw = gitio.config_get("quack.sonar.atCommit", root)
+		except Exception:
+			raw = ""
+	return str(raw).strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def _run_staged_sonar_check(delta, root):
