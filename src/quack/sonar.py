@@ -152,12 +152,19 @@ def configuration(
 		"project name",
 		invalid,
 	)
+	branch_fallback = ""
+	try:
+		branch_fallback = gitio.current_branch(base)
+	except Exception:
+		branch_fallback = ""
+
 	branch_value = _validated_setting(
 		os.environ.get("QUACK_SONAR_BRANCH")
 		or os.environ.get("SONARQUBE_BRANCH")
 		or os.environ.get("SONAR_BRANCH")
 		or local_branch
-		or properties.get("sonar.branch.name"),
+		or properties.get("sonar.branch.name")
+		or branch_fallback,
 		"branch",
 		invalid,
 	)

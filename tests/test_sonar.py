@@ -513,3 +513,65 @@ def test_scan_fails_open_for_mixed_frontend_and_backend_changes(
 	assert result.status == "skipped"
 	assert result.confirmed is False
 	assert "mixed FrontEnd/BackEnd staged changes are unverified" in result.reason
+
+
+def test_configuration_branch_defaults_to_git_branch(
+	monkeypatch, tmp_path
+) -> None:
+	monkeypatch.setattr(sonar.gitio, "current_branch", lambda cwd=None: "feature/login")
+	settings = sonar.configuration(tmp_path, staged=False)
+	assert settings.branch == "feature/login"
+
+
+def test_configuration_branch_env_var_wins_over_git_branch(
+	monkeypatch, tmp_path
+) -> None:
+	monkeypatch.setenv("SONAR_BRANCH", "release/v1.0")
+	monkeypatch.setattr(sonar.gitio, "current_branch", lambda cwd=None: "feature/login")
+	settings = sonar.configuration(tmp_path, staged=False)
+	assert settings.branch == "release/v1.0"
+
+
+def test_configuration_branch_git_config_wins_over_git_branch(
+	monkeypatch, tmp_path
+) -> None:
+	monkeypatch.setattr(
+		sonar.gitio,
+		"config_get",
+		lambda key, cwd=None: "branch-from-config" if key == "quack.sonar.branch" else "",
+	)
+	monkeypatch.setattr(sonar.gitio, "current_branch", lambda cwd=None: "feature/login")
+	settings = sonar.configuration(tmp_path, staged=False)
+	assert settings.branch == "branch-from-config"
+
+
+def test_configuration_branch_properties_file_wins_over_git_branch(
+	monkeypatch, tmp_path
+) -> None:
+	(tmp_path / "sonar-project.properties").write_text(
+		"sonar.branch.name=branch-from-props\n",
+		encoding="utf-8",
+	)
+	monkeypatch.setattr(sonar.gitio, "current_branch", lambda cwd=None: "feature/login")
+	settings = sonar.configuration(tmp_path, staged=False)
+	assert settings.branch == "branch-from-props"
+
+
+def test_configuration_branch_git_branch_lookup_raises_fails_open(
+	monkeypatch, tmp_path
+) -> None:
+	def boom(cwd=None):
+		raise RuntimeError("git lookup failed")
+
+	monkeypatch.setattr(sonar.gitio, "current_branch", boom)
+	settings = sonar.configuration(tmp_path, staged=False)
+	assert settings.branch is None
+
+
+def test_configuration_branch_detached_head_results_in_none(
+	monkeypatch, tmp_path
+) -> None:
+	monkeypatch.setattr(sonar.gitio, "current_branch", lambda cwd=None: "")
+	settings = sonar.configuration(tmp_path, staged=False)
+	assert settings.branch is None
+
