@@ -9,6 +9,30 @@ import pytest
 from quack import agent
 
 
+@pytest.fixture(autouse=True)
+def _inert_push_sonar(monkeypatch):
+	"""Keep the default-on pre-push Sonar pass off the network in every test."""
+	from types import SimpleNamespace
+
+	from quack import cli
+
+	monkeypatch.setattr(cli.gitio, "config_get", lambda *a, **k: "")
+	monkeypatch.setattr(cli.gitio, "working_delta", lambda *a, **k: _empty_delta())
+	monkeypatch.setattr(
+		cli.sonar,
+		"configuration",
+		lambda *a, **k: SimpleNamespace(project_key=None, host_url=None, branch=None),
+	)
+	monkeypatch.setattr(cli.sonar, "scan", lambda *a, **k: None)
+	monkeypatch.setattr(
+		cli.sonar_cli,
+		"run",
+		lambda *a, **k: SimpleNamespace(
+			status="skipped", reason="test", violation_count=0, outcomes=()
+		),
+	)
+
+
 # ---------------------------------------------------------------------------
 # Containment.
 # ---------------------------------------------------------------------------
@@ -1247,3 +1271,252 @@ def test_timeout_hint_leaves_other_failures_alone() -> None:
 	reason = "no Copilot login found"
 
 	assert agent._timeout_hint(reason, "gpt-4o-mini") == reason
+
+# ---------------------------------------------------------------------------
+# Advisory Sonar pass at pre-push: default on, never changes the exit code.
+# ---------------------------------------------------------------------------
+
+
+def _sonar_push_harness(monkeypatch, *, config=""):
+	"""Stub the agent path to a staged change and record Sonar pass calls."""
+	from types import SimpleNamespace
+
+	from quack import cli
+
+	calls = {"scan": 0, "run": 0}
+
+	def fake_scan(*a, **k):
+		calls["scan"] += 1
+		assert k.get("snapshot_scope") == "working"
+		return SimpleNamespace(status="passed", reason=None, dashboard_url="https://sonar/x")
+
+	def fake_run(*a, **k):
+		calls["run"] += 1
+		assert k.get("source") == "pre-push"
+		return SimpleNamespace(status="passed", reason=None, violation_count=0, outcomes=())
+
+	monkeypatch.setenv("GITHUB_TOKEN", "t")
+	monkeypatch.setattr(cli.gitio, "repo_root", lambda *, root=None: ".")
+	monkeypatch.setattr(cli.gitio, "staged_delta", _plain_delta)
+	monkeypatch.setattr(
+		cli.gitio,
+		"config_get",
+		lambda key, *a, **k: config if key == "quack.sonar.atPush" else "",
+	)
+	monkeypatch.setattr(cli.tier2, "review_with_reason", lambda *a, **k: (None, "x"))
+	monkeypatch.setattr(cli.sonar, "scan", fake_scan)
+	monkeypatch.setattr(cli.sonar_cli, "run", fake_run)
+	_stub_agent_loop(monkeypatch)
+	return calls
+
+
+def test_push_sonar_runs_by_default(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = _sonar_push_harness(monkeypatch)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert calls == {"scan": 1, "run": 1}
+	assert "SonarQube: passed" in result.output
+
+
+def test_push_sonar_disabled_by_env(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = _sonar_push_harness(monkeypatch)
+	monkeypatch.setenv("QUACK_SONAR_AT_PUSH", "0")
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert calls == {"scan": 0, "run": 0}
+	assert "SonarQube" not in result.output
+
+
+def test_push_sonar_disabled_by_git_config(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = _sonar_push_harness(monkeypatch, config="false")
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert calls == {"scan": 0, "run": 0}
+
+
+def test_push_sonar_env_overrides_git_config(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = _sonar_push_harness(monkeypatch, config="false")
+	monkeypatch.setenv("QUACK_SONAR_AT_PUSH", "1")
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert calls == {"scan": 1, "run": 1}
+
+
+def test_push_sonar_scan_failure_does_not_fail_push(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = _sonar_push_harness(monkeypatch)
+
+	def boom(*a, **k):
+		raise RuntimeError("scanner exploded")
+
+	monkeypatch.setattr(cli.sonar, "scan", boom)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert calls["run"] == 0
+	assert "SonarQube: unavailable" in result.output
+
+
+def test_push_sonar_violations_are_advisory(monkeypatch) -> None:
+	from types import SimpleNamespace
+
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	_sonar_push_harness(monkeypatch)
+	issue = {
+		"rule": "python:S1234",
+		"severity": "MAJOR",
+		"component": "proj:src/thing.py",
+		"line": 1,
+		"message": "Fix this",
+	}
+	violating = SimpleNamespace(
+		status="failed",
+		reason="1 open issue on changed files",
+		violation_count=1,
+		blocks_commit=True,
+		outcomes=(SimpleNamespace(name="issues", data={"issues": [issue]}),),
+	)
+	monkeypatch.setattr(cli.sonar_cli, "run", lambda *a, **k: violating)
+
+	enabled = CliRunner().invoke(cli.main, ["agent"])
+	monkeypatch.setenv("QUACK_SONAR_AT_PUSH", "0")
+	disabled = CliRunner().invoke(cli.main, ["agent"])
+
+	assert enabled.exit_code == 0
+	assert enabled.exit_code == disabled.exit_code
+	assert "1 open issue on changed files" in enabled.output
+	assert "python:S1234" in enabled.output
+
+
+def test_push_sonar_warns_on_dirty_working_tree_for_push_range(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = _sonar_push_harness(monkeypatch)
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_delta", lambda *a, **k: _plain_delta())
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 1)
+	monkeypatch.setattr(cli.gitio, "read_prepush_stdin", lambda: None)
+	monkeypatch.setattr(cli.gitio, "working_delta", lambda *a, **k: _plain_delta())
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "analyzing 1 unpushed commit(s)" in result.output
+	assert calls["scan"] == 1
+	assert "may not reflect the pushed commits" in result.output
+
+
+def test_push_sonar_no_dirty_tree_warning_on_staged_path(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = _sonar_push_harness(monkeypatch)
+	monkeypatch.setattr(cli.gitio, "working_delta", lambda *a, **k: _plain_delta())
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert calls["scan"] == 1
+	assert "may not reflect the pushed commits" not in result.output
+
+
+def test_push_sonar_skipped_for_empty_push_range(monkeypatch) -> None:
+	from click.testing import CliRunner
+
+	from quack import cli
+
+	calls = _sonar_push_harness(monkeypatch)
+	monkeypatch.setattr(cli.gitio, "staged_delta", _empty_delta)
+	monkeypatch.setattr(cli.gitio, "upstream_ref", lambda *, root=None: "origin/main")
+	monkeypatch.setattr(cli.gitio, "range_delta", lambda *a, **k: _empty_delta())
+	monkeypatch.setattr(cli.gitio, "range_commit_count", lambda *a, **k: 0)
+	monkeypatch.setattr(cli.gitio, "read_prepush_stdin", lambda: None)
+
+	result = CliRunner().invoke(cli.main, ["agent"])
+
+	assert result.exit_code == 0
+	assert "nothing to analyze" in result.output
+	assert calls == {"scan": 0, "run": 0}
+
+def test_push_sonar_redacts_token_in_scanner_reason(monkeypatch, capsys) -> None:
+	from types import SimpleNamespace
+
+	from quack import cli
+
+	token = "squ_" + "a1B2c3D4e5" * 4
+	monkeypatch.setattr(
+		cli.sonar,
+		"scan",
+		lambda *a, **k: SimpleNamespace(
+			status="failed",
+			reason=f"sonar-scanner -Dsonar.token={token} exited 2",
+			dashboard_url=None,
+		),
+	)
+	monkeypatch.setattr(
+		cli.sonar_cli,
+		"run",
+		lambda *a, **k: SimpleNamespace(
+			status="unavailable",
+			reason=None,
+			violation_count=1,
+			outcomes=(
+				SimpleNamespace(
+					name="issues",
+					data={
+						"issues": [
+							{
+								"rule": "secrets:S6702",
+								"component": "proj:src/thing.py",
+								"line": 3,
+								"message": f"leaked {token}",
+							}
+						]
+					},
+				),
+			),
+		),
+	)
+
+	cli._run_push_sonar_pass(_plain_delta(), Path("."), "range")
+
+	captured = capsys.readouterr()
+	output = captured.out + captured.err
+	assert token not in output
+	assert "<redacted>" in output
+	assert "proj:src/thing.py:3" in output

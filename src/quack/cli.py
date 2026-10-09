@@ -293,6 +293,79 @@ def _sonar_at_commit(root) -> bool:
 	return str(raw).strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _sonar_at_push(root) -> bool:
+	raw = os.environ.get("QUACK_SONAR_AT_PUSH")
+	if raw is None or raw == "":
+		try:
+			raw = gitio.config_get("quack.sonar.atPush", root)
+		except Exception:
+			raw = ""
+	if raw is None or str(raw).strip() == "":
+		return True
+	return str(raw).strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _sonar_finding_line(name: str, item: dict) -> str:
+	text_range = item.get("textRange") if isinstance(item.get("textRange"), dict) else {}
+	line = item.get("line") or text_range.get("startLine")
+	location = render._sonar_display(item.get("component"), "", path=True)
+	if line:
+		location = f"{location}:{render._sonar_display(line, '')}"
+	label = render._sonar_display(
+		item.get("rule") or item.get("securityCategory") or name, ""
+	)
+	severity = render._sonar_display(
+		item.get("severity") or item.get("vulnerabilityProbability"), ""
+	)
+	message = render._sonar_display(item.get("message"), "")
+	parts = [part for part in (severity, label, location, message) if part]
+	return "  - " + " | ".join(parts)
+
+
+def _run_push_sonar_pass(delta, root, target) -> None:
+	"""Advisory Sonar pass at pre-push. Never raises, never affects the exit code."""
+	try:
+		if target == "range" and gitio.working_delta(root=root).files:
+			render.warning(
+				"SonarQube: working tree has uncommitted changes; "
+				"the Sonar result may not reflect the pushed commits"
+			)
+		settings = sonar.configuration(root, staged=False)
+		scan_result = sonar.scan(delta, root, config=settings, snapshot_scope="working")
+		report = sonar_cli.run(
+			delta,
+			root,
+			source="pre-push",
+			project_key=settings.project_key,
+			host_url=settings.host_url,
+			branch=settings.branch,
+			fresh=bool(scan_result and scan_result.status == "passed"),
+		)
+		detail = render._sonar_display(
+			getattr(report, "reason", None)
+			or getattr(scan_result, "dashboard_url", None)
+			or getattr(scan_result, "reason", None),
+			"",
+		)
+		status = getattr(report, "status", None) or "unknown"
+		line = render._sonar_display(
+			f"SonarQube: {status}" + (f" - {detail}" if detail else ""), "SonarQube: unknown"
+		)
+		if getattr(report, "violation_count", 0):
+			render.warning(line)
+		else:
+			render.info(line)
+		for outcome in getattr(report, "outcomes", None) or ():
+			name = getattr(outcome, "name", "")
+			data = getattr(outcome, "data", None)
+			items = data.get(name) if isinstance(data, dict) else None
+			for item in items or ():
+				if isinstance(item, dict):
+					render.metadata(_sonar_finding_line(name, item))
+	except Exception as exc:
+		render.warning(f"SonarQube: unavailable - {type(exc).__name__}")
+
+
 def _run_staged_sonar_check(delta, root):
 	"""Check the exact index and revalidate any locally cached server result."""
 	settings = sonar.configuration(root, staged=True)
@@ -813,6 +886,11 @@ def agent(model: str | None, fly: bool) -> None:
 			agent_failure="tier1 blocked",
 		)
 		sys.exit(1)
+
+	# Advisory Sonar pass: runs only once there is something to push, and
+	# never changes the exit code.
+	if _sonar_at_push(root):
+		_run_push_sonar_pass(delta, root, target)
 
 	try:
 		models = llmio.list_models()
